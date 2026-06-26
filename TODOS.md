@@ -59,3 +59,39 @@
 **Effort:** L human / M with CC+gstack.
 
 **Depends on:** Versioned factory genome, replayable ledger, review studio, provenance bundle, and enough completed runs to detect repeated patterns.
+
+## P2: npm Package Publishing
+
+**What:** Publish the `software-factory` CLI as an npm package after the GitHub Releases install path proves stable.
+
+**Why:** npm publishing makes local installation easier from terminals and agent environments, and gives Claude/Codex wrapper setup a cleaner dependency story.
+
+**Context:** GitHub Releases is the first distribution channel for V1 because it avoids premature postinstall and package-management complexity. npm should follow once package naming, install scripts, checksums, local operator token handling, and secrets posture are reviewed.
+
+**Effort:** M human / S-M with CC+gstack.
+
+**Depends on:** `packages/cli`, GitHub Releases workflow, checksum/release packaging, local operator token lifecycle, and CLI install/start/connect tests.
+
+## P2/P3: Desktop App Packaging
+
+**What:** Package the local factory as a desktop app after the CLI/web runtime is stable.
+
+**Why:** A desktop app could make the local-first product feel polished for users who do not want terminal startup: one icon, bundled local server, cleaner launch flow, and eventually auto-update.
+
+**Context:** Defer until the `software-factory` CLI, local web/API, worker runtime, operator-token lifecycle, and release workflow are proven. Desktop packaging should wrap the working local product, not become the first distribution experiment.
+
+**Effort:** L human / M-L with CC+gstack.
+
+**Depends on:** CLI distribution, local operator access, web/worker runtime, release/update workflow, cross-platform packaging tests, and signing/notarization decisions.
+
+## P2: Branch-Per-Ticket Isolation
+
+**What:** Evaluate branch/worktree-per-ticket isolation after V1 snapshot/diff write-scope enforcement proves itself.
+
+**Why:** Branch or worktree isolation could provide a stronger audit trail, clearer rollback path, and safer merge semantics for larger factories with more concurrent workers.
+
+**Context:** V1 uses scoped git/file manifest diffing, declared write scopes, and quarantine/reject behavior because it is simpler and fast enough for the first product path. Branch-per-ticket isolation should be considered once worker scheduling, provenance mapping, and generated repo packaging are stable.
+
+**Effort:** L human / M with CC+gstack.
+
+**Depends on:** Generated repo artifact model, worker scheduler, write-scope validator, provenance mapping, concurrency tests, and merge/conflict cleanup policy.
