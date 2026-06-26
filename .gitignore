@@ -1,0 +1,11 @@
+# AgentOps session artifacts
+/.agents/
+
+# Office/editor temporary files
+~$*.docx
+~WRL*.tmp
+*.tmp
+
+# OS metadata
+.DS_Store
+Thumbs.db
