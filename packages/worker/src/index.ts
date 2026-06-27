@@ -47,3 +47,18 @@ export * from './gates/gate-runner';
 
 // Local preview server: start command, poll health, expose URL only when ready.
 export * from './preview/preview-server';
+
+/* U9 — Package provenance, Git destination, and Render deployment */
+
+// Render the human-facing handoff markdown (pure).
+export * from './package/handoff-writer';
+// Package a generated app as a valid git repo (init/add/commit) + package.created.
+export * from './package/repo-packager';
+// Resolve the git destination (user vs temporary vs setup-required) + push client.
+export * from './git/git-destination';
+// Generate + validate the Render blueprint (render.yaml).
+export * from './deploy/render/render-config';
+// Render API client behind an injectable HTTP transport.
+export * from './deploy/render/render-client';
+// Render deploy orchestrator: preconditions -> trigger -> health -> hosted URL.
+export * from './deploy/render/render-deployer';

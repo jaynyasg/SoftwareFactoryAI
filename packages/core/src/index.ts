@@ -75,3 +75,10 @@ export * from './adapters/codex-cli-adapter';
 export * from './adapters/claude-code-cli-adapter';
 // Hosted/server-side execution stub behind the same contract.
 export * from './adapters/api-adapter';
+
+/* U9 — Provenance bundle + artifact confidence */
+
+// Pure provenance-bundle assembly + completeness scoring + ledger derivations.
+export * from './provenance/provenance-bundle';
+// Pure artifact confidence: blended score + factor breakdown the U8 UI renders.
+export * from './provenance/artifact-confidence';
