@@ -95,3 +95,27 @@
 **Effort:** L human / M with CC+gstack.
 
 **Depends on:** Generated repo artifact model, worker scheduler, write-scope validator, provenance mapping, concurrency tests, and merge/conflict cleanup policy.
+
+## P1/P2: Factory Design System Baseline
+
+**What:** Create a repo-level `DESIGN.md` and initial `packages/web` design-system contract for the factory shell: tokens, typography, components, interaction states, accessibility rules, anti-slop rules, and Ash-inspired operational layout guidance.
+
+**Why:** The product is UI-heavy and trust-sensitive. Without a durable design-system baseline, the run page, review studio, event ledger, artifacts drawer, setup checklist, and deploy states can drift into inconsistent generic dashboard patterns.
+
+**Context:** `/plan-design-review` added a plan-level baseline covering semantic color, Geist Sans/IBM Plex Mono typography, component vocabulary, state coverage, and anti-slop rules. Move those rules into repo-owned documentation and keep implementation aligned as `packages/web` begins.
+
+**Effort:** M human / S-M with CC+gstack.
+
+**Depends on:** `packages/web` scaffold, Factory Floor run page design, review studio components, interaction state coverage, and accessibility acceptance criteria.
+
+## P1: Factory Floor Visual Artifact
+
+**What:** Produce and approve a concrete visual artifact for the Factory Floor run page before `packages/web` UI implementation begins, covering empty run, active run, review/failure, and tablet/mobile supervision states.
+
+**Why:** The plan intentionally mimics `Ash SWF.png` as an operating model, not a literal diagram. A visual artifact prevents implementation from drifting into a generic SaaS dashboard or a decorative workflow canvas.
+
+**Context:** The gstack designer binary was unavailable during `/plan-design-review`, so no mockup could be generated in the review. Use `/design-shotgun`, `/design-html`, the gstack designer once installed, or a manually produced high-fidelity reference if design tooling remains unavailable.
+
+**Effort:** M human / S-M with CC+gstack.
+
+**Depends on:** Plan design-review baseline, `Ash SWF.png`, Factory Design System Baseline, and the first `packages/web` UI scaffold.
