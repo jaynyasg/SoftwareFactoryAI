@@ -1,0 +1,14 @@
+# This generated app is a STANDALONE pnpm project. Declaring its own
+# pnpm-workspace.yaml stops pnpm from walking up into the parent Software
+# Factory workspace, so `pnpm install` here resolves only this app's
+# dependencies into a local node_modules. The factory copies and installs this
+# template inside a sandbox, independent of the factory's own install.
+packages: []
+
+# pnpm 10 blocks dependency build scripts by default. Prisma needs its engine
+# download + client build, and esbuild (via tsx/vite) needs its native binary.
+onlyBuiltDependencies:
+  - '@prisma/client'
+  - '@prisma/engines'
+  - prisma
+  - esbuild
