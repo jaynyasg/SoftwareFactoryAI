@@ -17,9 +17,17 @@ export interface FakeRunnerScript {
   readonly fallback?: ScriptedResponse;
 }
 
+/** One recorded invocation: the command, its args, and the options it ran with. */
+export interface FakeRunnerCall {
+  readonly command: string;
+  readonly args: readonly string[];
+  /** The options the runner was invoked with (env, replaceEnv, timeoutMs, …). */
+  readonly options?: CommandRunOptions;
+}
+
 export interface FakeCommandRunner extends CommandRunner {
   /** Every invocation, in order, for assertions. */
-  readonly calls: readonly { command: string; args: readonly string[] }[];
+  readonly calls: readonly FakeRunnerCall[];
 }
 
 function enoent(command: string): Error {
@@ -28,7 +36,7 @@ function enoent(command: string): Error {
 }
 
 export function createFakeRunner(script: FakeRunnerScript): FakeCommandRunner {
-  const calls: { command: string; args: readonly string[] }[] = [];
+  const calls: FakeRunnerCall[] = [];
 
   const responses = script.responses ?? {};
   const resolveResponse = (command: string, args: readonly string[]): ScriptedResponse => {
@@ -42,8 +50,8 @@ export function createFakeRunner(script: FakeRunnerScript): FakeCommandRunner {
 
   return {
     calls,
-    run(command, args, _options?: CommandRunOptions): Promise<CommandResult> {
-      calls.push({ command, args: [...args] });
+    run(command, args, options?: CommandRunOptions): Promise<CommandResult> {
+      calls.push({ command, args: [...args], options });
       const response = resolveResponse(command, args);
       if (typeof response === 'function') {
         try {

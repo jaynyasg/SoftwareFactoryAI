@@ -7,6 +7,7 @@
  * process itself is started/owned by `preview-server`.
  */
 import type { Gate, GateContext, GateResult } from './command-gate';
+import { sleepAbortable } from '../utils/sleep';
 
 /** Context passed to a health probe. */
 export interface PreviewHealthProbeContext {
@@ -31,28 +32,10 @@ export interface PreviewHealthGateOptions {
   readonly sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
 }
 
-function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise<void>((resolvePromise) => {
-    if (ms <= 0 || signal?.aborted) {
-      resolvePromise();
-      return;
-    }
-    const timer = setTimeout(() => {
-      signal?.removeEventListener('abort', onAbort);
-      resolvePromise();
-    }, ms);
-    const onAbort = (): void => {
-      clearTimeout(timer);
-      resolvePromise();
-    };
-    signal?.addEventListener('abort', onAbort, { once: true });
-  });
-}
-
 /** Create the preview-health gate. */
 export function createPreviewHealthGate(options: PreviewHealthGateOptions): Gate {
   const attempts = Math.max(1, Math.trunc(options.attempts ?? 1));
-  const sleep = options.sleep ?? defaultSleep;
+  const sleep = options.sleep ?? sleepAbortable;
 
   return {
     name: 'preview-health',

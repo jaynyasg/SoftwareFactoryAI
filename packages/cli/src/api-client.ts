@@ -28,6 +28,9 @@ import type {
 /** The subset of `fetch` this client relies on (so tests can inject a mock). */
 export type FetchLike = typeof fetch;
 
+/** Bounded per-request timeout so a hung backend never blocks the CLI forever. */
+const REQUEST_TIMEOUT_MS = 30_000;
+
 /** A typed transport/protocol error. `code` is the backend's stable `error`. */
 export class ApiError extends Error {
   constructor(
@@ -160,7 +163,11 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
   }
 
   async function get(path: string): Promise<Record<string, unknown>> {
-    const res = await fetchImpl(url(path), { method: 'GET', headers: { accept: 'application/json' } });
+    const res = await fetchImpl(url(path), {
+      method: 'GET',
+      headers: { accept: 'application/json' },
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
     const body = await parse(res);
     if (!res.ok) {
       throw new ApiError(
@@ -177,6 +184,7 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
       method: 'POST',
       headers: mutationHeaders(),
       body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     const body = await parse(res);
     if (!res.ok) {

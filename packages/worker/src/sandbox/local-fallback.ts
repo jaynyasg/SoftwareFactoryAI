@@ -40,7 +40,11 @@ export function createLocalFallbackSandbox(options: LocalFallbackSandboxOptions)
       try {
         const result = await options.runner.run(command.command, command.args ?? [], {
           cwd: resolve(validated.cwd),
+          // `validated.env` is the policy-resolved allow-list (no host secrets).
+          // Pass it as the EXCLUSIVE child env so the host environment — including
+          // API keys/tokens outside the allow-list — never reaches generated code.
           env: validated.env,
+          replaceEnv: true,
           signal: command.signal,
           timeoutMs: command.timeoutMs,
           onOutput: command.onOutput,

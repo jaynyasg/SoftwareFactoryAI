@@ -16,6 +16,10 @@
  * reports it as not-created rather than pretending.
  */
 import type { CommandRunner, ProvenanceGitDestination } from '@software-factory/core';
+import { errorMessage } from '../utils/error';
+
+/** Bounded timeout for `git push` so a stalled remote cannot hang the deploy. */
+const GIT_PUSH_TIMEOUT_MS = 120_000;
 
 /** A user-provided GitHub destination (the preferred target). */
 export interface GitHubDestinationConfig {
@@ -186,10 +190,6 @@ export interface GitRemoteClient {
   push(args: PushArgs): Promise<PushResult>;
 }
 
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 /**
  * The default `GitRemoteClient` backed by the shared `CommandRunner`.
  *
@@ -203,8 +203,9 @@ export function createCommandGitRemoteClient(runner: CommandRunner): GitRemoteCl
     cwd: string,
     args: readonly string[],
     signal?: AbortSignal,
+    timeoutMs?: number,
   ): Promise<void> => {
-    const result = await runner.run('git', args, { cwd, signal });
+    const result = await runner.run('git', args, { cwd, signal, timeoutMs });
     if (result.code !== 0) {
       throw new Error(`git ${args.join(' ')} failed (exit ${result.code}): ${result.stderr.trim()}`);
     }
@@ -227,14 +228,19 @@ export function createCommandGitRemoteClient(runner: CommandRunner): GitRemoteCl
         // Re-point origin idempotently: remove if present, then add.
         await runner.run('git', ['remote', 'remove', 'origin'], { cwd: args.localPath });
         await git(args.localPath, ['remote', 'add', 'origin', args.descriptor.remoteUrl], args.signal);
-        await git(args.localPath, ['push', '-u', 'origin', branch], args.signal);
+        await git(
+          args.localPath,
+          ['push', '-u', 'origin', branch],
+          args.signal,
+          GIT_PUSH_TIMEOUT_MS,
+        );
         return { pushed: true, remoteUrl: args.descriptor.remoteUrl, branch };
       } catch (error) {
         return {
           pushed: false,
           remoteUrl: args.descriptor.remoteUrl,
           branch,
-          note: messageOf(error),
+          note: errorMessage(error),
         };
       }
     },

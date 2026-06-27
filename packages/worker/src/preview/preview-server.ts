@@ -22,6 +22,8 @@ import type {
   EventActor,
   EventStore,
 } from '@software-factory/core';
+import { sleepAbortable } from '../utils/sleep';
+import { errorMessage } from '../utils/error';
 
 /** Context passed to the injected health check. */
 export interface PreviewHealthCheckContext {
@@ -73,28 +75,6 @@ export type PreviewResult =
   | (PreviewHandle & { readonly ok: true; readonly url: string; readonly attempts: number })
   | (PreviewHandle & { readonly ok: false; readonly reason: string; readonly attempts: number });
 
-function defaultSleep(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise<void>((resolvePromise) => {
-    if (ms <= 0 || signal.aborted) {
-      resolvePromise();
-      return;
-    }
-    const timer = setTimeout(() => {
-      signal.removeEventListener('abort', onAbort);
-      resolvePromise();
-    }, ms);
-    const onAbort = (): void => {
-      clearTimeout(timer);
-      resolvePromise();
-    };
-    signal.addEventListener('abort', onAbort, { once: true });
-  });
-}
-
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 function tail(text: string, max = 300): string {
   const trimmed = text.trim();
   return trimmed.length <= max ? trimmed : `…${trimmed.slice(trimmed.length - (max - 1))}`;
@@ -110,7 +90,7 @@ export async function startPreview(
 ): Promise<PreviewResult> {
   const actor: EventActor = { kind: 'system', id: 'preview', display: 'preview-server' };
   const subject = { kind: 'preview', id: params.runId };
-  const sleep = deps.sleep ?? defaultSleep;
+  const sleep = deps.sleep ?? sleepAbortable;
   const maxAttempts = Math.max(1, Math.trunc(params.maxHealthAttempts ?? 30));
 
   const append = (event: Omit<AppendableEvent, 'runId' | 'ticketId'>): Promise<unknown> =>
@@ -148,7 +128,7 @@ export async function startPreview(
       (error) => {
         exited = true;
         if (!stopping) {
-          exitReason = `Preview command failed: ${messageOf(error)}`;
+          exitReason = `Preview command failed: ${errorMessage(error)}`;
         }
       },
     );

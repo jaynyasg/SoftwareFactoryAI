@@ -210,6 +210,8 @@ export interface RunProjection {
   readonly runId: string | null;
   readonly status: RunStatus;
   readonly prompt?: string;
+  /** Human-facing run title from the `run.created` payload, when provided. */
+  readonly title?: string;
   readonly prdRef?: string;
   readonly requestedWorkerCap?: number;
   readonly reviewMode?: ReviewMode;
@@ -235,6 +237,7 @@ export function projectRun(raw: readonly unknown[], runId?: string): RunProjecti
   const supervisorDecisions: SupervisorDecisionView[] = [];
   let status: RunStatus = 'unknown';
   let prompt: string | undefined;
+  let title: string | undefined;
   let prdRef: string | undefined;
   let requestedWorkerCap: number | undefined;
   let reviewMode: ReviewMode | undefined;
@@ -254,6 +257,7 @@ export function projectRun(raw: readonly unknown[], runId?: string): RunProjecti
       case 'run.created':
         status = 'created';
         prompt = event.payload.prompt ?? prompt;
+        title = event.payload.title ?? title;
         prdRef = event.payload.prdRef ?? prdRef;
         requestedWorkerCap = event.payload.requestedWorkerCap ?? requestedWorkerCap;
         reviewMode = event.payload.reviewMode ?? reviewMode;
@@ -298,6 +302,7 @@ export function projectRun(raw: readonly unknown[], runId?: string): RunProjecti
     runId: targetRunId,
     status,
     prompt,
+    title,
     prdRef,
     requestedWorkerCap,
     reviewMode,
@@ -311,4 +316,14 @@ export function projectRun(raw: readonly unknown[], runId?: string): RunProjecti
     lastSequence,
     diagnostics,
   };
+}
+
+/**
+ * Whether a projected run is a REAL run rather than a phantom. A phantom is a
+ * runId that never reached `run.created` — e.g. one minted only by a guard
+ * denial (a lone security event) or with an empty ledger — so its status stays
+ * the initial `unknown`. Run lists use this to avoid surfacing such entries.
+ */
+export function isRealRun(run: RunProjection): boolean {
+  return run.ledger.length > 0 && run.status !== 'unknown';
 }

@@ -4,25 +4,22 @@
  *   POST /api/runs/:id/review (mutating, guarded) — record a review decision.
  *
  * The command guard enforces auth/origin/CSRF and rejects STALE decisions
- * (a decision made against an outdated projected version). The review policy
- * decides whether autonomous mode may auto-pass the risk tier; medium/high
- * always require human review. Appends `review.decided`.
+ * (a decision made against an outdated projected version). The autonomous-gate
+ * decision is derived from SERVER state only — the run's `reviewMode` (from the
+ * `run.created` event) and the highest projected ticket risk tier — so a client
+ * cannot relax the gate by posting `mode:'human'` or `riskTier:'low'`. The client
+ * body supplies ONLY the operator's decision (approved/rejected). Medium/high
+ * risk can never be auto-approved by an autonomous run. Appends `review.decided`.
  */
-import { projectRun, resolveReview } from '@software-factory/core';
-import type { ReviewDecision, ReviewMode, RiskTier } from '@software-factory/core';
+import {
+  DEFAULT_REVIEW_MODE,
+  projectRun,
+  projectTickets,
+  resolveReview,
+} from '@software-factory/core';
+import type { ReviewDecision, ReviewMode, RiskTier, TicketView } from '@software-factory/core';
 import type { ApiResponse, RouteContext, RouteDef } from '../app';
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {};
-}
-
-function str(value: unknown): string | undefined {
-  return typeof value === 'string' && value.length > 0 ? value : undefined;
-}
-
-function num(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
-}
+import { asRecord, num, str } from './parse';
 
 function isRiskTier(value: unknown): value is RiskTier {
   return value === 'low' || value === 'medium' || value === 'high';
@@ -32,14 +29,28 @@ function isDecision(value: unknown): value is ReviewDecision {
   return value === 'approved' || value === 'rejected';
 }
 
-function reviewMode(value: unknown): ReviewMode | undefined {
-  return value === 'autonomous' || value === 'human' ? value : undefined;
+const RISK_RANK: Readonly<Record<RiskTier, number>> = { low: 0, medium: 1, high: 2 };
+
+/** The highest risk tier across a run's projected tickets, if any carry one. */
+function highestTicketRisk(tickets: readonly TicketView[]): RiskTier | undefined {
+  let highest: RiskTier | undefined;
+  for (const ticket of tickets) {
+    const tier = ticket.riskTier;
+    if (tier === undefined) {
+      continue;
+    }
+    if (highest === undefined || RISK_RANK[tier] > RISK_RANK[highest]) {
+      highest = tier;
+    }
+  }
+  return highest;
 }
 
 async function decideReview(ctx: RouteContext): Promise<ApiResponse> {
   const runId = ctx.params.id;
   const body = asRecord(ctx.request.body);
-  const current = projectRun(await ctx.reader.readRun(runId), runId);
+  const events = await ctx.reader.readRun(runId);
+  const current = projectRun(events, runId);
 
   if (!isDecision(body.decision)) {
     return {
@@ -47,14 +58,7 @@ async function decideReview(ctx: RouteContext): Promise<ApiResponse> {
       body: { error: 'invalid_decision', message: "decision must be 'approved' or 'rejected'." },
     };
   }
-  if (!isRiskTier(body.riskTier)) {
-    return {
-      status: 400,
-      body: { error: 'invalid_risk_tier', message: "riskTier must be 'low', 'medium', or 'high'." },
-    };
-  }
   const decision = body.decision;
-  const riskTier = body.riskTier;
 
   const denial = await ctx.guardMutation({
     subject: { kind: 'run', id: runId, version: num(body.expectedVersion) },
@@ -69,8 +73,21 @@ async function decideReview(ctx: RouteContext): Promise<ApiResponse> {
     return { status: 404, body: { error: 'not_found', message: `Run ${runId} does not exist.` } };
   }
 
-  // Policy: autonomous mode may not auto-approve medium/high risk.
-  const mode = reviewMode(body.mode) ?? current.reviewMode ?? 'human';
+  // SERVER-AUTHORITATIVE gate inputs (never trust the client body for these):
+  //  - mode: the run's reviewMode from `run.created` (default human), and
+  //  - riskTier: the highest projected ticket tier set by the planner. When no
+  //    ticket carries a tier (e.g. a not-yet-planned run), fall back to the
+  //    client-declared tier purely to record the decision payload.
+  const serverRisk = highestTicketRisk(projectTickets(events, runId).tickets);
+  const riskTier: RiskTier | undefined =
+    serverRisk ?? (isRiskTier(body.riskTier) ? body.riskTier : undefined);
+  if (riskTier === undefined) {
+    return {
+      status: 400,
+      body: { error: 'invalid_risk_tier', message: "riskTier must be 'low', 'medium', or 'high'." },
+    };
+  }
+  const mode: ReviewMode = current.reviewMode ?? DEFAULT_REVIEW_MODE;
   const resolution = resolveReview(riskTier, mode);
   if (mode === 'autonomous' && decision === 'approved' && !resolution.autoApprove) {
     return {

@@ -25,6 +25,7 @@ import type { RenderBlueprint } from './render-config';
 import { validateRenderBlueprint } from './render-config';
 import type { RenderClient } from './render-client';
 import { isDeploySuccess, isTerminalDeployStatus } from './render-client';
+import { sleepAbortable } from '../../utils/sleep';
 
 /** Local readiness gating the deploy (all must be true to proceed). */
 export interface DeployPreconditions {
@@ -122,24 +123,6 @@ function unmetPreconditions(preconditions: DeployPreconditions): string[] {
   return unmet;
 }
 
-function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise<void>((resolvePromise) => {
-    if (ms <= 0 || signal?.aborted === true) {
-      resolvePromise();
-      return;
-    }
-    const timer = setTimeout(() => {
-      signal?.removeEventListener('abort', onAbort);
-      resolvePromise();
-    }, ms);
-    const onAbort = (): void => {
-      clearTimeout(timer);
-      resolvePromise();
-    };
-    signal?.addEventListener('abort', onAbort, { once: true });
-  });
-}
-
 function logsEvidence(logs: readonly string[], deployId?: string): EventEvidence[] {
   return [{ label: 'render-deploy-logs', ref: deployId, note: logs.join('\n') }];
 }
@@ -153,7 +136,7 @@ export async function deployToRender(
   params: RenderDeployerParams,
   deps: RenderDeployerDeps,
 ): Promise<DeployOutcome> {
-  const sleep = deps.sleep ?? defaultSleep;
+  const sleep = deps.sleep ?? sleepAbortable;
   const pollIntervalMs = params.pollIntervalMs ?? 1000;
   const maxStatusPolls = Math.max(1, Math.trunc(params.maxStatusPolls ?? 30));
   const maxHealthPolls = Math.max(1, Math.trunc(params.maxHealthPolls ?? 20));

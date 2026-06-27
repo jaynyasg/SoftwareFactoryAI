@@ -14,10 +14,16 @@ import type { CliIo } from '../cli-io';
 
 export type FetchLike = typeof fetch;
 
+/** Bounded timeout for a single reachability probe (keeps the start loop bounded). */
+const REACHABLE_TIMEOUT_MS = 5_000;
+
 /** Probe a backend's read-only setup route; never throws. */
 export async function reachable(baseUrl: string, fetchImpl: FetchLike): Promise<boolean> {
   try {
-    const res = await fetchImpl(`${baseUrl.replace(/\/+$/, '')}/api/setup`, { method: 'GET' });
+    const res = await fetchImpl(`${baseUrl.replace(/\/+$/, '')}/api/setup`, {
+      method: 'GET',
+      signal: AbortSignal.timeout(REACHABLE_TIMEOUT_MS),
+    });
     return res.ok;
   } catch {
     return false;

@@ -91,6 +91,9 @@ export interface RenderClientOptions {
 
 export const DEFAULT_RENDER_BASE_URL = 'https://api.render.com/v1';
 
+/** Fallback request timeout for the default fetch transport when no signal is given. */
+export const DEFAULT_TRANSPORT_TIMEOUT_MS = 30_000;
+
 /** A terminal deploy status (no further polling needed). */
 export function isTerminalDeployStatus(status: RenderDeployStatus): boolean {
   return (
@@ -110,11 +113,14 @@ export function isDeploySuccess(status: RenderDeployStatus): boolean {
 /** The default transport: a thin wrapper over the global `fetch`. */
 export function createFetchTransport(): HttpTransport {
   return async (request, options) => {
+    // Honor the caller's signal; otherwise bound the request so a hung connection
+    // cannot stall the deploy poll loop forever.
+    const signal = options?.signal ?? AbortSignal.timeout(DEFAULT_TRANSPORT_TIMEOUT_MS);
     const response = await fetch(request.url, {
       method: request.method,
       headers: request.headers,
       body: request.body,
-      signal: options?.signal,
+      signal,
     });
     const body = await response.text();
     return { status: response.status, ok: response.ok, body };

@@ -10,31 +10,15 @@
  * already appended the security event and we return its response unchanged
  * (starting nothing).
  */
-import { projectRun } from '@software-factory/core';
+import { isRealRun, projectRun } from '@software-factory/core';
 import type {
   AppendableEvent,
   CallerFamily,
-  ReviewMode,
   RunCreatedPayload,
   RunProjection,
 } from '@software-factory/core';
 import type { ApiResponse, RouteContext, RouteDef } from '../app';
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {};
-}
-
-function str(value: unknown): string | undefined {
-  return typeof value === 'string' && value.length > 0 ? value : undefined;
-}
-
-function num(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
-}
-
-function reviewMode(value: unknown): ReviewMode | undefined {
-  return value === 'autonomous' || value === 'human' ? value : undefined;
-}
+import { asRecord, num, reviewMode, str } from './parse';
 
 function callerFamily(value: unknown): CallerFamily | undefined {
   return value === 'claude' || value === 'codex' || value === 'api' ? value : undefined;
@@ -95,7 +79,12 @@ async function listRunsHandler(ctx: RouteContext): Promise<ApiResponse> {
   const ids = await ctx.reader.listRuns();
   const runs: RunProjection[] = [];
   for (const id of ids) {
-    runs.push(projectRun(await ctx.reader.readRun(id), id));
+    const run = projectRun(await ctx.reader.readRun(id), id);
+    // Drop phantom runs: a runId minted only by a guard denial (a lone security
+    // event) or with an empty ledger never reached `run.created`.
+    if (isRealRun(run)) {
+      runs.push(run);
+    }
   }
   return { status: 200, body: { runs } };
 }

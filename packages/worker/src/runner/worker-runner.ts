@@ -39,6 +39,7 @@ import type {
   TicketState,
   WorkerContext,
 } from '@software-factory/core';
+import { sleepAbortable } from '../utils/sleep';
 
 /** Evidence label under which nested-agent metadata is recorded. */
 export const NESTED_AGENT_EVIDENCE_LABEL = 'nested-agent';
@@ -265,6 +266,12 @@ export async function runTicket(
         payload: { attempt: attempt + 1, reason: `${result.error.kind}: ${result.error.message}` },
       });
       await emitTicketState('retrying', result.error.message);
+      // Honor a server-suggested backoff (e.g. rate-limit `retryAfterMs`) before
+      // the next attempt; the wait is cancellable via the ticket signal.
+      const retryAfterMs = result.error.retryAfterMs;
+      if (typeof retryAfterMs === 'number' && retryAfterMs > 0) {
+        await sleepAbortable(retryAfterMs, params.signal);
+      }
       continue;
     }
 

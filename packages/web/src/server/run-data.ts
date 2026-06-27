@@ -14,6 +14,7 @@
 import {
   computeOperatorMetrics,
   computeRunDiagnostics,
+  isRealRun,
   projectArtifacts,
   projectOperator,
   projectRun,
@@ -113,9 +114,10 @@ export async function loadRunList(): Promise<RunProjection[]> {
     return [];
   }
   const runs = (bodyOf(res).runs as RunProjection[]) ?? [];
-  return [...runs].sort(
-    (a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0) || b.lastSequence - a.lastSequence,
-  );
+  // Defense-in-depth: drop phantom/empty runs even if the API ever returns one.
+  return runs
+    .filter(isRealRun)
+    .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0) || b.lastSequence - a.lastSequence);
 }
 
 /** Read the setup status that drives the blocking/actionable checklist. */

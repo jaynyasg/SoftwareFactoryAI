@@ -48,6 +48,18 @@ interface ParsedArgs {
   readonly flags: ReadonlyMap<string, string | true>;
 }
 
+/**
+ * Known BOOLEAN flags. These are set to `true` without consuming the next token,
+ * so a bare `--json`/`--no-follow` before a positional never swallows it.
+ */
+const BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
+  'json',
+  'follow',
+  'no-follow',
+  'no-spawn',
+  'help',
+]);
+
 /** Minimal argv parser: `--key value`, `--key=value`, `--flag`, `--no-flag`. */
 export function parseArgs(argv: readonly string[]): ParsedArgs {
   const positionals: string[] = [];
@@ -61,6 +73,9 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
       const eq = body.indexOf('=');
       if (eq >= 0) {
         flags.set(body.slice(0, eq), body.slice(eq + 1));
+      } else if (BOOLEAN_FLAGS.has(body)) {
+        // A known boolean flag never consumes the following token (a positional).
+        flags.set(body, true);
       } else if (i + 1 < argv.length && !argv[i + 1].startsWith('--')) {
         flags.set(body, argv[i + 1]);
         i += 1;

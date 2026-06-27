@@ -285,9 +285,19 @@ export function createApp(deps: AppDeps): App {
       await planner(writer, runId, input);
     } catch (error) {
       // `run.created` is already durable; a planning failure must not fail the
-      // request. Keep it observable on the server rather than swallowing it.
+      // request. But it MUST be observable: append a terminal `run.failed` so
+      // clients (CLI `streamRunEvents`, the UI) stop waiting for a `run.planned`
+      // that will never arrive — and surface it on the server too.
       const message = error instanceof Error ? error.message : String(error);
       console.error(`[software-factory] run planning failed for ${runId}: ${message}`);
+      await writer.append({
+        runId,
+        type: 'run.failed',
+        actor: { kind: 'operator', id: 'operator' },
+        subject: { kind: 'run', id: runId },
+        severity: 'error',
+        payload: { reason: `planning failed: ${message}` },
+      });
     }
   }
 

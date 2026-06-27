@@ -31,6 +31,7 @@ import { createPreviewHealthGate } from './preview-health-gate';
 import type { PreviewHealthProbe } from './preview-health-gate';
 import { evaluateDependencies } from '../sandbox/dependency-policy';
 import type { DeclaredDependency, DependencyPolicy } from '../sandbox/dependency-policy';
+import { errorMessage } from '../utils/error';
 
 /** The canonical blocking-gate order. */
 export const DEFAULT_GATE_ORDER = [
@@ -99,10 +100,6 @@ function toEventEvidence(evidence: readonly GateEvidence[]): EventEvidence[] {
   });
 }
 
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 /**
  * Run gates in order with a bounded per-gate retry budget. Stops on the first
  * gate that fails its whole budget, returning structured retry context.
@@ -144,8 +141,8 @@ export async function runGates(
         result = {
           gate: gate.name,
           passed: false,
-          reason: `Gate "${gate.name}" threw: ${messageOf(error)}`,
-          evidence: [{ label: `${gate.name}:error`, detail: messageOf(error) }],
+          reason: `Gate "${gate.name}" threw: ${errorMessage(error)}`,
+          evidence: [{ label: `${gate.name}:error`, detail: errorMessage(error) }],
         };
       }
       lastResult = result;

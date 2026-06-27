@@ -17,6 +17,20 @@ import { getStore } from '../../../server/instance';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
+/**
+ * A cross-origin browser page must not be able to poison the local ledger. Allow
+ * only same-origin/no-Origin requests (the e2e) and loopback dev origins; reject
+ * any other present `Origin`.
+ */
+function isAllowedSeedOrigin(origin: string): boolean {
+  try {
+    const { hostname } = new URL(origin);
+    return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
+  } catch {
+    return false;
+  }
+}
+
 function toAppendable(raw: unknown): AppendableEvent | null {
   if (typeof raw !== 'object' || raw === null) {
     return null;
@@ -55,6 +69,10 @@ function toAppendable(raw: unknown): AppendableEvent | null {
 export async function POST(req: NextRequest): Promise<NextResponse> {
   if (process.env.NODE_ENV === 'production') {
     return NextResponse.json({ error: 'seed_disabled' }, { status: 404 });
+  }
+  const origin = req.headers.get('origin');
+  if (origin !== null && origin.length > 0 && !isAllowedSeedOrigin(origin)) {
+    return NextResponse.json({ error: 'forbidden_origin' }, { status: 403 });
   }
   const body = (await req.json().catch(() => null)) as { events?: unknown[] } | null;
   if (body === null || !Array.isArray(body.events)) {

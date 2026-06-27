@@ -171,6 +171,13 @@ export interface CommandResult {
 export interface CommandRunOptions {
   readonly cwd?: string;
   readonly env?: Readonly<Record<string, string>>;
+  /**
+   * When `true`, the child is spawned with `env` as its EXCLUSIVE environment —
+   * the host `process.env` is NOT merged in. Used by the sandbox so host secrets
+   * never reach untrusted generated code. Default (false/undefined) merges
+   * `process.env` with `env` (the original behavior all other callers rely on).
+   */
+  readonly replaceEnv?: boolean;
   /** Abort signal; an aborted run rejects (normalized to `cancelled`). */
   readonly signal?: AbortSignal;
   /** Hard timeout (ms); an overrun rejects (normalized to `timeout`). */

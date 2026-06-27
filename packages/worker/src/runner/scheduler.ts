@@ -133,9 +133,8 @@ export async function runScheduler<TNode extends ScheduleNode = ScheduleNode>(
   const adapterActor: EventActor = { kind: 'adapter', id: adapter.id, display: adapter.family };
   const schedulerActor: EventActor = { kind: 'worker', id: 'scheduler', display: 'scheduler' };
 
-  const append = (
-    event: Partial<AppendableEvent> & Pick<AppendableEvent, 'type'>,
-  ): Promise<unknown> => store.append({ ...event, runId, timestamp: clock?.() } as AppendableEvent);
+  const append = (event: Omit<AppendableEvent, 'runId' | 'timestamp'>): Promise<unknown> =>
+    store.append({ ...event, runId, timestamp: clock?.() } as AppendableEvent);
 
   const runToken = createCancellation(input.cancellation);
 

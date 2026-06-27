@@ -239,6 +239,7 @@ const FACTOR_LABELS: Readonly<Record<string, string>> = {
   provenanceCompleteness: 'Provenance completeness',
   dependencyRisk: 'Dependency risk (inverted)',
   previewEvidence: 'Preview evidence',
+  sandboxTrust: 'Sandbox trust (reduced on fallback)',
 };
 
 export interface ConfidenceFactorRow {

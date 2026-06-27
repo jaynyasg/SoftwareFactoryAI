@@ -74,6 +74,9 @@ export interface CliAdapterDeps {
 const NOT_LOGGED_IN =
   /\b(not logged in|unauthenticated|please (?:re-?)?login|no (?:active )?session|login required)\b/i;
 
+/** Bounded timeout for the (otherwise unbounded) setup probes, so they can't hang. */
+const PROBE_TIMEOUT_MS = 10_000;
+
 function classifyVersionProbe(result: CommandResult): CliProbeOutcome {
   if (result.code !== 0) {
     return { ok: false, detail: tail(result.stderr || result.stdout) };
@@ -135,6 +138,7 @@ export function createCliAdapter(config: CliAdapterConfig, deps: CliAdapterDeps)
     try {
       versionResult = await runner.run(config.command, config.versionArgs, {
         signal: options.signal,
+        timeoutMs: PROBE_TIMEOUT_MS,
       });
     } catch (error) {
       // A missing executable (ENOENT) or abort surfaces here.
@@ -161,7 +165,10 @@ export function createCliAdapter(config: CliAdapterConfig, deps: CliAdapterDeps)
 
     let authResult: CommandResult;
     try {
-      authResult = await runner.run(config.command, config.authArgs, { signal: options.signal });
+      authResult = await runner.run(config.command, config.authArgs, {
+        signal: options.signal,
+        timeoutMs: PROBE_TIMEOUT_MS,
+      });
     } catch (error) {
       const normalized = normalizeAdapterError(error);
       return {

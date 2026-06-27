@@ -6,7 +6,13 @@ import {
   type EventStore,
   type RunProjection,
 } from '@software-factory/core';
-import { createApp, type ApiRequest, type ApiResponse, type App } from '../../src/server/app';
+import {
+  createApp,
+  type ApiRequest,
+  type ApiResponse,
+  type App,
+  type RunPlanner,
+} from '../../src/server/app';
 
 const TOKEN = 'test-operator-token';
 const CSRF = 'test-csrf-token';
@@ -21,7 +27,7 @@ function deterministic() {
   };
 }
 
-function makeApp(): { app: App; store: EventStore } {
+function makeAppWith(planner?: RunPlanner | null): { app: App; store: EventStore } {
   const store = createInMemoryEventStore(deterministic());
   const provider = createOperatorTokenProvider({
     store: createInMemoryOperatorTokenStore({ token: TOKEN, createdAt: 0 }),
@@ -32,8 +38,14 @@ function makeApp(): { app: App; store: EventStore } {
     operatorToken: provider,
     idGenerator: () => `run-${(runSeq += 1)}`,
     config: { allowedOrigins: [ORIGIN], csrfToken: CSRF },
+    planner,
   });
   return { app, store };
+}
+
+function makeApp(): { app: App; store: EventStore } {
+  // `undefined` planner -> the default genome planner (the real run flow).
+  return makeAppWith(undefined);
 }
 
 function authedHeaders(
@@ -186,5 +198,62 @@ describe('GET /api/setup (read-only)', () => {
     const body = record(res);
     expect(body.operatorToken).toEqual({ present: true });
     expect(body.deploy).toEqual({ status: 'required' });
+  });
+});
+
+describe('POST /api/runs/:id/review autonomous gate is server-authoritative', () => {
+  // A planner that marks the run's only ticket HIGH risk, so the authoritative
+  // gate input comes from server state (not the client body).
+  const highRiskPlanner: RunPlanner = async (sink, runId) => {
+    await sink.append({
+      runId,
+      type: 'ticket.created',
+      actor: { kind: 'supervisor', id: 'supervisor' },
+      subject: { kind: 'ticket', id: 'risky', version: 0 },
+      ticketId: 'risky',
+      severity: 'info',
+      payload: { title: 'Risky migration', riskTier: 'high' },
+    });
+  };
+
+  it('returns 422 human_review_required even when the body claims riskTier:low / mode:human', async () => {
+    const { app, store } = makeAppWith(highRiskPlanner);
+    // The run opts into AUTONOMOUS mode (recorded on run.created server-side).
+    const created = await app.handle(
+      req('POST', '/api/runs', authedHeaders(), { prompt: 'x', reviewMode: 'autonomous' }),
+    );
+    expect(created.status).toBe(201);
+
+    const res = await app.handle(
+      req('POST', '/api/runs/run-1/review', authedHeaders(), {
+        decision: 'approved',
+        // The client LIES about the gate inputs — the server must ignore both.
+        riskTier: 'low',
+        mode: 'human',
+      }),
+    );
+
+    expect(res.status).toBe(422);
+    expect(record(res).error).toBe('human_review_required');
+    // The decision was NOT recorded.
+    const types = (await store.readRun('run-1')).map((e) => e.type);
+    expect(types).not.toContain('review.decided');
+  });
+});
+
+describe('POST /api/runs when planning fails', () => {
+  it('still returns 201, marks the run failed on the ledger, and emits no run.planned', async () => {
+    const explodingPlanner: RunPlanner = () => Promise.reject(new Error('genome load exploded'));
+    const { app, store } = makeAppWith(explodingPlanner);
+
+    const res = await app.handle(req('POST', '/api/runs', authedHeaders(), { prompt: 'x' }));
+    // Run creation succeeds (run.created is durable) even though planning failed.
+    expect(res.status).toBe(201);
+    expect((record(res).run as RunProjection).status).toBe('failed');
+
+    const types = (await store.readRun('run-1')).map((e) => e.type);
+    expect(types).toContain('run.created');
+    expect(types).toContain('run.failed');
+    expect(types).not.toContain('run.planned');
   });
 });
