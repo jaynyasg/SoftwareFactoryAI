@@ -158,6 +158,7 @@ describe('SetupChecklist', () => {
       sandbox: { status: 'unknown' },
       adapters: { status: 'unknown', detected: [] },
       deploy: { status: 'required' },
+      workspace: { root: 'C:\\repo\\software-factory' },
     };
     render(<SetupChecklist setup={setup} />);
     expect(screen.getByTestId('setup-required')).toBeInTheDocument();
@@ -167,11 +168,15 @@ describe('SetupChecklist', () => {
 
 describe('RunControl', () => {
   it('exposes a 1..10 worker cap and labels it system-gated', () => {
-    render(withSession(<RunControl />));
+    render(withSession(<RunControl defaultLocalFolder={'C:\\repo\\software-factory'} />));
     const cap = screen.getByLabelText('Worker cap (1–10)') as HTMLInputElement;
     expect(cap).toHaveAttribute('type', 'range');
     expect(cap).toHaveAttribute('min', '1');
     expect(cap).toHaveAttribute('max', '10');
+    expect(cap).toHaveValue('10');
+    expect(screen.getByLabelText('Effort budget')).toHaveValue('extra high');
+    expect(screen.getByLabelText('Local folder')).toHaveValue('C:\\repo\\software-factory');
+    expect(screen.getByLabelText('GitHub repository')).toBeInTheDocument();
     expect(screen.getByText('upper bound · system-gated')).toBeInTheDocument();
     expect(screen.getByLabelText('Prompt or PRD')).toBeInTheDocument();
   });
@@ -219,12 +224,13 @@ describe('FactoryFloor empty state', () => {
       sandbox: { status: 'unknown' },
       adapters: { status: 'unknown', detected: [] },
       deploy: { status: 'required' },
+      workspace: { root: 'C:\\repo\\software-factory' },
     };
     render(withSession(<FactoryFloor initialRuns={[]} setup={setup} latest={null} />));
 
     expect(screen.getByLabelText('Prompt or PRD')).toBeInTheDocument();
     expect(screen.getByLabelText('Setup checklist')).toBeInTheDocument();
-    expect(screen.getByText('No runs yet')).toBeInTheDocument();
+    expect(screen.getByText('No runs yet.')).toBeInTheDocument();
     // Anti-slop: no fake progress in the empty state.
     expect(screen.queryByRole('progressbar')).toBeNull();
   });

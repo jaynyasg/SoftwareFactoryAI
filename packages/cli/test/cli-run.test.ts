@@ -119,6 +119,7 @@ function makeFakeBackend(opts: { failCreateWith?: ApiError } = {}): FakeBackend 
         sandbox: { status: 'unknown' },
         adapters: { status: 'unknown', detected: [] },
         deploy: { status: 'required' },
+        workspace: { root: 'C:\\repo\\software-factory' },
       });
     },
   };
@@ -211,7 +212,10 @@ describe('run command', () => {
     const { io } = makeIo();
 
     await expect(
-      runCommand({ prompt: 'x', follow: true, json: true }, { client: be.client, io, sleep: noSleep }),
+      runCommand(
+        { prompt: 'x', follow: true, json: true },
+        { client: be.client, io, sleep: noSleep },
+      ),
     ).rejects.toBeInstanceOf(ApiError);
 
     // The create was attempted, but nothing downstream ran: no streaming, no
@@ -308,7 +312,11 @@ describe('start command', () => {
 });
 
 describe('streamRunEvents resume + reconnect', () => {
-  function evt(sequence: number, type: string, payload: Record<string, unknown> = {}): FactoryEvent {
+  function evt(
+    sequence: number,
+    type: string,
+    payload: Record<string, unknown> = {},
+  ): FactoryEvent {
     return {
       version: 1,
       eventId: `e${sequence}`,

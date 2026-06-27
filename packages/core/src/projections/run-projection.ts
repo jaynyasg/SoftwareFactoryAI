@@ -213,6 +213,11 @@ export interface RunProjection {
   /** Human-facing run title from the `run.created` payload, when provided. */
   readonly title?: string;
   readonly prdRef?: string;
+  readonly localFolder?: string;
+  readonly githubRepo?: string;
+  readonly selectedAdapter?: string;
+  readonly modelProfile?: string;
+  readonly reasoningEffort?: string;
   readonly requestedWorkerCap?: number;
   readonly reviewMode?: ReviewMode;
   /** Agent family that initiated the run (from the `run.created` payload). */
@@ -239,6 +244,11 @@ export function projectRun(raw: readonly unknown[], runId?: string): RunProjecti
   let prompt: string | undefined;
   let title: string | undefined;
   let prdRef: string | undefined;
+  let localFolder: string | undefined;
+  let githubRepo: string | undefined;
+  let selectedAdapter: string | undefined;
+  let modelProfile: string | undefined;
+  let reasoningEffort: string | undefined;
   let requestedWorkerCap: number | undefined;
   let reviewMode: ReviewMode | undefined;
   let callerFamily: CallerFamily | undefined;
@@ -259,6 +269,11 @@ export function projectRun(raw: readonly unknown[], runId?: string): RunProjecti
         prompt = event.payload.prompt ?? prompt;
         title = event.payload.title ?? title;
         prdRef = event.payload.prdRef ?? prdRef;
+        localFolder = event.payload.localFolder ?? localFolder;
+        githubRepo = event.payload.githubRepo ?? githubRepo;
+        selectedAdapter = event.payload.selectedAdapter ?? selectedAdapter;
+        modelProfile = event.payload.modelProfile ?? modelProfile;
+        reasoningEffort = event.payload.reasoningEffort ?? reasoningEffort;
         requestedWorkerCap = event.payload.requestedWorkerCap ?? requestedWorkerCap;
         reviewMode = event.payload.reviewMode ?? reviewMode;
         callerFamily = event.payload.callerFamily ?? callerFamily;
@@ -304,6 +319,11 @@ export function projectRun(raw: readonly unknown[], runId?: string): RunProjecti
     prompt,
     title,
     prdRef,
+    localFolder,
+    githubRepo,
+    selectedAdapter,
+    modelProfile,
+    reasoningEffort,
     requestedWorkerCap,
     reviewMode,
     callerFamily,

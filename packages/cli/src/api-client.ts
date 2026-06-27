@@ -68,6 +68,11 @@ export interface CreateRunInput {
   readonly prompt?: string;
   readonly prdRef?: string;
   readonly title?: string;
+  readonly localFolder?: string;
+  readonly githubRepo?: string;
+  readonly selectedAdapter?: string;
+  readonly modelProfile?: string;
+  readonly reasoningEffort?: string;
   readonly requestedWorkerCap?: number;
   readonly reviewMode?: ReviewMode;
   /** Forwarded so nested-agent metadata can be recorded against this run. */
@@ -110,6 +115,7 @@ export interface SetupResult {
   readonly sandbox: { readonly status: string };
   readonly adapters: { readonly status: string; readonly detected: readonly string[] };
   readonly deploy: { readonly status: string };
+  readonly workspace: { readonly root: string };
 }
 
 export interface ApiClient {
@@ -179,7 +185,10 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
     return body;
   }
 
-  async function mutate(path: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+  async function mutate(
+    path: string,
+    payload: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
     const res = await fetchImpl(url(path), {
       method: 'POST',
       headers: mutationHeaders(),
@@ -207,6 +216,11 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
         prompt: input.prompt,
         prdRef: input.prdRef,
         title: input.title,
+        localFolder: input.localFolder,
+        githubRepo: input.githubRepo,
+        selectedAdapter: input.selectedAdapter,
+        modelProfile: input.modelProfile,
+        reasoningEffort: input.reasoningEffort,
         requestedWorkerCap: input.requestedWorkerCap,
         reviewMode: input.reviewMode,
         callerFamily: input.callerFamily,

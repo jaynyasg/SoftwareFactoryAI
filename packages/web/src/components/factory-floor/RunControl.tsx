@@ -2,16 +2,11 @@
 
 /**
  * RunControl — prompt/PRD intake plus the run's operating controls
- * (DESIGN.md §5; plan R1/R5). Prompt/PRD text, execution-adapter selector,
- * model + effort controls, review-mode toggle, and an adaptive worker cap (1–10,
- * explicitly labeled as a system-gated upper bound). It also surfaces the local
- * preview status for an active run and the start/cancel actions, all guarded by
- * the operator token + CSRF.
- *
- * Adapter/model/effort are operator inputs captured for the run request; they are
- * selectors, not ledger-derived state, so the anti-slop "no invented state" rule
- * holds. Only fields the U3 API accepts (prompt/prdRef/title/cap/reviewMode) are
- * persisted; worker selection is consumed by the worker runtime (U5).
+ * (DESIGN.md §5; plan R1/R5). Prompt/PRD text, local/GitHub destination,
+ * execution-adapter selector, model profile + effort budget, review-mode toggle,
+ * and an adaptive worker cap (1–10, explicitly labeled as a system-gated upper
+ * bound). It also surfaces the local preview status for an active run and the
+ * start/cancel actions, all guarded by the operator token + CSRF.
  */
 import { useId, useState } from 'react';
 import type { FormEvent } from 'react';
@@ -28,11 +23,12 @@ const ADAPTERS = [
 
 const MODELS = [
   { id: 'default', label: 'Adapter default' },
-  { id: 'reasoning-high', label: 'Reasoning (high)' },
-  { id: 'reasoning-fast', label: 'Reasoning (fast)' },
+  { id: 'codex-default', label: 'Codex default' },
+  { id: 'claude-default', label: 'Claude default' },
+  { id: 'api-override', label: 'API override' },
 ] as const;
 
-const EFFORTS = ['low', 'medium', 'high'] as const;
+const EFFORTS = ['minimal', 'low', 'medium', 'high', 'extra high', 'maximum'] as const;
 
 const PREVIEW_LABEL: Readonly<Record<PreviewView['status'], string>> = {
   idle: 'not started',
@@ -46,6 +42,7 @@ export function RunControl({
   activeRun,
   preview,
   deploy,
+  defaultLocalFolder,
   onStarted,
   onChanged,
 }: {
@@ -56,6 +53,7 @@ export function RunControl({
   };
   readonly preview?: PreviewView;
   readonly deploy?: DeployView;
+  readonly defaultLocalFolder?: string;
   readonly onStarted?: (runId: string) => void;
   readonly onChanged?: () => void;
 }) {
@@ -64,11 +62,13 @@ export function RunControl({
 
   const [prompt, setPrompt] = useState('');
   const [prdRef, setPrdRef] = useState('');
+  const [localFolder, setLocalFolder] = useState(defaultLocalFolder ?? '');
+  const [githubRepo, setGithubRepo] = useState('');
   const [adapter, setAdapter] = useState<string>(ADAPTERS[0].id);
   const [model, setModel] = useState<string>(MODELS[0].id);
-  const [effort, setEffort] = useState<(typeof EFFORTS)[number]>('medium');
+  const [effort, setEffort] = useState<(typeof EFFORTS)[number]>('extra high');
   const [reviewMode, setReviewMode] = useState<ReviewMode>('human');
-  const [workerCap, setWorkerCap] = useState(5);
+  const [workerCap, setWorkerCap] = useState(10);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -87,6 +87,11 @@ export function RunControl({
       const result = await startRun(session, {
         prompt: prompt.trim() || undefined,
         prdRef: prdRef.trim() || undefined,
+        localFolder: localFolder.trim() || undefined,
+        githubRepo: githubRepo.trim() || undefined,
+        selectedAdapter: adapter,
+        modelProfile: model,
+        reasoningEffort: effort,
         requestedWorkerCap: workerCap,
         reviewMode,
       });
@@ -162,7 +167,34 @@ export function RunControl({
           />
         </div>
 
-        <div className="control-row">
+        <div className="control-row control-row--destinations">
+          <div className="field">
+            <label className="field__label" htmlFor={`${fieldId}-folder`}>
+              Local folder
+            </label>
+            <input
+              id={`${fieldId}-folder`}
+              className="input mono"
+              value={localFolder}
+              onChange={(e) => setLocalFolder(e.target.value)}
+            />
+          </div>
+
+          <div className="field">
+            <label className="field__label" htmlFor={`${fieldId}-github`}>
+              GitHub repository
+            </label>
+            <input
+              id={`${fieldId}-github`}
+              className="input mono"
+              placeholder="owner/repo or https://github.com/owner/repo"
+              value={githubRepo}
+              onChange={(e) => setGithubRepo(e.target.value)}
+            />
+          </div>
+        </div>
+
+        <div className="control-row control-row--runtime">
           <div className="field">
             <label className="field__label" htmlFor={`${fieldId}-adapter`}>
               Execution adapter
@@ -183,7 +215,7 @@ export function RunControl({
 
           <div className="field">
             <label className="field__label" htmlFor={`${fieldId}-model`}>
-              Model
+              Model profile
             </label>
             <select
               id={`${fieldId}-model`}
@@ -200,22 +232,21 @@ export function RunControl({
           </div>
 
           <div className="field">
-            <span className="field__label" id={`${fieldId}-effort-label`}>
-              Effort
-            </span>
-            <div className="seg" role="group" aria-labelledby={`${fieldId}-effort-label`}>
+            <label className="field__label" htmlFor={`${fieldId}-effort`}>
+              Effort budget
+            </label>
+            <select
+              id={`${fieldId}-effort`}
+              className="select"
+              value={effort}
+              onChange={(e) => setEffort(e.target.value as (typeof EFFORTS)[number])}
+            >
               {EFFORTS.map((value) => (
-                <button
-                  key={value}
-                  type="button"
-                  className="seg__btn"
-                  aria-pressed={effort === value}
-                  onClick={() => setEffort(value)}
-                >
+                <option key={value} value={value}>
                   {value}
-                </button>
+                </option>
               ))}
-            </div>
+            </select>
           </div>
 
           <div className="field">

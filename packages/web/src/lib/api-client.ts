@@ -66,6 +66,11 @@ export interface StartRunInput {
   readonly prompt?: string;
   readonly prdRef?: string;
   readonly title?: string;
+  readonly localFolder?: string;
+  readonly githubRepo?: string;
+  readonly selectedAdapter?: string;
+  readonly modelProfile?: string;
+  readonly reasoningEffort?: string;
   readonly requestedWorkerCap?: number;
   readonly reviewMode?: ReviewMode;
 }

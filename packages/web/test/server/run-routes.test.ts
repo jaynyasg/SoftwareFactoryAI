@@ -94,10 +94,37 @@ describe('POST /api/runs', () => {
 
   it('records the caller family on run.created for nested-agent provenance', async () => {
     const { app, store } = makeApp();
-    await app.handle(req('POST', '/api/runs', authedHeaders(), { prompt: 'x', callerFamily: 'codex' }));
+    await app.handle(
+      req('POST', '/api/runs', authedHeaders(), { prompt: 'x', callerFamily: 'codex' }),
+    );
     const created = (await store.readRun('run-1')).find((e) => e.type === 'run.created');
     expect(created?.type).toBe('run.created');
     expect((created?.payload as { callerFamily?: string }).callerFamily).toBe('codex');
+  });
+
+  it('records local destination and runtime controls on run.created', async () => {
+    const { app, store } = makeApp();
+    await app.handle(
+      req('POST', '/api/runs', authedHeaders(), {
+        prompt: 'x',
+        localFolder: 'C:\\repo\\app',
+        githubRepo: 'octo/app',
+        selectedAdapter: 'codex-cli',
+        modelProfile: 'codex-default',
+        reasoningEffort: 'extra high',
+        requestedWorkerCap: 10,
+      }),
+    );
+    const created = (await store.readRun('run-1')).find((e) => e.type === 'run.created');
+    expect(created?.type).toBe('run.created');
+    expect(created?.payload).toMatchObject({
+      localFolder: 'C:\\repo\\app',
+      githubRepo: 'octo/app',
+      selectedAdapter: 'codex-cli',
+      modelProfile: 'codex-default',
+      reasoningEffort: 'extra high',
+      requestedWorkerCap: 10,
+    });
   });
 
   it('does not re-create or re-plan a run for a duplicate idempotency key', async () => {

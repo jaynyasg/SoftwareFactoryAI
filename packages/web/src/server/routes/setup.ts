@@ -19,6 +19,7 @@ async function getSetup(ctx: RouteContext): Promise<ApiResponse> {
       sandbox: { status: 'unknown' },
       adapters: { status: 'unknown', detected: [] as readonly string[] },
       deploy: { status: 'required' },
+      workspace: { root: process.cwd() },
     },
   };
 }

@@ -57,7 +57,9 @@ function parseRequestJson(raw: string): Record<string, unknown> {
   try {
     parsed = JSON.parse(raw);
   } catch (error) {
-    throw new Error(`Invalid JSON request: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(
+      `Invalid JSON request: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
   if (typeof parsed !== 'object' || parsed === null) {
     throw new Error('JSON request must be an object.');
@@ -98,6 +100,11 @@ async function resolveCreateInput(
     prompt: args.prompt ?? str(base.prompt),
     prdRef: str(base.prdRef) ?? (args.prdPath !== undefined ? args.prdPath : undefined),
     title: args.title ?? str(base.title),
+    localFolder: str(base.localFolder),
+    githubRepo: str(base.githubRepo),
+    selectedAdapter: str(base.selectedAdapter),
+    modelProfile: str(base.modelProfile),
+    reasoningEffort: str(base.reasoningEffort),
     requestedWorkerCap: args.workerCap ?? num(base.requestedWorkerCap),
     reviewMode: args.reviewMode ?? reviewMode(base.reviewMode),
     callerFamily: args.callerFamily,

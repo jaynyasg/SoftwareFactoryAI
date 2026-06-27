@@ -90,6 +90,27 @@ export function RunView({
             {run.requestedWorkerCap !== undefined ? (
               <span className="badge">cap {run.requestedWorkerCap}</span>
             ) : null}
+            {run.reasoningEffort ? (
+              <span className="badge">effort: {run.reasoningEffort}</span>
+            ) : null}
+            {run.modelProfile ? <span className="badge">model: {run.modelProfile}</span> : null}
+            {run.selectedAdapter ? (
+              <span className="badge">adapter: {run.selectedAdapter}</span>
+            ) : null}
+          </div>
+          <div className="row">
+            {run.localFolder ? (
+              <>
+                <span className="label">folder</span>
+                <Mono value={run.localFolder} max={42} />
+              </>
+            ) : null}
+            {run.githubRepo ? (
+              <>
+                <span className="label">github</span>
+                <Mono value={run.githubRepo} max={42} />
+              </>
+            ) : null}
           </div>
           {reducedTrust ? (
             <div className="banner banner--warn" role="status" data-testid="run-reduced-trust">

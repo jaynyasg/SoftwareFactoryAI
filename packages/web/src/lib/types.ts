@@ -54,4 +54,5 @@ export interface SetupStatus {
   readonly sandbox: { readonly status: string };
   readonly adapters: { readonly status: string; readonly detected: readonly string[] };
   readonly deploy: { readonly status: string };
+  readonly workspace: { readonly root: string };
 }

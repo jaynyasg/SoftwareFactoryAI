@@ -133,5 +133,6 @@ export async function loadSetup(): Promise<SetupStatus> {
         []) as readonly string[],
     },
     deploy: { status: String((body.deploy as { status?: string })?.status ?? 'required') },
+    workspace: { root: String((body.workspace as { root?: string })?.root ?? process.cwd()) },
   };
 }
