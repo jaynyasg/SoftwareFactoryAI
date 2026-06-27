@@ -61,3 +61,17 @@ export * from './genome/module-contract';
 export * from './genome/module-registry';
 // Lightweight worker-context compiler (resolved inputs + allow-listed tools).
 export * from './genome/context-compiler';
+
+/* U5 — Execution adapters: one contract, normalized errors, BYO/CLI + API */
+
+// The shared ExecutionAdapter contract + CommandRunner abstraction.
+export * from './adapters/execution-adapter';
+// Normalized, discriminated adapter failures + classification helpers.
+export * from './adapters/adapter-errors';
+// Default Node child_process-backed CommandRunner (never required in tests).
+export * from './adapters/node-command-runner';
+// Local/BYO CLI adapters behind the shared contract.
+export * from './adapters/codex-cli-adapter';
+export * from './adapters/claude-code-cli-adapter';
+// Hosted/server-side execution stub behind the same contract.
+export * from './adapters/api-adapter';
