@@ -82,3 +82,14 @@ export * from './adapters/api-adapter';
 export * from './provenance/provenance-bundle';
 // Pure artifact confidence: blended score + factor breakdown the U8 UI renders.
 export * from './provenance/artifact-confidence';
+
+/* U11 — Operator observability: metrics, failure registry, run diagnostics */
+
+// Pure operator metrics (event/projection lag, capacity, queue, adapter, sandbox,
+// gates, preview, deploy, hosted health) derived from events + projections.
+export * from './observability/metrics';
+// Exhaustive failure-class registry: severity/blocking/retryable/rescue + lookups.
+export * from './observability/failure-registry';
+// Per-run diagnostics: projection gaps, stalls, blocked-by-failed-dependency, and
+// active failures joined to their failure-registry rescue actions.
+export * from './observability/run-diagnostics';

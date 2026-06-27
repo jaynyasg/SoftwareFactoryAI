@@ -36,4 +36,13 @@ export default tseslint.config(
       '@typescript-eslint/no-unused-vars': 'off',
     },
   },
+  {
+    // Trusted plain JS/MJS Node scripts (config, fixtures, generators) use Node
+    // globals (console, process, Buffer, ...). TS files already disable no-undef
+    // (tsc handles undefined refs); apply the same here to avoid false positives.
+    files: ['**/*.{js,mjs,cjs}'],
+    rules: {
+      'no-undef': 'off',
+    },
+  },
 );

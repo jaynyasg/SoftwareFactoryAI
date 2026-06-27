@@ -8,7 +8,9 @@
 import type {
   ArtifactView,
   LedgerRow,
+  OperatorMetrics,
   OperatorProjection,
+  RunDiagnosticsReport,
   RunProjection,
   TicketView,
 } from '@software-factory/core';
@@ -29,6 +31,21 @@ export interface RunAggregate {
   readonly lastSequence: number;
   /** Ledger rows with `sequence > afterSequence` (the reconnect/resume slice). */
   readonly tail: readonly LedgerRow[];
+}
+
+/**
+ * The operator-facing aggregate for the /operator dashboard. Distinct from the
+ * user `RunAggregate`: it carries the computed operator metrics and per-run
+ * diagnostics (with joined failure-registry rescue actions) the panels render.
+ * Fully JSON-serializable so the server component can hand it to the panels.
+ */
+export interface OperatorAggregate {
+  readonly runId: string | null;
+  readonly run: RunProjection;
+  readonly operator: OperatorProjection;
+  readonly metrics: OperatorMetrics;
+  readonly diagnostics: RunDiagnosticsReport;
+  readonly tickets: readonly TicketView[];
 }
 
 /** The read-only setup status feeding the checklist (shape of GET /api/setup). */

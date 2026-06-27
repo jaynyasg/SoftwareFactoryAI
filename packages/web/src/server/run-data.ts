@@ -12,6 +12,8 @@
  * projected state derived from real events — never invented state.
  */
 import {
+  computeOperatorMetrics,
+  computeRunDiagnostics,
   projectArtifacts,
   projectOperator,
   projectRun,
@@ -21,9 +23,9 @@ import type { FactoryEvent, RunProjection } from '@software-factory/core';
 import { getApp } from './instance';
 import type { ApiResponse } from './app';
 import { deriveDeploy, derivePreview, deriveReviews } from '../lib/run-view';
-import type { RunAggregate, SetupStatus } from '../lib/types';
+import type { OperatorAggregate, RunAggregate, SetupStatus } from '../lib/types';
 
-export type { RunAggregate, SetupStatus } from '../lib/types';
+export type { OperatorAggregate, RunAggregate, SetupStatus } from '../lib/types';
 
 function bodyOf(res: ApiResponse): Record<string, unknown> {
   return (res.body ?? {}) as Record<string, unknown>;
@@ -70,6 +72,38 @@ export async function loadRunAggregate(
     lastSequence: run.lastSequence,
     tail,
   };
+}
+
+/**
+ * Load the operator-facing aggregate for one run (or the latest run when no id
+ * is given): the operator projection plus the computed operator metrics and
+ * per-run diagnostics the /operator dashboard panels render. Returns `null` when
+ * there is no such run. The dashboard is scoped to a run id so it stays
+ * deterministic and parallel-safe (it never silently follows a newer run).
+ */
+export async function loadOperatorAggregate(runId?: string): Promise<OperatorAggregate | null> {
+  let targetRunId = runId;
+  if (targetRunId === undefined) {
+    const runs = await loadRunList();
+    targetRunId = runs[0]?.runId ?? undefined;
+  }
+  if (targetRunId === undefined) {
+    return null;
+  }
+  const events = await readRunEvents(targetRunId);
+  if (events === null) {
+    return null;
+  }
+  const run = projectRun(events, targetRunId);
+  // A run id with no events is not a real run.
+  if (run.ledger.length === 0) {
+    return null;
+  }
+  const operator = projectOperator(events, targetRunId);
+  const tickets = projectTickets(events, targetRunId).tickets;
+  const metrics = computeOperatorMetrics(events, { runId: targetRunId, now: Date.now() });
+  const diagnostics = computeRunDiagnostics(events, { runId: targetRunId });
+  return { runId: run.runId, run, operator, metrics, diagnostics, tickets };
 }
 
 /** List every projected run (most-recent first). */

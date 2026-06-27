@@ -284,6 +284,29 @@ export function formatTimestamp(ms: number): string {
   return date.toISOString().slice(11, 19);
 }
 
+/** Humanize a millisecond lag/duration into a compact, stable label. */
+export function formatDurationMs(ms: number | undefined): string {
+  if (ms === undefined || !Number.isFinite(ms)) {
+    return '—';
+  }
+  if (ms < 1000) {
+    return `${Math.round(ms)} ms`;
+  }
+  const seconds = ms / 1000;
+  if (seconds < 60) {
+    return `${Math.round(seconds)} s`;
+  }
+  const minutes = seconds / 60;
+  if (minutes < 60) {
+    return `${Math.round(minutes)} min`;
+  }
+  const hours = minutes / 60;
+  if (hours < 48) {
+    return `${Math.round(hours)} h`;
+  }
+  return `${Math.round(hours / 24)} d`;
+}
+
 /**
  * Middle-truncate a long machine value to `max` characters, keeping the head and
  * tail (so a run id / path / url stays recognizable). The full value is always
