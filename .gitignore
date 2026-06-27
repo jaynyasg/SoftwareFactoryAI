@@ -9,3 +9,45 @@
 # OS metadata
 .DS_Store
 Thumbs.db
+
+# Node / pnpm
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+build/
+packages/web/.next/
+out/
+
+# Next.js generates this on dev/build; we commit packages/web/types/next-ambient.d.ts
+# instead so a fresh-checkout typecheck does not depend on build artifacts.
+packages/web/next-env.d.ts
+
+# TypeScript incremental
+*.tsbuildinfo
+
+# Test / coverage artifacts
+coverage/
+playwright-report/
+test-results/
+.vitest/
+
+# Local environment
+.env
+.env.*
+!.env.example
+
+# Factory runtime data (local ledger event store, sandbox workspaces)
+/.factory/
+*.local.jsonl
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Editor
+.idea/
+.vscode/*
+!.vscode/extensions.json

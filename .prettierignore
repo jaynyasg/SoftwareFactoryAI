@@ -1,0 +1,11 @@
+node_modules
+dist
+.next
+coverage
+pnpm-lock.yaml
+*.tsbuildinfo
+packages/web/next-env.d.ts
+# Next.js rewrites this on every build (adds .next/types glob, multi-line arrays);
+# let Next own its formatting so Prettier and Next don't fight over it.
+packages/web/tsconfig.json
+generated-app-template

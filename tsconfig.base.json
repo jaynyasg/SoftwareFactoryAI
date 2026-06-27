@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "moduleDetection": "force",
+    "strict": true,
+    "noImplicitOverride": true,
+    "forceConsistentCasingInFileNames": true,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "declaration": true,
+    "sourceMap": true,
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@software-factory/core": ["packages/core/src/index.ts"],
+      "@software-factory/core/*": ["packages/core/src/*"],
+      "@software-factory/worker": ["packages/worker/src/index.ts"],
+      "@software-factory/worker/*": ["packages/worker/src/*"],
+      "@software-factory/cli": ["packages/cli/src/index.ts"],
+      "@software-factory/cli/*": ["packages/cli/src/*"]
+    }
+  }
+}

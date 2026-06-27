@@ -1,0 +1,15 @@
+/*
+ * Minimal global reset for the scaffold. The full design-token layer
+ * (packages/web/src/styles/tokens.css) and the control-room ledger styling
+ * land in U8, driven by docs/design/DESIGN.md.
+ */
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  font-family: system-ui, -apple-system, sans-serif;
+}
