@@ -34,3 +34,12 @@ export * from './projections/run-projection';
 export * from './projections/ticket-projection';
 export * from './projections/artifact-projection';
 export * from './projections/operator-projection';
+
+/* U3 — Security: operator token, command guard, review policy */
+
+// Loopback operator token/session: generation, constant-time verify, provider.
+export * from './security/operator-token';
+// Pure command guard for mutating actions (token/origin/CSRF/stale-version).
+export * from './security/command-guard';
+// Risk-tier review policy: required approvals + autonomous gating.
+export * from './security/review-policy';
