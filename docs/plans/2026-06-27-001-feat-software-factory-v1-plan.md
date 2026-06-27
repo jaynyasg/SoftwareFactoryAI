@@ -1,7 +1,7 @@
 ---
 title: "feat: Build Software Factory V1"
 type: feat
-status: active
+status: completed
 date: 2026-06-27
 origin: PRD.docx
 ---
