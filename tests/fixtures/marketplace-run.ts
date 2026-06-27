@@ -305,7 +305,7 @@ export function buildMarketplaceRunEvents(runId: string): FactoryEvent[] {
     'warn',
     {
       riskTier: 'high',
-      summary: 'High-risk deploy change requires 2 approvers and is never autonomous.',
+      summary: 'High-risk deploy change requires 2 approvers in human mode.',
     },
     {
       actor: SUPERVISOR,

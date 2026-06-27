@@ -275,7 +275,7 @@ function planTriage(request: RunRequest): RunPlan {
       ? 'The request is underspecified. A human must clarify scope and intent before planning a build.'
       : 'The request intent is unrecognized. A human must confirm scope and intent before planning a build.',
     dependsOn: [],
-    // Above LOW so autonomous mode cannot auto-pass it; building is gated on a human.
+    // Triage keeps an explicit human review mode because the request needs clarification.
     riskTier: 'medium',
     reviewMode: 'human',
   };

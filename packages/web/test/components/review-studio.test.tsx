@@ -3,8 +3,9 @@
  * Review Studio + Decision Card tests (jsdom). They assert the command-guarded
  * review flow: mutating calls carry the operator + CSRF tokens and an
  * expectedVersion; a 409 stale response triggers a reload and an explanation
- * instead of a blind retry; high-risk reviews are labeled "never autonomous";
- * and the actions are keyboard-operable with screen-reader-friendly names (§7).
+ * instead of a blind retry; high-risk reviews show the human-mode approver
+ * requirement; and the actions are keyboard-operable with screen-reader-friendly
+ * names (§7).
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ReactElement } from 'react';
@@ -112,7 +113,7 @@ describe('DecisionCard', () => {
     expect(screen.queryByTestId('decision-outcome')).toBeNull();
   });
 
-  it('labels high risk as never autonomous and is keyboard operable', async () => {
+  it('labels high risk with the human-mode approver requirement and is keyboard operable', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       fakeResponse(200, {
         decision: 'rejected',
@@ -132,7 +133,7 @@ describe('DecisionCard', () => {
 
     const group = screen.getByRole('group', { name: /review decision/i });
     expect(group).toHaveAccessibleName(/high risk/i);
-    expect(screen.getByTestId('decision-risk')).toHaveTextContent(/never autonomous/i);
+    expect(screen.getByTestId('decision-risk')).toHaveTextContent(/2 approvers in human mode/i);
 
     // Keyboard: focus the reject action and activate with Enter.
     const reject = screen.getByRole('button', { name: /reject high-risk review/i });

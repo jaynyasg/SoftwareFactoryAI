@@ -41,7 +41,7 @@ export * from './projections/operator-projection';
 export * from './security/operator-token';
 // Pure command guard for mutating actions (token/origin/CSRF/stale-version).
 export * from './security/command-guard';
-// Risk-tier review policy: required approvals + autonomous gating.
+// Risk-tier review policy: human-mode approvals + no-stop autonomous handling.
 export * from './security/review-policy';
 
 /* U4 — Supervisor, ticket DAG, genome, and lightweight context compiler */

@@ -53,7 +53,7 @@ test('active run renders supervisor, tickets, workers, ledger, review, confidenc
 
   // Review studio with a pending high-risk decision card
   await expect(page.getByRole('heading', { name: 'Review studio' })).toBeVisible();
-  await expect(page.getByTestId('decision-risk')).toContainText('never autonomous');
+  await expect(page.getByTestId('decision-risk')).toContainText('2 approvers in human mode');
 
   // Artifact confidence: blended score AND the factor breakdown
   await expect(page.getByTestId('confidence-score')).toHaveText('72%');

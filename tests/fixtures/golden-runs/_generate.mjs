@@ -278,7 +278,7 @@ add('worker.completed', 'success', { summary: 'package + provenance ready' }, { 
 add(
   'review.requested',
   'warn',
-  { riskTier: 'high', summary: 'High-risk deploy change requires 2 approvers and is never autonomous.' },
+  { riskTier: 'high', summary: 'High-risk deploy change requires 2 approvers in human mode.' },
   { actor: SUPERVISOR, subject: { kind: 'ticket', id: 'deploy', version: 1 }, ticketId: 'deploy', evidence: [{ label: 'render config', ref: 'generated/ai-services-marketplace/render.yaml' }] },
 );
 add(

@@ -1,9 +1,10 @@
 /**
- * Review policy: risk tier -> required human approvals and autonomous gating.
+ * Review policy: risk tier + mode -> required human approvals.
  *
- * Human review is the DEFAULT. Autonomous mode may only auto-pass LOW-risk
- * work; MEDIUM and HIGH always require human review (1 and 2 approvers
- * respectively, per the Ash SWF model). Every function here is pure.
+ * Human review is the DEFAULT, but it only stops for HIGH-risk work. LOW and
+ * MEDIUM work continue without a review stop. Autonomous mode does not stop for
+ * any risk tier; separate command/security policies still block policy-blocked
+ * actions. Every function here is pure.
  */
 import type { ReviewMode, RiskTier } from '../events/event-types';
 
@@ -12,8 +13,8 @@ export const DEFAULT_REVIEW_MODE: ReviewMode = 'human';
 
 /** Human approvers required to pass review at each risk tier. */
 export const REQUIRED_APPROVALS: Readonly<Record<RiskTier, number>> = {
-  low: 1,
-  medium: 1,
+  low: 0,
+  medium: 0,
   high: 2,
 };
 
@@ -24,12 +25,12 @@ export function requiredApprovals(riskTier: RiskTier): number {
 
 /** Whether autonomous mode is ever permitted to auto-pass this tier. */
 export function isAutonomousAllowed(riskTier: RiskTier): boolean {
-  return riskTier === 'low';
+  return riskTier === 'low' || riskTier === 'medium' || riskTier === 'high';
 }
 
 /** Whether a command may auto-approve without a human under the given mode. */
 export function canAutoApprove(riskTier: RiskTier, mode: ReviewMode): boolean {
-  return mode === 'autonomous' && isAutonomousAllowed(riskTier);
+  return mode === 'autonomous' || requiredApprovals(riskTier) === 0;
 }
 
 /** The static review requirement for a risk tier. */
@@ -52,7 +53,7 @@ export function reviewRequirement(riskTier: RiskTier): ReviewRequirement {
 export interface ReviewResolution {
   readonly riskTier: RiskTier;
   readonly mode: ReviewMode;
-  /** True only when autonomous mode may pass without a human (low risk). */
+  /** True when the tier/mode continues without stopping for human review. */
   readonly autoApprove: boolean;
   /** Human approvers still required (0 when `autoApprove`). */
   readonly requiredApprovals: number;
@@ -61,23 +62,18 @@ export interface ReviewResolution {
 }
 
 /**
- * Resolve how a tier is handled under a mode. Autonomous + low risk auto-passes
- * with zero human approvers; everything else falls back to human review with
- * the tier's required approver count.
+ * Resolve how a tier is handled under a mode. Autonomous mode never stops for a
+ * risk tier; human mode stops only for high risk.
  */
 export function resolveReview(riskTier: RiskTier, mode: ReviewMode): ReviewResolution {
   if (canAutoApprove(riskTier, mode)) {
     return { riskTier, mode, autoApprove: true, requiredApprovals: 0 };
   }
-  const humanReviewReason =
-    mode === 'autonomous'
-      ? `Autonomous mode cannot auto-pass ${riskTier}-risk work; human review required.`
-      : 'Human review is the default mode.';
   return {
     riskTier,
     mode,
     autoApprove: false,
     requiredApprovals: requiredApprovals(riskTier),
-    humanReviewReason,
+    humanReviewReason: 'Human mode stops for high-risk work.',
   };
 }

@@ -5,11 +5,11 @@
  *
  * The command guard enforces auth/origin/CSRF and rejects STALE decisions
  * (a decision made against an outdated projected version). The autonomous-gate
- * decision is derived from SERVER state only — the run's `reviewMode` (from the
- * `run.created` event) and the highest projected ticket risk tier — so a client
- * cannot relax the gate by posting `mode:'human'` or `riskTier:'low'`. The client
- * body supplies ONLY the operator's decision (approved/rejected). Medium/high
- * risk can never be auto-approved by an autonomous run. Appends `review.decided`.
+ * decision metadata is derived from SERVER state only — the run's `reviewMode`
+ * (from the `run.created` event) and the highest projected ticket risk tier — so
+ * a client cannot relax the gate by posting `mode:'human'` or `riskTier:'low'`.
+ * Autonomous mode no longer stops for any risk tier; human mode reports approval
+ * requirements only for high-risk work. Appends `review.decided`.
  */
 import {
   DEFAULT_REVIEW_MODE,
@@ -89,12 +89,6 @@ async function decideReview(ctx: RouteContext): Promise<ApiResponse> {
   }
   const mode: ReviewMode = current.reviewMode ?? DEFAULT_REVIEW_MODE;
   const resolution = resolveReview(riskTier, mode);
-  if (mode === 'autonomous' && decision === 'approved' && !resolution.autoApprove) {
-    return {
-      status: 422,
-      body: { error: 'human_review_required', message: resolution.humanReviewReason },
-    };
-  }
 
   await ctx.writer.append({
     runId,

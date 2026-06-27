@@ -49,9 +49,9 @@ export function riskLabel(tier: RiskTier): string {
     case 'low':
       return 'Low risk · auto-merge eligible';
     case 'medium':
-      return 'Medium risk · 1 approver';
+      return 'Medium risk · no human stop';
     case 'high':
-      return 'High risk · 2 approvers · never autonomous';
+      return 'High risk · 2 approvers in human mode';
     default:
       return tier;
   }

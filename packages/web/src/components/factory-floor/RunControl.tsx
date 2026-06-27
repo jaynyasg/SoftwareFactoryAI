@@ -294,14 +294,6 @@ export function RunControl({
           </div>
         </div>
 
-        {reviewMode === 'autonomous' ? (
-          <div className="banner banner--warn" role="status">
-            <span className="banner__body">
-              Autonomous mode still stops for medium/high-risk and policy-blocked actions.
-            </span>
-          </div>
-        ) : null}
-
         {error ? (
           <div className="banner banner--error" role="alert">
             <span className="banner__body">{error}</span>

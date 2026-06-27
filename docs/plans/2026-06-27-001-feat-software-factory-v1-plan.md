@@ -91,7 +91,7 @@ The existing strategy is directionally complete, but it was not yet executable b
 - Bind the local server to loopback by default. Mutating routes require a local operator token/session plus origin, CSRF, and stale-command checks.
 - Keep execution adapters separate from generated-code execution. Local Codex/Claude CLIs run as trusted control-plane processes; generated app install/test/preview commands run in a sandboxed workspace.
 - Implement adaptive worker concurrency as an upper bound, not a promise. The effective active worker count is `min(ready tickets, requested cap, adapter capacity, sandbox capacity, CPU/memory budget, write-scope availability, review policy)`.
-- Default to human review. Autonomous mode is an explicit option and must still stop for high-risk or policy-blocked actions.
+- Default to human review. Human mode stops only for high-risk or policy-blocked actions; autonomous mode does not stop for review risk tiers.
 - Promote local-first: prompt -> plan -> workers -> gates -> local preview -> package/provenance -> Render deploy.
 - Use the wetware POC concepts as architecture fuel for genome, context, boundary, quality, and delivery, but keep V1 lighter than the full graph/vector model.
 - Use Fabro/Sgai reference concepts for workflow graphs, human gates, visible dashboards, skill/API control, durable events, and completion gates without adopting either runtime wholesale.
@@ -323,7 +323,7 @@ Approach:
 - Encode dependencies as a DAG so scaffold, model, and API contracts gate downstream UI and test work.
 - Implement a lightweight genome registry with module versions, required inputs, expected outputs, allowed tools, risk hints, and artifact contracts.
 - Compile worker context from the run request, ticket, previous artifacts, module contract, risk tier, and gate feedback. This is the V1 version of wetware-style context compilation without the full graph/vector store.
-- Default review mode to human. Autonomous mode may only pass low-risk tickets and must pause on higher-risk review requirements.
+- Default review mode to human. Human mode pauses on high-risk review requirements; autonomous mode does not pause on review risk tiers.
 
 Test Scenarios:
 
@@ -520,7 +520,7 @@ Approach:
 - First screen is the actual Factory Floor run surface, not a marketing landing page.
 - Include prompt/PRD intake, local folder selector, execution adapter selector, model and effort controls, review mode control, adaptive worker cap up to 10, local preview status, hosted deploy status, and setup checklist.
 - Show supervisor decisions, worker ticket states, gate evidence, trace severity, artifact confidence, review decisions, deploy logs, and provenance from ledger projections only.
-- Use decision cards for human approvals. Default mode is human review; autonomous mode remains explicit and policy-gated.
+- Use decision cards for human approvals. Default mode is human review; autonomous mode remains explicit and does not pause on review risk tiers.
 - Provide loading, empty, error, success, partial, reduced-trust, setup-required, stale-command, and reconnecting states.
 - Verify desktop, tablet, and mobile layouts with no incoherent overlap and no horizontal scroll from long paths or URLs.
 
@@ -747,7 +747,7 @@ Final integration must run the golden AI Services Marketplace flow through promp
 - The supervisor creates a visible ticket DAG for the AI Services Marketplace app.
 - Workers execute through explicit adapters and emit ledger events.
 - Scheduler supports requested cap 1 through 10 and throttles with evidence when constraints require it.
-- Human review is default; autonomous mode is explicit and policy-gated.
+- Human review is default; autonomous mode is explicit and does not pause on review risk tiers.
 - Generated app passes local install, lint, typecheck, unit tests, Playwright smoke, and preview health before deploy.
 - Review studio shows risk tier, decision cards, trace severity, artifact confidence, diffs/logs, and provenance.
 - Package step produces a valid Git repo artifact with README, handoff, tests summary, provenance bundle, and event evidence.

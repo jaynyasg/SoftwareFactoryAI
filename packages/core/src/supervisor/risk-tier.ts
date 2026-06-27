@@ -2,9 +2,9 @@
  * Risk-tier computation from work signals.
  *
  * The factory's review policy (see `security/review-policy`) maps a `RiskTier`
- * to required human approvals and autonomous gating. This module produces that
- * tier from explicit, boolean work signals so the mapping stays auditable and
- * deterministic.
+ * to human-mode approval requirements and UI risk labels. This module produces
+ * that tier from explicit, boolean work signals so the mapping stays auditable
+ * and deterministic.
  *
  * Baseline is LOW (plain UI/scaffold/test). Work is elevated ABOVE low when it
  * changes dependencies, touches auth/security, changes deploy, or runs a data

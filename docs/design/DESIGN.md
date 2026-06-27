@@ -73,7 +73,7 @@ accent set carries meaning. All text/background pairings below meet WCAG AA (>= 
 | --- | --- | --- |
 | `--risk-low` | `#37b87c` | Low risk — eligible for autonomous/auto-merge under policy |
 | `--risk-medium` | `#e0a93b` | Medium risk — 1 reviewer |
-| `--risk-high` | `#e5604d` | High risk — 2 approvers, never autonomous |
+| `--risk-high` | `#e5604d` | High risk — 2 approvers in human mode |
 
 Every semantic/risk color must be paired with a text label and/or icon. Color is an
 accelerator, not the sole carrier of meaning.

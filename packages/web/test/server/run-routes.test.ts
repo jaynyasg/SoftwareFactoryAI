@@ -228,7 +228,7 @@ describe('GET /api/setup (read-only)', () => {
   });
 });
 
-describe('POST /api/runs/:id/review autonomous gate is server-authoritative', () => {
+describe('POST /api/runs/:id/review policy is server-authoritative', () => {
   // A planner that marks the run's only ticket HIGH risk, so the authoritative
   // gate input comes from server state (not the client body).
   const highRiskPlanner: RunPlanner = async (sink, runId) => {
@@ -243,7 +243,7 @@ describe('POST /api/runs/:id/review autonomous gate is server-authoritative', ()
     });
   };
 
-  it('returns 422 human_review_required even when the body claims riskTier:low / mode:human', async () => {
+  it('allows autonomous high-risk approval while preserving server risk metadata', async () => {
     const { app, store } = makeAppWith(highRiskPlanner);
     // The run opts into AUTONOMOUS mode (recorded on run.created server-side).
     const created = await app.handle(
@@ -260,11 +260,11 @@ describe('POST /api/runs/:id/review autonomous gate is server-authoritative', ()
       }),
     );
 
-    expect(res.status).toBe(422);
-    expect(record(res).error).toBe('human_review_required');
-    // The decision was NOT recorded.
+    expect(res.status).toBe(200);
+    expect(record(res).riskTier).toBe('high');
+    expect(record(res).requiredApprovals).toBe(0);
     const types = (await store.readRun('run-1')).map((e) => e.type);
-    expect(types).not.toContain('review.decided');
+    expect(types).toContain('review.decided');
   });
 });
 

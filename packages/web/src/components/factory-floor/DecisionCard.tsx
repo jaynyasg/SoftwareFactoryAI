@@ -7,10 +7,9 @@
  * Every action sends x-operator-token + x-csrf-token + the run's current
  * `expectedVersion`. A stale decision (the projected version moved underneath the
  * operator) comes back 409; the card then reloads the current projected state and
- * explains what happened instead of silently re-submitting. Autonomous mode can
- * never auto-pass medium/high risk (the server returns 422), which the card
- * surfaces honestly. Both actions are keyboard-operable and expose the risk tier
- * and run in their accessible names for screen readers (§7).
+ * explains what happened instead of silently re-submitting. Both actions are
+ * keyboard-operable and expose the risk tier and run in their accessible names
+ * for screen readers (§7).
  */
 import { useState } from 'react';
 import type { EventEvidence, ReviewDecision, ReviewMode, RiskTier } from '@software-factory/core';
@@ -71,15 +70,6 @@ export function DecisionCard({
         });
         return;
       }
-      if (result.status === 422 || result.error === 'human_review_required') {
-        setPhase({
-          kind: 'error',
-          message:
-            result.message ??
-            'Autonomous mode cannot auto-pass this risk tier; human review is required.',
-        });
-        return;
-      }
       setPhase({ kind: 'error', message: result.message ?? `Review failed (${result.error}).` });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Network error submitting review.';
@@ -97,7 +87,7 @@ export function DecisionCard({
       aria-label={`Review decision · ${riskLabel(riskTier)} · run ${runId}`}
     >
       <div className="ticket-card__head">
-        <span className="ticket-card__title">Human review required</span>
+        <span className="ticket-card__title">Review decision</span>
         <span className={`badge ${riskClass(riskTier)}`} data-testid="decision-risk">
           <span className="badge__dot" aria-hidden="true" />
           {riskLabel(riskTier)}
@@ -141,7 +131,7 @@ export function DecisionCard({
             Recorded: {decided.decision}.{' '}
             {decided.approvals > 0
               ? `${decided.approvals} approver(s) required at this tier.`
-              : 'Auto-passed under policy.'}
+              : 'No human stop required under policy.'}
           </span>
         </div>
       ) : (

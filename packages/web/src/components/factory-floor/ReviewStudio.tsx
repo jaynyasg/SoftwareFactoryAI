@@ -3,8 +3,8 @@
  *
  * Brings together the risk tier, command-guarded decision cards, a trace
  * severity summary, artifact confidence, and provenance so a human can decide
- * whether to trust the work. Pending reviews render as DecisionCards (high risk
- * never auto-merges); decided reviews show their recorded outcome.
+ * whether to trust the work. Pending reviews render as DecisionCards; decided
+ * reviews show their recorded outcome.
  */
 import type { ArtifactView, OperatorSeverityCounts } from '@software-factory/core';
 import type { ReviewItem } from '../../lib/run-view';
@@ -31,7 +31,9 @@ export function ReviewStudio({
   readonly reducedTrust?: boolean;
   readonly onReload?: () => void;
 }) {
-  const pending = reviews.filter((review) => review.status === 'pending');
+  const pending = reviews.filter(
+    (review) => review.status === 'pending' && reviewMode === 'human' && review.riskTier === 'high',
+  );
   const decided = reviews.filter((review) => review.status !== 'pending');
 
   return (
