@@ -1,0 +1,21 @@
+{
+  "id": "ai-brief",
+  "version": "1.0.0",
+  "title": "AI Brief Generation",
+  "description": "Generate an AI brief for each service request via an external model, with a deterministic local fallback when no provider is configured.",
+  "requiredInputs": ["api.contract"],
+  "expectedOutputs": ["ai.brief.generator"],
+  "allowedTools": ["fs.read", "fs.write", "net.fetch"],
+  "riskHint": {
+    "externalNetwork": true
+  },
+  "artifactContracts": [
+    {
+      "key": "ai.brief.generator",
+      "kind": "code",
+      "description": "Brief generation module with a deterministic fallback and persisted AIBrief records.",
+      "required": true
+    }
+  ],
+  "dependsOn": ["api-contract"]
+}

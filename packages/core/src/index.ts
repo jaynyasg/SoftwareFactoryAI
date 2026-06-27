@@ -43,3 +43,21 @@ export * from './security/operator-token';
 export * from './security/command-guard';
 // Risk-tier review policy: required approvals + autonomous gating.
 export * from './security/review-policy';
+
+/* U4 — Supervisor, ticket DAG, genome, and lightweight context compiler */
+
+// Prompt/PRD intake -> normalized, intent-tagged RunRequest.
+export * from './supervisor/run-request';
+// Risk-tier computation from work signals.
+export * from './supervisor/risk-tier';
+// Deterministic planner: planRun (pure) + emitPlan (ledger writer).
+export * from './supervisor/planner';
+// Ticket dependency graph: build, topo order, readyTickets, cycle/missing errors.
+export * from './supervisor/ticket-dag';
+
+// Genome module contract types + runtime validator.
+export * from './genome/module-contract';
+// Module registry: in-memory build + load/validate from a genome directory.
+export * from './genome/module-registry';
+// Lightweight worker-context compiler (resolved inputs + allow-listed tools).
+export * from './genome/context-compiler';

@@ -1,0 +1,21 @@
+{
+  "id": "api-contract",
+  "version": "1.0.0",
+  "title": "API Contract",
+  "description": "Define the API route contracts for creating service requests, submitting proposals, and reading status.",
+  "requiredInputs": ["data.schema"],
+  "expectedOutputs": ["api.contract"],
+  "allowedTools": ["fs.read", "fs.write"],
+  "riskHint": {
+    "tier": "low"
+  },
+  "artifactContracts": [
+    {
+      "key": "api.contract",
+      "kind": "code",
+      "description": "Typed request/response contracts and route handlers for requests, proposals, and status.",
+      "required": true
+    }
+  ],
+  "dependsOn": ["data-model"]
+}

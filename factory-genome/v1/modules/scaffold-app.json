@@ -1,0 +1,21 @@
+{
+  "id": "scaffold-app",
+  "version": "1.0.0",
+  "title": "Scaffold App",
+  "description": "Create the Next.js + TypeScript application skeleton with lint, typecheck, test, and build tooling for the AI Services Marketplace.",
+  "requiredInputs": [],
+  "expectedOutputs": ["app.scaffold"],
+  "allowedTools": ["fs.read", "fs.write", "shell.exec", "pkg.install"],
+  "riskHint": {
+    "tier": "low"
+  },
+  "artifactContracts": [
+    {
+      "key": "app.scaffold",
+      "kind": "code",
+      "description": "Next.js + TypeScript app skeleton with tooling and a runnable dev server.",
+      "required": true
+    }
+  ],
+  "dependsOn": []
+}

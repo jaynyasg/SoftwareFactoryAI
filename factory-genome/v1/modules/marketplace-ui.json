@@ -1,0 +1,21 @@
+{
+  "id": "marketplace-ui",
+  "version": "1.0.0",
+  "title": "Marketplace UI",
+  "description": "Build the customer request flow and the customer, provider, and admin dashboard shells.",
+  "requiredInputs": ["api.contract"],
+  "expectedOutputs": ["ui.marketplace"],
+  "allowedTools": ["fs.read", "fs.write"],
+  "riskHint": {
+    "tier": "low"
+  },
+  "artifactContracts": [
+    {
+      "key": "ui.marketplace",
+      "kind": "code",
+      "description": "Request submission flow and customer/provider/admin dashboard pages and components.",
+      "required": true
+    }
+  ],
+  "dependsOn": ["api-contract"]
+}

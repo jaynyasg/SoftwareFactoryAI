@@ -1,0 +1,21 @@
+{
+  "id": "provider-proposals",
+  "version": "1.0.0",
+  "title": "Provider Proposals",
+  "description": "Let providers submit proposals against a service request and let customers accept or reject them.",
+  "requiredInputs": ["api.contract"],
+  "expectedOutputs": ["feature.proposals"],
+  "allowedTools": ["fs.read", "fs.write"],
+  "riskHint": {
+    "tier": "low"
+  },
+  "artifactContracts": [
+    {
+      "key": "feature.proposals",
+      "kind": "code",
+      "description": "Proposal submission plus customer accept/reject flow with status transitions.",
+      "required": true
+    }
+  ],
+  "dependsOn": ["api-contract"]
+}
