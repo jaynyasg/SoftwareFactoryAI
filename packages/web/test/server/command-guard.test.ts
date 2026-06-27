@@ -35,6 +35,9 @@ function makeApp(): { app: App; store: EventStore; provider: OperatorTokenProvid
     operatorToken: provider,
     idGenerator: () => `run-${(runSeq += 1)}`,
     config: { allowedOrigins: [ORIGIN], csrfToken: CSRF },
+    // This suite asserts exact guard event lists; disable run planning so a
+    // created run is just `run.created` (planning is covered in run-routes.test).
+    planner: null,
   });
   return { app, store, provider };
 }

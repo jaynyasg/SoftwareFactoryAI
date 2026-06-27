@@ -73,7 +73,7 @@ function allowedOrigins(): readonly string[] {
  * `/.factory/` gitignore rule covers it), regardless of which package directory
  * `next dev`/`next start` is launched from.
  */
-function resolveFactoryDir(): string {
+export function resolveFactoryDir(): string {
   const override = process.env.SF_FACTORY_DIR;
   if (override !== undefined && override.length > 0) {
     return override;

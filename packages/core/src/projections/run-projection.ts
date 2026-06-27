@@ -11,6 +11,7 @@
  */
 import { compareEventsBySequence, isFactoryEvent, isKnownEventType } from '../events/event-types';
 import type {
+  CallerFamily,
   EventActor,
   EventEvidence,
   EventSeverity,
@@ -212,6 +213,8 @@ export interface RunProjection {
   readonly prdRef?: string;
   readonly requestedWorkerCap?: number;
   readonly reviewMode?: ReviewMode;
+  /** Agent family that initiated the run (from the `run.created` payload). */
+  readonly callerFamily?: CallerFamily;
   readonly plannedTicketCount?: number;
   readonly startedAt?: number;
   readonly completedAt?: number;
@@ -235,6 +238,7 @@ export function projectRun(raw: readonly unknown[], runId?: string): RunProjecti
   let prdRef: string | undefined;
   let requestedWorkerCap: number | undefined;
   let reviewMode: ReviewMode | undefined;
+  let callerFamily: CallerFamily | undefined;
   let plannedTicketCount: number | undefined;
   let startedAt: number | undefined;
   let completedAt: number | undefined;
@@ -253,6 +257,7 @@ export function projectRun(raw: readonly unknown[], runId?: string): RunProjecti
         prdRef = event.payload.prdRef ?? prdRef;
         requestedWorkerCap = event.payload.requestedWorkerCap ?? requestedWorkerCap;
         reviewMode = event.payload.reviewMode ?? reviewMode;
+        callerFamily = event.payload.callerFamily ?? callerFamily;
         break;
       case 'run.planned':
         status = 'planned';
@@ -296,6 +301,7 @@ export function projectRun(raw: readonly unknown[], runId?: string): RunProjecti
     prdRef,
     requestedWorkerCap,
     reviewMode,
+    callerFamily,
     plannedTicketCount,
     startedAt,
     completedAt,

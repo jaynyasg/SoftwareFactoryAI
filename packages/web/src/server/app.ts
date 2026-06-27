@@ -37,6 +37,10 @@ import { runRoutes } from './routes/runs';
 import { eventRoutes } from './routes/events';
 import { reviewRoutes } from './routes/review';
 import { setupRoutes } from './routes/setup';
+import { createGenomePlanner } from './planner';
+import type { RunPlanInput, RunPlanner } from './planner';
+
+export type { RunPlanInput, RunPlanner } from './planner';
 
 /* ----------------------------------------------------------------------------
  * Transport types
@@ -87,6 +91,15 @@ export interface AppDeps {
   readonly idGenerator?: () => string;
   /** Origin/CSRF configuration. */
   readonly config?: AppConfig;
+  /**
+   * Planner invoked after `run.created` to emit the supervisor decisions, ticket
+   * DAG, and `run.planned` capstone into the same store. Defaults to the
+   * genome-backed supervisor planner (`createGenomePlanner`). Pass `null` to
+   * disable planning entirely (e.g. a unit test asserting only `run.created`).
+   */
+  readonly planner?: RunPlanner | null;
+  /** Genome directory for the default planner. Defaults to `resolveGenomeDir()`. */
+  readonly genomeDir?: string;
 }
 
 /* ----------------------------------------------------------------------------
@@ -122,6 +135,13 @@ export interface RouteContext {
    * allowed it resolves to `null` and the caller proceeds.
    */
   guardMutation(input: GuardMutationInput): Promise<ApiResponse | null>;
+  /**
+   * Plan a just-created run into the store (supervisor.decision + ticket.created
+   * + run.planned). Idempotent and a no-op when planning is disabled. Never
+   * throws into the request path — planning failures are logged, not fatal,
+   * because `run.created` is already durable.
+   */
+  planRun(runId: string, input: RunPlanInput): Promise<void>;
 }
 
 export type RouteHandler = (ctx: RouteContext) => Promise<ApiResponse>;
@@ -253,6 +273,24 @@ export function createApp(deps: AppDeps): App {
   const reader = createEventReader(store);
   const writer = createEventWriter(store);
 
+  // `undefined` -> default genome planner; `null` -> planning disabled.
+  const planner: RunPlanner | null =
+    deps.planner === undefined ? createGenomePlanner({ genomeDir: deps.genomeDir }) : deps.planner;
+
+  async function planRun(runId: string, input: RunPlanInput): Promise<void> {
+    if (planner === null) {
+      return;
+    }
+    try {
+      await planner(writer, runId, input);
+    } catch (error) {
+      // `run.created` is already durable; a planning failure must not fail the
+      // request. Keep it observable on the server rather than swallowing it.
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[software-factory] run planning failed for ${runId}: ${message}`);
+    }
+  }
+
   const routes: RouteDef[] = [
     ...runRoutes(),
     ...eventRoutes(),
@@ -327,6 +365,7 @@ export function createApp(deps: AppDeps): App {
       idGenerator,
       config,
       guardMutation: (input) => guardMutation(request, input),
+      planRun,
     };
   }
 

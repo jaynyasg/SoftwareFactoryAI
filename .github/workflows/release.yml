@@ -1,0 +1,91 @@
+name: Release CLI
+
+# Build the `software-factory` CLI and attach the artifact to a GitHub Release
+# when a version tag is pushed. npm publishing is intentionally DEFERRED — this
+# workflow only builds and uploads the artifact; it never runs `npm publish`.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag/name for a manual release build'
+        required: false
+        default: 'manual'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-cli:
+    name: build + attach CLI artifact
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Gate the release on the same checks CI runs.
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      # Build the CLI to packages/cli/dist. The `build` script fetches tsup +
+      # typescript ephemerally via `pnpm dlx`, so they stay out of the frozen
+      # lockfile; tsup auto-loads packages/cli/tsup.config.ts.
+      - name: Build CLI
+        run: pnpm --filter @software-factory/cli build
+
+      - name: Verify build output
+        run: test -f packages/cli/dist/index.js
+
+      - name: Package artifact
+        id: package
+        run: |
+          TAG="${GITHUB_REF_NAME:-${{ github.event.inputs.tag }}}"
+          OUT="software-factory-cli-${TAG}.tgz"
+          tar -czf "$OUT" -C packages/cli dist package.json
+          echo "artifact=$OUT" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Create or update GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.package.outputs.tag }}"
+          ARTIFACT="${{ steps.package.outputs.artifact }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$ARTIFACT" --clobber
+          else
+            gh release create "$TAG" "$ARTIFACT" \
+              --title "software-factory CLI $TAG" \
+              --notes "Standalone \`software-factory\` CLI build. Run with \`node dist/index.js\`. npm publishing is deferred."
+          fi
+
+      - name: Upload workflow artifact (manual runs)
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: software-factory-cli
+          path: packages/cli/dist

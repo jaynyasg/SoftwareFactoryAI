@@ -79,6 +79,9 @@ export type EmptyPayload = Record<string, never>;
  * Payloads by family
  * ------------------------------------------------------------------------- */
 
+/** Agent family that initiated a run (e.g. via the CLI `--caller-family` flag). */
+export type CallerFamily = 'claude' | 'codex' | 'api';
+
 // run
 export interface RunCreatedPayload {
   readonly prompt?: string;
@@ -86,6 +89,12 @@ export interface RunCreatedPayload {
   readonly title?: string;
   readonly requestedWorkerCap?: number;
   readonly reviewMode?: ReviewMode;
+  /**
+   * The agent family that initiated the run (CLI/skill `--caller-family`).
+   * Recorded as nested-agent provenance so the worker runner can later detect a
+   * nested execution when the selected adapter family matches this caller.
+   */
+  readonly callerFamily?: CallerFamily;
 }
 export interface RunPlannedPayload {
   readonly ticketCount: number;

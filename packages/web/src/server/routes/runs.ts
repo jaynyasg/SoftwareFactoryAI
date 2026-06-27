@@ -11,7 +11,13 @@
  * (starting nothing).
  */
 import { projectRun } from '@software-factory/core';
-import type { AppendableEvent, ReviewMode, RunProjection } from '@software-factory/core';
+import type {
+  AppendableEvent,
+  CallerFamily,
+  ReviewMode,
+  RunCreatedPayload,
+  RunProjection,
+} from '@software-factory/core';
 import type { ApiResponse, RouteContext, RouteDef } from '../app';
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -30,6 +36,10 @@ function reviewMode(value: unknown): ReviewMode | undefined {
   return value === 'autonomous' || value === 'human' ? value : undefined;
 }
 
+function callerFamily(value: unknown): CallerFamily | undefined {
+  return value === 'claude' || value === 'codex' || value === 'api' ? value : undefined;
+}
+
 async function createRun(ctx: RouteContext): Promise<ApiResponse> {
   const body = asRecord(ctx.request.body);
   const candidateRunId = ctx.idGenerator();
@@ -42,6 +52,14 @@ async function createRun(ctx: RouteContext): Promise<ApiResponse> {
     return denial;
   }
 
+  const payload: RunCreatedPayload = {
+    prompt: str(body.prompt),
+    prdRef: str(body.prdRef),
+    title: str(body.title),
+    requestedWorkerCap: num(body.requestedWorkerCap),
+    reviewMode: reviewMode(body.reviewMode),
+    callerFamily: callerFamily(body.callerFamily),
+  };
   const created: AppendableEvent = {
     runId: candidateRunId,
     type: 'run.created',
@@ -49,16 +67,23 @@ async function createRun(ctx: RouteContext): Promise<ApiResponse> {
     subject: { kind: 'run', id: candidateRunId, version: 0 },
     severity: 'info',
     idempotencyKey: str(body.idempotencyKey),
-    payload: {
-      prompt: str(body.prompt),
-      prdRef: str(body.prdRef),
-      title: str(body.title),
-      requestedWorkerCap: num(body.requestedWorkerCap),
-      reviewMode: reviewMode(body.reviewMode),
-    },
+    payload,
   };
   const result = await ctx.writer.append(created);
   const runId = result.event.runId;
+
+  // Plan the run into the SAME store so the CLI and UI both see a ticket DAG.
+  // A dedup re-create carries the same idempotency key (hence the same request),
+  // so re-planning from `payload` is correct; `emitPlan` is idempotent and dupes
+  // nothing.
+  await ctx.planRun(runId, {
+    prompt: payload.prompt,
+    prdRef: payload.prdRef,
+    title: payload.title,
+    requestedWorkerCap: payload.requestedWorkerCap,
+    reviewMode: payload.reviewMode,
+  });
+
   const run = projectRun(await ctx.reader.readRun(runId), runId);
   return {
     status: result.deduplicated ? 200 : 201,
