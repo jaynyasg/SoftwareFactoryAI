@@ -1,15 +1,91 @@
 /*
- * Minimal global reset for the scaffold. The full design-token layer
- * (packages/web/src/styles/tokens.css) and the control-room ledger styling
- * land in U8, driven by docs/design/DESIGN.md.
+ * Global base for the factory shell. Tokens live in styles/tokens.css and the
+ * control-room component styling lives in styles/factory-floor.css; both are
+ * imported from layout.tsx. This file owns only the reset, base element styling,
+ * accessibility primitives (focus ring, reduced-motion, screen-reader-only), and
+ * the responsive container.
  */
-:root {
-  color-scheme: dark;
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
 }
 
 html,
 body {
   margin: 0;
   padding: 0;
-  font-family: system-ui, -apple-system, sans-serif;
+}
+
+body {
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-prose);
+  font-weight: var(--fw-body);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  /* §8 Never allow long ids/paths/urls to scroll the whole page sideways. */
+  overflow-x: hidden;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  margin: 0;
+  font-weight: var(--fw-heading);
+  line-height: 1.25;
+}
+
+p {
+  margin: 0;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+/* §7 Visible focus ring on every interactive element. */
+:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
+  border-radius: var(--radius-sm);
+}
+
+/* §7 Respect reduced-motion; disable non-essential transitions. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Screen-reader-only utility (visible to AT, not on screen). */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }

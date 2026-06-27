@@ -1,11 +1,28 @@
-export default function Page() {
+/**
+ * Factory Floor home (server component). The FIRST screen is the run surface:
+ * it loads the projected run list, the setup status, and the latest run's
+ * aggregate, mints/loads the loopback session, and hands them to the client
+ * FactoryFloor. All reads go through the same projections the API exposes.
+ */
+import { getLocalSession } from '../server/instance';
+import { loadRunAggregate, loadRunList, loadSetup } from '../server/run-data';
+import { SessionProvider } from '../components/session-context';
+import { AppShell } from '../components/AppShell';
+import { FactoryFloor } from '../components/factory-floor/FactoryFloor';
+import type { RunAggregate } from '../lib/types';
+
+export const dynamic = 'force-dynamic';
+
+export default async function Page() {
+  const [session, runs, setup] = await Promise.all([getLocalSession(), loadRunList(), loadSetup()]);
+  const latestId = runs[0]?.runId ?? null;
+  const latest: RunAggregate | null = latestId !== null ? await loadRunAggregate(latestId) : null;
+
   return (
-    <main>
-      <h1>Software Factory</h1>
-      <p>
-        Factory Floor control room scaffold is in place. The run surface, supervisor panel, worker
-        board, trace ledger, review studio, and deploy status are implemented in U8.
-      </p>
-    </main>
+    <SessionProvider session={session}>
+      <AppShell>
+        <FactoryFloor initialRuns={runs} setup={setup} latest={latest} />
+      </AppShell>
+    </SessionProvider>
   );
 }
