@@ -309,6 +309,17 @@ describe('start command', () => {
     expect(result.status).toBe('unavailable');
     expect(result.message).toContain('pnpm dev');
   });
+
+  it('reports cloud guidance for unreachable remote backends', async () => {
+    const { io } = makeIo();
+    const result = await startCommand(
+      { baseUrl: 'https://factory.example.com', spawn: false },
+      { io, fetchImpl: fetchReturning(false) },
+    );
+    expect(result.status).toBe('unavailable');
+    expect(result.message).toContain('cloud backend');
+    expect(result.message).not.toContain('pnpm dev');
+  });
 });
 
 describe('streamRunEvents resume + reconnect', () => {

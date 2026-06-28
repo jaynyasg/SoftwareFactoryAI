@@ -28,6 +28,7 @@ function classify(status: string, ok: readonly string[], pending: readonly strin
 }
 
 function buildItems(setup: SetupStatus): ChecklistItem[] {
+  const runtimeMode = setup.runtime?.mode === 'cloud' ? 'cloud' : 'local';
   const tokenMark: Mark = setup.operatorToken.present ? 'ok' : 'action';
   const sandboxMark = classify(
     setup.sandbox.status,
@@ -40,13 +41,17 @@ function buildItems(setup: SetupStatus): ChecklistItem[] {
   return [
     {
       key: 'operator-token',
-      label: 'Local operator token',
+      label: runtimeMode === 'cloud' ? 'Cloud operator token' : 'Local operator token',
       mark: tokenMark,
       blocking: tokenMark !== 'ok',
       detail:
         tokenMark === 'ok'
-          ? 'Loopback operator token is ready; mutating actions are authorized for you.'
-          : 'Start the local server so an operator token is minted before running commands.',
+          ? runtimeMode === 'cloud'
+            ? 'Hosted operator token is configured; remote CLI and skill calls can authenticate.'
+            : 'Loopback operator token is ready; mutating actions are authorized for you.'
+          : runtimeMode === 'cloud'
+            ? 'Set SF_OPERATOR_TOKEN in the cloud environment before running commands.'
+            : 'Start the local server so an operator token is minted before running commands.',
     },
     {
       key: 'sandbox',

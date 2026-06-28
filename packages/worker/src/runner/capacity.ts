@@ -2,7 +2,7 @@
  * Pure adaptive-capacity computation for the worker scheduler.
  *
  * Effective concurrency is the minimum across every constraint:
- *   min(readyTickets, requestedCap∈[1,10], adapterCapacity, sandboxCapacity,
+ *   min(readyTickets, requestedCap in [1,20], adapterCapacity, sandboxCapacity,
  *       resourceBudget, writeScopeAvailable, reviewPolicyLimit)
  *
  * The result also explains WHY capacity landed where it did (`boundBy`) and, more
@@ -17,7 +17,7 @@
 
 /** Lower/upper bounds for the operator-requested worker cap. */
 export const MIN_WORKER_CAP = 1;
-export const MAX_WORKER_CAP = 10;
+export const MAX_WORKER_CAP = 20;
 
 /** The named constraints that can bound effective capacity. */
 export type CapacityConstraintName =
@@ -51,7 +51,7 @@ export interface CapacityConstraints {
 export interface EffectiveCapacity {
   /** Workers that may run concurrently right now (>= 0). */
   readonly capacity: number;
-  /** The operator-requested cap after clamping to [1, 10]. */
+  /** The operator-requested cap after clamping to [1, 20]. */
   readonly requested: number;
   /** The constraint that determined `capacity`. */
   readonly boundBy: CapacityConstraintName;

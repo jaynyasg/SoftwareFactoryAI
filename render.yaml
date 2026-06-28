@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: software-factory
+    runtime: node
+    plan: starter
+    buildCommand: corepack enable && corepack pnpm@10.27.0 install --frozen-lockfile && corepack pnpm@10.27.0 --filter @software-factory/web build
+    startCommand: corepack pnpm@10.27.0 --filter @software-factory/web start -- -H 0.0.0.0 -p $PORT
+    healthCheckPath: /api/setup
+    envVars:
+      - key: NODE_VERSION
+        value: 22.12.0
+      - key: SF_RUNTIME
+        value: cloud
+      - key: SF_FACTORY_DIR
+        value: /var/data/.factory
+      - key: SF_OPERATOR_TOKEN
+        generateValue: true
+      - key: SF_PUBLIC_BASE_URL
+        sync: false
+    disk:
+      name: software-factory-ledger
+      mountPath: /var/data
+      sizeGB: 1

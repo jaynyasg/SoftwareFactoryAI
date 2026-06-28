@@ -31,7 +31,9 @@ function ActiveRun({ aggregate }: { readonly aggregate: RunAggregate }) {
       </header>
       <div className="panel__body active-run__body">
         <div className="stack" style={{ gap: 'var(--space-4)' }}>
-          <span className="active-run__title">{run.prompt ?? run.prdRef ?? 'Untitled run'}</span>
+          <span className="active-run__title">
+            {run.prompt ?? run.prdRef ?? (run.prdText ? 'PRD content attached' : 'Untitled run')}
+          </span>
           <Mono value={run.runId ?? runId} max={28} copyable={false} />
         </div>
         <div className="run-metrics" aria-label="Run metrics">
@@ -75,9 +77,20 @@ export function FactoryFloor({
   const router = useRouter();
   const [historyCleared, setHistoryCleared] = useState(false);
   const visibleRuns = historyCleared ? [] : initialRuns;
+  const operatorHref =
+    latest?.run.runId !== undefined && latest.run.runId !== null
+      ? `/operator?runId=${encodeURIComponent(latest.run.runId)}`
+      : '/operator';
 
   return (
     <div className="factory-screen">
+      <div className="factory-screen__nav" aria-label="Factory view switcher">
+        <span className="label">Factory floor</span>
+        <Link className="btn btn--sm btn--ghost" href={operatorHref}>
+          Operator view
+        </Link>
+      </div>
+
       <div className="factory-screen__top">
         <RunControl
           defaultLocalFolder={setup.workspace.root}

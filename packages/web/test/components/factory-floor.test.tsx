@@ -167,18 +167,21 @@ describe('SetupChecklist', () => {
 });
 
 describe('RunControl', () => {
-  it('exposes a 1..10 worker cap and labels it system-gated', () => {
+  it('exposes a 1..20 worker cap, defaults to 10, and labels it system-gated', () => {
     render(withSession(<RunControl defaultLocalFolder={'C:\\repo\\software-factory'} />));
-    const cap = screen.getByLabelText('Worker cap (1–10)') as HTMLInputElement;
+    const cap = screen.getByLabelText('Worker cap (1–20)') as HTMLInputElement;
     expect(cap).toHaveAttribute('type', 'range');
     expect(cap).toHaveAttribute('min', '1');
-    expect(cap).toHaveAttribute('max', '10');
+    expect(cap).toHaveAttribute('max', '20');
     expect(cap).toHaveValue('10');
     expect(screen.getByLabelText('Effort budget')).toHaveValue('extra high');
     expect(screen.getByLabelText('Local folder')).toHaveValue('C:\\repo\\software-factory');
     expect(screen.getByLabelText('GitHub repository')).toBeInTheDocument();
     expect(screen.getByText('upper bound · system-gated')).toBeInTheDocument();
-    expect(screen.getByLabelText('Prompt or PRD')).toBeInTheDocument();
+    expect(screen.getByLabelText('Prompt (optional)')).toBeInTheDocument();
+    expect(screen.getByLabelText('PRD (optional)')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Browse PRD' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Browse' })).toBeInTheDocument();
   });
 });
 
@@ -228,7 +231,12 @@ describe('FactoryFloor empty state', () => {
     };
     render(withSession(<FactoryFloor initialRuns={[]} setup={setup} latest={null} />));
 
-    expect(screen.getByLabelText('Prompt or PRD')).toBeInTheDocument();
+    expect(screen.getByLabelText('Prompt (optional)')).toBeInTheDocument();
+    expect(screen.getByLabelText('PRD (optional)')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Operator view' })).toHaveAttribute(
+      'href',
+      '/operator',
+    );
     expect(screen.getByLabelText('Setup checklist')).toBeInTheDocument();
     expect(screen.getByText('No runs yet.')).toBeInTheDocument();
     // Anti-slop: no fake progress in the empty state.

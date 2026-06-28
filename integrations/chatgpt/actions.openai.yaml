@@ -1,0 +1,212 @@
+openapi: 3.1.0
+info:
+  title: Software Factory Action
+  version: 0.1.0
+  description: |
+    ChatGPT Action schema for calling a hosted Software Factory instance.
+    Replace the server URL with your deployed factory URL and configure API key
+    authentication with header name `x-operator-token`.
+servers:
+  - url: https://YOUR_FACTORY_HOST
+security:
+  - OperatorToken: []
+paths:
+  /api/setup:
+    get:
+      operationId: getSetup
+      summary: Read factory setup/runtime status.
+      responses:
+        '200':
+          description: Setup status.
+          content:
+            application/json:
+              schema:
+                type: object
+  /api/runs:
+    get:
+      operationId: listRuns
+      summary: List Software Factory runs.
+      responses:
+        '200':
+          description: Projected runs.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  runs:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/RunProjection'
+    post:
+      operationId: createRun
+      summary: Create a Software Factory run from a prompt and/or PRD.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRunRequest'
+      responses:
+        '201':
+          description: Run created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateRunResponse'
+        '200':
+          description: Duplicate idempotency key returned the existing run.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateRunResponse'
+  /api/runs/{runId}:
+    get:
+      operationId: getRun
+      summary: Read one projected run.
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      responses:
+        '200':
+          description: Projected run.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  run:
+                    $ref: '#/components/schemas/RunProjection'
+  /api/runs/{runId}/events:
+    get:
+      operationId: getRunEvents
+      summary: Read the ordered ledger events for one run.
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      responses:
+        '200':
+          description: Ordered event log.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  runId:
+                    type: string
+                  events:
+                    type: array
+                    items:
+                      type: object
+  /api/runs/{runId}/cancel:
+    post:
+      operationId: cancelRun
+      summary: Cancel a run.
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - expectedVersion
+              properties:
+                expectedVersion:
+                  type: integer
+                  minimum: 0
+                reason:
+                  type: string
+      responses:
+        '200':
+          description: Run cancelled.
+          content:
+            application/json:
+              schema:
+                type: object
+components:
+  securitySchemes:
+    OperatorToken:
+      type: apiKey
+      in: header
+      name: x-operator-token
+      description: Value of the hosted factory's `SF_OPERATOR_TOKEN`.
+  parameters:
+    RunId:
+      name: runId
+      in: path
+      required: true
+      schema:
+        type: string
+  schemas:
+    CreateRunRequest:
+      type: object
+      properties:
+        prompt:
+          type: string
+        prdRef:
+          type: string
+        prdText:
+          type: string
+        title:
+          type: string
+        localFolder:
+          type: string
+        githubRepo:
+          type: string
+        selectedAdapter:
+          type: string
+        modelProfile:
+          type: string
+        reasoningEffort:
+          type: string
+        requestedWorkerCap:
+          type: integer
+          minimum: 1
+          maximum: 20
+          default: 10
+        reviewMode:
+          type: string
+          enum:
+            - human
+            - autonomous
+        callerFamily:
+          type: string
+          enum:
+            - api
+            - codex
+            - claude
+        idempotencyKey:
+          type: string
+      additionalProperties: false
+    CreateRunResponse:
+      type: object
+      properties:
+        runId:
+          type: string
+        deduplicated:
+          type: boolean
+        run:
+          $ref: '#/components/schemas/RunProjection'
+    RunProjection:
+      type: object
+      properties:
+        runId:
+          type: string
+        title:
+          type: string
+        status:
+          type: string
+        reviewMode:
+          type: string
+        callerFamily:
+          type: string
+        plannedTicketCount:
+          type: integer
+        requestedWorkerCap:
+          type: integer
+        lastSequence:
+          type: integer
+        ledger:
+          type: array
+          items:
+            type: object

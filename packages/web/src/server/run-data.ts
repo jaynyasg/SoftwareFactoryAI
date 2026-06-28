@@ -134,5 +134,20 @@ export async function loadSetup(): Promise<SetupStatus> {
     },
     deploy: { status: String((body.deploy as { status?: string })?.status ?? 'required') },
     workspace: { root: String((body.workspace as { root?: string })?.root ?? process.cwd()) },
+    runtime: {
+      mode: String((body.runtime as { mode?: string })?.mode ?? 'local'),
+      publicBaseUrl:
+        typeof (body.runtime as { publicBaseUrl?: unknown })?.publicBaseUrl === 'string'
+          ? String((body.runtime as { publicBaseUrl?: string }).publicBaseUrl)
+          : undefined,
+      factoryDir:
+        typeof (body.runtime as { factoryDir?: unknown })?.factoryDir === 'string'
+          ? String((body.runtime as { factoryDir?: string }).factoryDir)
+          : undefined,
+      operatorTokenSource:
+        typeof (body.runtime as { operatorTokenSource?: unknown })?.operatorTokenSource === 'string'
+          ? String((body.runtime as { operatorTokenSource?: string }).operatorTokenSource)
+          : undefined,
+    },
   };
 }

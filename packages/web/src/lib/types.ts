@@ -55,4 +55,10 @@ export interface SetupStatus {
   readonly adapters: { readonly status: string; readonly detected: readonly string[] };
   readonly deploy: { readonly status: string };
   readonly workspace: { readonly root: string };
+  readonly runtime?: {
+    readonly mode?: string;
+    readonly publicBaseUrl?: string;
+    readonly factoryDir?: string;
+    readonly operatorTokenSource?: string;
+  };
 }

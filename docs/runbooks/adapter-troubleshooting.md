@@ -19,16 +19,16 @@ Every raw spawn/exec/transport failure funnels through `normalizeAdapterError`
 into one closed set. Retryable kinds may recover from a bounded retry; terminal
 kinds need a fix first.
 
-| Kind | Retryable | Typical cause | Rescue |
-| --- | --- | --- | --- |
-| `rate_limited` | yes | provider 429 / "too many requests" | Wait for the advertised backoff; reduce the worker cap; re-run. |
-| `timeout` | yes | slow model / network deadline | Re-run; check connectivity; raise the timeout if configurable. |
-| `malformed_output` | yes | unparseable adapter output | Re-run; if persistent, inspect the adapter version / prompt. |
-| `unavailable` | no | CLI not installed (`ENOENT`), unclassified failure | Install/select the CLI; confirm it is on `PATH`. |
-| `unauthenticated` | no | not logged in / bad API key (401/403) | Re-authenticate (see below) then re-run. |
-| `usage_limited` | no | quota / out of credits / billing | Resolve billing/quota with the provider; switch adapter. |
-| `tool_denied` | no | permission denied (`EACCES`/`EPERM`), tool blocked | Grant the permission or adjust policy; do not bypass security. |
-| `cancelled` | n/a | operator/run cancellation (`AbortError`) | Not a fault; re-run if unintended. |
+| Kind               | Retryable | Typical cause                                      | Rescue                                                          |
+| ------------------ | --------- | -------------------------------------------------- | --------------------------------------------------------------- |
+| `rate_limited`     | yes       | provider 429 / "too many requests"                 | Wait for the advertised backoff; reduce the worker cap; re-run. |
+| `timeout`          | yes       | slow model / network deadline                      | Re-run; check connectivity; raise the timeout if configurable.  |
+| `malformed_output` | yes       | unparseable adapter output                         | Re-run; if persistent, inspect the adapter version / prompt.    |
+| `unavailable`      | no        | CLI not installed (`ENOENT`), unclassified failure | Install/select the CLI; confirm it is on `PATH`.                |
+| `unauthenticated`  | no        | not logged in / bad API key (401/403)              | Re-authenticate (see below) then re-run.                        |
+| `usage_limited`    | no        | quota / out of credits / billing                   | Resolve billing/quota with the provider; switch adapter.        |
+| `tool_denied`      | no        | permission denied (`EACCES`/`EPERM`), tool blocked | Grant the permission or adjust policy; do not bypass security.  |
+| `cancelled`        | n/a       | operator/run cancellation (`AbortError`)           | Not a fault; re-run if unintended.                              |
 
 ## Symptom → fix
 
@@ -72,7 +72,7 @@ adaptive behavior — the worker cap is an **upper bound**, computed as
 `min(ready tickets, requested cap, adapter capacity, sandbox capacity, CPU/memory
 budget, write-scope availability, review policy)`. To raise effective capacity,
 free system resources or lower contention; the cap itself stays operator-set
-(1–10).
+(1–20, default 10).
 
 ## Nested-agent note
 

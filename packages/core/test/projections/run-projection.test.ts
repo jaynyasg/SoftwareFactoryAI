@@ -51,6 +51,7 @@ describe('projectRun', () => {
       lifecycle('run.created', {
         prompt: 'build a marketplace',
         prdRef: 'docs/PRD.md',
+        prdText: 'Marketplace PRD body',
         requestedWorkerCap: 7,
         reviewMode: 'autonomous',
       }),
@@ -64,6 +65,7 @@ describe('projectRun', () => {
     expect(projection.status).toBe('completed');
     expect(projection.prompt).toBe('build a marketplace');
     expect(projection.prdRef).toBe('docs/PRD.md');
+    expect(projection.prdText).toBe('Marketplace PRD body');
     expect(projection.requestedWorkerCap).toBe(7);
     expect(projection.reviewMode).toBe('autonomous');
     expect(projection.plannedTicketCount).toBe(5);

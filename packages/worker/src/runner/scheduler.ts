@@ -1,8 +1,8 @@
 /**
- * Adaptive worker scheduler (up to 10 concurrent workers).
+ * Adaptive worker scheduler (up to 20 concurrent workers).
  *
  * Given a ticket DAG, a selected adapter, an event store, capacity constraints,
- * and a config (`requestedCap` 1..10), the scheduler:
+ * and a config (`requestedCap` 1..20), the scheduler:
  *   1. probes adapter setup ONCE and stops before any execution on
  *      setup/auth failure (emitting `adapter.setup_required` / `adapter.auth_failed`),
  *   2. repeatedly computes ready tickets (`readyTickets`) and effective capacity
@@ -55,7 +55,7 @@ export interface ScheduleNode extends DagNode {
 
 /** Scheduler configuration. */
 export interface SchedulerConfig {
-  /** Operator-requested cap; clamped to [1, 10]. */
+  /** Operator-requested cap; clamped to [1, 20]. */
   readonly requestedCap: number;
   /** Bounded retry budget per ticket (forwarded to `runTicket`). */
   readonly maxAttempts?: number;

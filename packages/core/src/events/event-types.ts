@@ -86,6 +86,7 @@ export type CallerFamily = 'claude' | 'codex' | 'api';
 export interface RunCreatedPayload {
   readonly prompt?: string;
   readonly prdRef?: string;
+  readonly prdText?: string;
   readonly title?: string;
   readonly localFolder?: string;
   readonly githubRepo?: string;

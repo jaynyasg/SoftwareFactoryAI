@@ -213,6 +213,7 @@ export interface RunProjection {
   /** Human-facing run title from the `run.created` payload, when provided. */
   readonly title?: string;
   readonly prdRef?: string;
+  readonly prdText?: string;
   readonly localFolder?: string;
   readonly githubRepo?: string;
   readonly selectedAdapter?: string;
@@ -244,6 +245,7 @@ export function projectRun(raw: readonly unknown[], runId?: string): RunProjecti
   let prompt: string | undefined;
   let title: string | undefined;
   let prdRef: string | undefined;
+  let prdText: string | undefined;
   let localFolder: string | undefined;
   let githubRepo: string | undefined;
   let selectedAdapter: string | undefined;
@@ -269,6 +271,7 @@ export function projectRun(raw: readonly unknown[], runId?: string): RunProjecti
         prompt = event.payload.prompt ?? prompt;
         title = event.payload.title ?? title;
         prdRef = event.payload.prdRef ?? prdRef;
+        prdText = event.payload.prdText ?? prdText;
         localFolder = event.payload.localFolder ?? localFolder;
         githubRepo = event.payload.githubRepo ?? githubRepo;
         selectedAdapter = event.payload.selectedAdapter ?? selectedAdapter;
@@ -319,6 +322,7 @@ export function projectRun(raw: readonly unknown[], runId?: string): RunProjecti
     prompt,
     title,
     prdRef,
+    prdText,
     localFolder,
     githubRepo,
     selectedAdapter,

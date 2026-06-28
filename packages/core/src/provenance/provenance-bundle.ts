@@ -28,6 +28,7 @@ export const PROVENANCE_BUNDLE_VERSION = 1 as const;
 export interface ProvenanceSource {
   readonly prompt?: string;
   readonly prdRef?: string;
+  readonly prdText?: string;
   readonly title?: string;
   readonly intent?: string;
 }
@@ -326,7 +327,7 @@ function hasItems(value: readonly unknown[] | undefined): boolean {
  */
 export function provenanceCompleteness(sections: ProvenanceSections): number {
   const checks: readonly boolean[] = [
-    Boolean(sections.source?.prompt || sections.source?.prdRef),
+    Boolean(sections.source?.prompt || sections.source?.prdRef || sections.source?.prdText),
     hasItems(sections.ticketPlan),
     hasItems(sections.events),
     hasItems(sections.adapters),

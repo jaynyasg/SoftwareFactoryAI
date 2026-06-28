@@ -1,5 +1,5 @@
 /**
- * Normalize a prompt string or PRD reference into a `RunRequest`.
+ * Normalize a prompt string, PRD text, or PRD reference into a `RunRequest`.
  *
  * Intake is intentionally permissive (string OR structured input) but the
  * normalized output is strict and deterministic: identical input always yields
@@ -18,10 +18,11 @@ import type { ReviewMode } from '../events/event-types';
  */
 export type RunIntent = 'ai-services-marketplace' | 'unknown' | 'underspecified';
 
-/** Structured intake. Either `prompt` or `prdRef` (or both) should be present. */
+/** Structured intake. `prompt`, `prdText`, `prdRef`, or any combination may be present. */
 export interface RunRequestInput {
   readonly prompt?: string;
   readonly prdRef?: string;
+  readonly prdText?: string;
   readonly title?: string;
   readonly requestedWorkerCap?: number;
   readonly reviewMode?: ReviewMode;
@@ -35,7 +36,9 @@ export interface RunRequest {
   readonly prompt: string;
   /** A reference to a PRD document, when provided. */
   readonly prdRef?: string;
-  /** Requested upper bound on concurrent workers, clamped to [1, 10]. */
+  /** PRD body text pasted or imported through the UI, when provided. */
+  readonly prdText?: string;
+  /** Requested upper bound on concurrent workers, clamped to [1, 20]. */
   readonly requestedWorkerCap?: number;
   /** Review mode; defaults to human review. */
   readonly reviewMode: ReviewMode;
@@ -48,7 +51,7 @@ const MIN_PROMPT_WORDS = 4;
 
 /** Lower/upper bounds for the requested worker cap. */
 const MIN_WORKER_CAP = 1;
-const MAX_WORKER_CAP = 10;
+const MAX_WORKER_CAP = 20;
 
 /** A strong, unambiguous phrase that pins the marketplace intent on its own. */
 const MARKETPLACE_PHRASE = /\bai services? marketplace\b/;
@@ -71,11 +74,20 @@ function truncate(value: string, max: number): string {
   return `${value.slice(0, max - 1).trimEnd()}…`;
 }
 
-function deriveTitle(prompt: string, prdRef: string | undefined): string {
+function deriveTitle(
+  prompt: string,
+  prdRef: string | undefined,
+  prdText: string | undefined,
+): string {
   if (prompt.length > 0) {
     const [firstLine = ''] = prompt.split(/\r?\n/, 1);
     const base = firstLine.trim().length > 0 ? firstLine.trim() : prompt;
     return truncate(base, 72);
+  }
+  if (prdText !== undefined) {
+    const [firstLine = ''] = prdText.split(/\r?\n/, 1);
+    const base = firstLine.trim().length > 0 ? firstLine.trim() : prdText;
+    return truncate(`PRD: ${base}`, 72);
   }
   if (prdRef !== undefined) {
     return truncate(`PRD: ${prdRef}`, 72);
@@ -105,8 +117,13 @@ function countWords(text: string): number {
   return trimmed.split(/\s+/).length;
 }
 
-function detectIntent(prompt: string, prdRef: string | undefined, title: string): RunIntent {
-  const haystack = `${title} ${prompt} ${prdRef ?? ''}`.toLowerCase();
+function detectIntent(
+  prompt: string,
+  prdRef: string | undefined,
+  prdText: string | undefined,
+  title: string,
+): RunIntent {
+  const haystack = `${title} ${prompt} ${prdText ?? ''} ${prdRef ?? ''}`.toLowerCase();
 
   if (MARKETPLACE_PHRASE.test(haystack)) {
     return 'ai-services-marketplace';
@@ -118,7 +135,7 @@ function detectIntent(prompt: string, prdRef: string | undefined, title: string)
 
   // A PRD reference is treated as specified content even when we cannot read it
   // here; lack of recognizable signals makes the intent unknown (-> triage).
-  if (prdRef !== undefined) {
+  if (prdRef !== undefined || prdText !== undefined) {
     return 'unknown';
   }
   if (countWords(prompt) < MIN_PROMPT_WORDS) {
@@ -135,6 +152,9 @@ export function parseRunRequest(input: string | RunRequestInput): RunRequest {
   const raw: RunRequestInput = typeof input === 'string' ? { prompt: input } : input;
 
   const prompt = (raw.prompt ?? '').trim();
+  const prdTextTrimmed = raw.prdText?.trim();
+  const prdText =
+    prdTextTrimmed !== undefined && prdTextTrimmed.length > 0 ? prdTextTrimmed : undefined;
   const prdRefTrimmed = raw.prdRef?.trim();
   const prdRef =
     prdRefTrimmed !== undefined && prdRefTrimmed.length > 0 ? prdRefTrimmed : undefined;
@@ -142,15 +162,16 @@ export function parseRunRequest(input: string | RunRequestInput): RunRequest {
   const title =
     titleTrimmed !== undefined && titleTrimmed.length > 0
       ? titleTrimmed
-      : deriveTitle(prompt, prdRef);
+      : deriveTitle(prompt, prdRef, prdText);
   const reviewMode = raw.reviewMode ?? DEFAULT_REVIEW_MODE;
   const requestedWorkerCap = normalizeWorkerCap(raw.requestedWorkerCap);
-  const intent = detectIntent(prompt, prdRef, title);
+  const intent = detectIntent(prompt, prdRef, prdText, title);
 
   return {
     title,
     prompt,
     prdRef,
+    prdText,
     requestedWorkerCap,
     reviewMode,
     intent,

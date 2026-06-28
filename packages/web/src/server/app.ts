@@ -39,6 +39,7 @@ import { reviewRoutes } from './routes/review';
 import { setupRoutes } from './routes/setup';
 import { createGenomePlanner } from './planner';
 import type { RunPlanInput, RunPlanner } from './planner';
+import type { RuntimeConfig } from './runtime';
 
 export type { RunPlanInput, RunPlanner } from './planner';
 
@@ -70,14 +71,20 @@ export interface ApiResponse {
 export interface AppConfig {
   /** Exact-match allowed `Origin` values for mutating routes. */
   readonly allowedOrigins?: readonly string[];
+  /** Also allow browser requests whose Origin host matches Host/X-Forwarded-Host. */
+  readonly allowSameHostOrigin?: boolean;
   /** Expected CSRF double-submit token; when set, mutating routes require it. */
   readonly csrfToken?: string;
+  /** Runtime metadata surfaced by setup/readiness routes. */
+  readonly runtime?: RuntimeConfig;
 }
 
 /** Fully-resolved config (defaults applied). */
 export interface ResolvedConfig {
   readonly allowedOrigins: readonly string[];
+  readonly allowSameHostOrigin: boolean;
   readonly csrfToken?: string;
+  readonly runtime?: RuntimeConfig;
 }
 
 export interface AppDeps {
@@ -205,6 +212,41 @@ function extractToken(headers: ApiRequest['headers']): string | undefined {
   return undefined;
 }
 
+function originFromHost(request: ApiRequest): string | undefined {
+  const origin = request.headers['origin'];
+  if (origin === undefined || origin.length === 0) {
+    return undefined;
+  }
+  const host = request.headers['x-forwarded-host'] ?? request.headers['host'];
+  if (host === undefined || host.length === 0) {
+    return undefined;
+  }
+  let originUrl: URL;
+  try {
+    originUrl = new URL(origin);
+  } catch {
+    return undefined;
+  }
+  const forwardedHost = host.split(',')[0]?.trim();
+  if (forwardedHost === undefined || forwardedHost.length === 0) {
+    return undefined;
+  }
+  if (originUrl.host !== forwardedHost) {
+    return undefined;
+  }
+  return origin;
+}
+
+function allowedOriginsFor(request: ApiRequest, config: ResolvedConfig): readonly string[] {
+  if (!config.allowSameHostOrigin) {
+    return config.allowedOrigins;
+  }
+  const sameHost = originFromHost(request);
+  return sameHost === undefined
+    ? config.allowedOrigins
+    : [...new Set([...config.allowedOrigins, sameHost])];
+}
+
 function defaultIdGenerator(): string {
   return `run-${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
 }
@@ -268,7 +310,9 @@ export function createApp(deps: AppDeps): App {
   const idGenerator = deps.idGenerator ?? defaultIdGenerator;
   const config: ResolvedConfig = {
     allowedOrigins: deps.config?.allowedOrigins ?? [],
+    allowSameHostOrigin: deps.config?.allowSameHostOrigin ?? false,
     csrfToken: deps.config?.csrfToken,
+    runtime: deps.config?.runtime,
   };
   const reader = createEventReader(store);
   const writer = createEventWriter(store);
@@ -322,7 +366,7 @@ export function createApp(deps: AppDeps): App {
     };
     const result = checkCommand(guardRequest, {
       verifyToken: (token) => session !== null && verifyOperatorToken(session.token, token),
-      allowedOrigins: config.allowedOrigins,
+      allowedOrigins: allowedOriginsFor(request, config),
       csrfToken: config.csrfToken,
       currentSubjectVersion: input.currentVersion,
     });

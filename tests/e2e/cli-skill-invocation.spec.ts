@@ -306,8 +306,14 @@ test('Claude and Codex wrappers call the same CLI/backend and return the same co
   const sh = await readFile(join(repoRoot, 'skills/claude/scripts/software-factory.sh'), 'utf8');
   expect(sh).toContain('packages/cli/src/index.ts');
   expect(sh).toContain('--caller-family claude');
+  expect(sh).toContain('SOFTWARE_FACTORY_REPO_ROOT');
+  expect(sh).toContain('repo-root.txt');
+  expect(sh).toContain('--no-spawn');
   const ps = await readFile(join(repoRoot, 'skills/codex/scripts/software-factory.ps1'), 'utf8');
   expect(ps).toContain('index.ts');
   expect(ps).toContain('caller-family');
   expect(ps).toContain('codex');
+  expect(ps).toContain('SOFTWARE_FACTORY_REPO_ROOT');
+  expect(ps).toContain('repo-root.txt');
+  expect(ps).toContain('--no-spawn');
 });

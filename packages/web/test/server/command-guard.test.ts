@@ -187,6 +187,47 @@ describe('command guard over mutating routes', () => {
     expect(await types(store, 'run-1')).toEqual(['security.block']);
   });
 
+  it('allows same-host cloud origins without pre-registering the hosted URL', async () => {
+    const store = createInMemoryEventStore(deterministic());
+    const provider = createOperatorTokenProvider({
+      store: createInMemoryOperatorTokenStore({ token: TOKEN, createdAt: 0 }),
+    });
+    const app = createApp({
+      store,
+      operatorToken: provider,
+      idGenerator: () => 'run-cloud',
+      config: {
+        allowedOrigins: [],
+        allowSameHostOrigin: true,
+        csrfToken: CSRF,
+        runtime: {
+          mode: 'cloud',
+          host: '0.0.0.0',
+          port: 10000,
+          factoryDir: '/var/data/.factory',
+          allowedOrigins: [],
+          operatorTokenSource: 'env',
+        },
+      },
+      planner: null,
+    });
+
+    const res = await app.handle(
+      req(
+        'POST',
+        '/api/runs',
+        authedHeaders({
+          origin: 'https://factory.example.com',
+          host: 'factory.example.com',
+        }),
+        { prompt: 'x' },
+      ),
+    );
+
+    expect(res.status).toBe(201);
+    expect(await types(store, 'run-cloud')).toEqual(['run.created']);
+  });
+
   it('rejects CSRF-suspicious requests before side effects', async () => {
     const { app, store } = makeApp();
     const res = await app.handle(

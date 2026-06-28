@@ -62,6 +62,25 @@ export interface StartResult {
   readonly message: string;
 }
 
+function isLoopbackUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.hostname === '127.0.0.1' || url.hostname === 'localhost' || url.hostname === '::1';
+  } catch {
+    return false;
+  }
+}
+
+function unavailableMessage(baseUrl: string): string {
+  if (!isLoopbackUrl(baseUrl)) {
+    return `No cloud backend reachable at ${baseUrl}. Check SF_BASE_URL and the hosted service health.`;
+  }
+  return (
+    `No backend reachable at ${baseUrl}. Start one with \`pnpm dev\` (web UI) or ` +
+    '`pnpm --filter @software-factory/web exec tsx src/server/standalone.ts`.'
+  );
+}
+
 export async function startCommand(
   args: StartCommandArgs,
   deps: StartCommandDeps,
@@ -87,9 +106,7 @@ export async function startCommand(
     return emit({
       status: 'unavailable',
       baseUrl: args.baseUrl,
-      message:
-        `No backend reachable at ${args.baseUrl}. Start one with \`pnpm dev\` (web UI) or ` +
-        '`pnpm --filter @software-factory/web exec tsx src/server/standalone.ts`.',
+      message: unavailableMessage(args.baseUrl),
     });
   }
 

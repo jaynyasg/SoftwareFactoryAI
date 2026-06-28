@@ -50,7 +50,9 @@ export function RunBoard({
                 <li key={run.runId} className="run-list__item">
                   <span className="stack" style={{ gap: 2, minWidth: 0 }}>
                     <span style={{ fontWeight: 'var(--fw-medium)' }}>
-                      {run.prompt ?? run.prdRef ?? 'Untitled run'}
+                      {run.prompt ??
+                        run.prdRef ??
+                        (run.prdText ? 'PRD content attached' : 'Untitled run')}
                     </span>
                     <Mono value={run.runId} max={22} copyable={false} />
                   </span>

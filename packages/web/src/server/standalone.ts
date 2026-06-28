@@ -15,19 +15,16 @@
  *
  * Run directly with tsx:
  *   tsx packages/web/src/server/standalone.ts [--port <n>]
- * or via env: SF_PORT, SF_FACTORY_DIR, SF_ALLOWED_ORIGINS.
+ * or via env: SF_RUNTIME, PORT/SF_PORT, SF_HOST, SF_FACTORY_DIR,
+ * SF_ALLOWED_ORIGINS, SF_OPERATOR_TOKEN.
  */
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import {
-  createFileOperatorTokenStore,
-  createFileSystemEventStore,
-  createOperatorTokenProvider,
-} from '@software-factory/core';
+import { createFileSystemEventStore } from '@software-factory/core';
 import { createApp } from './app';
 import type { RunningServer } from './app';
-import { resolveFactoryDir } from './instance';
+import { createRuntimeOperatorTokenProvider, resolveRuntimeConfig } from './runtime';
 
 export interface StandaloneOptions {
   /** Port to bind (0 = ephemeral). Defaults to `SF_PORT` or 3000. */
@@ -46,26 +43,6 @@ export interface StandaloneServer {
   readonly operatorToken: string;
 }
 
-function defaultPort(): number {
-  const fromEnv = Number(process.env.SF_PORT);
-  return Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : 3000;
-}
-
-function allowedOrigins(): readonly string[] {
-  const port = defaultPort();
-  const defaults = [
-    `http://127.0.0.1:${port}`,
-    `http://localhost:${port}`,
-    'http://127.0.0.1:3000',
-    'http://localhost:3000',
-  ];
-  const extra = (process.env.SF_ALLOWED_ORIGINS ?? '')
-    .split(',')
-    .map((value) => value.trim())
-    .filter((value) => value.length > 0);
-  return [...new Set([...defaults, ...extra])];
-}
-
 /**
  * Build and start the standalone API server. The returned handle exposes the
  * bound URL plus the operator-token location so callers can report it.
@@ -73,13 +50,12 @@ function allowedOrigins(): readonly string[] {
 export async function startStandaloneServer(
   options: StandaloneOptions = {},
 ): Promise<StandaloneServer> {
-  const factoryDir = options.factoryDir ?? resolveFactoryDir();
+  const runtime = resolveRuntimeConfig();
+  const factoryDir = options.factoryDir ?? runtime.factoryDir;
   await mkdir(factoryDir, { recursive: true });
 
   const operatorTokenPath = join(factoryDir, 'operator-token.json');
-  const provider = createOperatorTokenProvider({
-    store: createFileOperatorTokenStore(operatorTokenPath),
-  });
+  const provider = createRuntimeOperatorTokenProvider({ ...runtime, factoryDir });
   const session = await provider.getOrCreate();
   const store = createFileSystemEventStore({ baseDir: join(factoryDir, 'events') });
 
@@ -88,11 +64,11 @@ export async function startStandaloneServer(
   const app = createApp({
     store,
     operatorToken: provider,
-    config: { allowedOrigins: allowedOrigins() },
+    config: { allowedOrigins: runtime.allowedOrigins, runtime, allowSameHostOrigin: true },
   });
 
-  const port = options.port ?? defaultPort();
-  const host = options.host ?? '127.0.0.1';
+  const port = options.port ?? runtime.port;
+  const host = options.host ?? runtime.host;
   const server = await app.listen(port, host);
   return { server, factoryDir, operatorTokenPath, operatorToken: session.token };
 }

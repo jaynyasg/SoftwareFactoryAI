@@ -5,7 +5,7 @@
  * Surface:
  *   software-factory start    [--port <n>] [--no-spawn] [--base-url <url>] [--json]
  *   software-factory run      <prompt> | --prd <path> | --request <json> | --request-file <path>
- *                             [--review-mode human|autonomous] [--worker-cap <1-10>]
+ *                             [--review-mode human|autonomous] [--worker-cap <1-20>]
  *                             [--title <t>] [--caller-family claude|codex|api]
  *                             [--no-follow] [--json]
  *   software-factory status   <runId> [--json]
@@ -118,6 +118,15 @@ function asCallerFamily(value: string | undefined): CallerFamily | undefined {
   return value === 'claude' || value === 'codex' || value === 'api' ? value : undefined;
 }
 
+function isLoopbackBaseUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.hostname === '127.0.0.1' || url.hostname === 'localhost' || url.hostname === '::1';
+  } catch {
+    return false;
+  }
+}
+
 /** Walk up from `start` to the pnpm workspace root (the dir with the lockfile). */
 function resolveWorkspaceRoot(start: string = process.cwd()): string | undefined {
   let dir = start;
@@ -143,7 +152,9 @@ function spawnStandalone(baseUrl: string): (options: { port?: number }) => Promi
   return ({ port }) => {
     const root = resolveWorkspaceRoot();
     if (root === undefined) {
-      return Promise.reject(new Error('Could not locate the workspace root (pnpm-workspace.yaml).'));
+      return Promise.reject(
+        new Error('Could not locate the workspace root (pnpm-workspace.yaml).'),
+      );
     }
     const standalone = join(root, 'packages', 'web', 'src', 'server', 'standalone.ts');
     const env = { ...process.env };
@@ -167,7 +178,7 @@ const HELP = `software-factory — local-first software factory CLI
 Usage:
   software-factory start     [--port <n>] [--no-spawn] [--base-url <url>] [--json]
   software-factory run       <prompt> | --prd <path> | --request <json> | --request-file <path>
-                             [--review-mode human|autonomous] [--worker-cap <1-10>]
+                             [--review-mode human|autonomous] [--worker-cap <1-20>]
                              [--title <t>] [--caller-family claude|codex|api] [--no-follow] [--json]
   software-factory status    <runId> [--json]
   software-factory events    <runId> [--follow] [--since <n>] [--json]
@@ -177,7 +188,11 @@ Environment:
   SF_BASE_URL         backend base URL (default ${DEFAULT_BASE_URL})
   SF_OPERATOR_TOKEN   operator token override (else .factory/operator-token.json)
   SF_CSRF_TOKEN       CSRF token (only for browser-style servers)
-  SF_FACTORY_DIR      override the shared .factory directory`;
+  SF_FACTORY_DIR      override the shared .factory directory
+
+Cloud:
+  Point SF_BASE_URL at the hosted factory and set SF_OPERATOR_TOKEN to the same
+  secret configured on the server. Remote base URLs are probed, not auto-spawned.`;
 
 export interface RunCliDeps {
   readonly io?: CliIo;
@@ -211,11 +226,12 @@ export async function runCli(argv: readonly string[], deps: RunCliDeps = {}): Pr
   try {
     switch (command) {
       case 'start': {
+        const spawn = !flagBool(flags, 'no-spawn') && isLoopbackBaseUrl(baseUrl);
         await startCommand(
           {
             baseUrl,
             port: flagNum(flags, 'port'),
-            spawn: !flagBool(flags, 'no-spawn'),
+            spawn,
             json,
             waitMs: flagNum(flags, 'wait-ms'),
           },

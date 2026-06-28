@@ -107,6 +107,8 @@ describe('POST /api/runs', () => {
     await app.handle(
       req('POST', '/api/runs', authedHeaders(), {
         prompt: 'x',
+        prdRef: 'docs/PRD.md',
+        prdText: 'PRD body from the browser file picker',
         localFolder: 'C:\\repo\\app',
         githubRepo: 'octo/app',
         selectedAdapter: 'codex-cli',
@@ -118,6 +120,8 @@ describe('POST /api/runs', () => {
     const created = (await store.readRun('run-1')).find((e) => e.type === 'run.created');
     expect(created?.type).toBe('run.created');
     expect(created?.payload).toMatchObject({
+      prdRef: 'docs/PRD.md',
+      prdText: 'PRD body from the browser file picker',
       localFolder: 'C:\\repo\\app',
       githubRepo: 'octo/app',
       selectedAdapter: 'codex-cli',

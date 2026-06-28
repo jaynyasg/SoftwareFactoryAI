@@ -5,6 +5,9 @@ after local completion. Hosting is **local-first**: a deploy is only attempted
 once local gates, preview health, packaging, provenance, and review policy are
 satisfied (plan unit U9, requirements R9–R11, R13, R14).
 
+To deploy the factory control room itself to the cloud, use
+`docs/runbooks/cloud-deployment.md` and the root `render.yaml`.
+
 ## Order of operations
 
 ```
@@ -49,12 +52,12 @@ destination in this order:
 
 ## 2. Render setup
 
-| Requirement | Notes |
-| --- | --- |
-| Render account | https://render.com |
-| Render API key | Account Settings -> API Keys. Provide as `RENDER_API_KEY`. |
-| Service id | The target web service id (`srv-…`). Created from the blueprint or the dashboard. |
-| Postgres database | Provisioned by the blueprint (`databases:`), wired into `DATABASE_URL`. |
+| Requirement       | Notes                                                                             |
+| ----------------- | --------------------------------------------------------------------------------- |
+| Render account    | https://render.com                                                                |
+| Render API key    | Account Settings -> API Keys. Provide as `RENDER_API_KEY`.                        |
+| Service id        | The target web service id (`srv-…`). Created from the blueprint or the dashboard. |
+| Postgres database | Provisioned by the blueprint (`databases:`), wired into `DATABASE_URL`.           |
 
 If the API key or service id is missing, the deploy pauses with
 `deploy.setup_required` (Render not configured) — again **without** failing the
@@ -100,32 +103,32 @@ deployer turns the first into `deploy.config_invalid`.
 > The generated app ships with a **SQLite** datasource for local/test. The hosted
 > profile is **Postgres**: switch the Prisma datasource `provider` to
 > `postgresql` and generate a Postgres migration history (`prisma migrate dev
-> --name init`) so `prisma migrate deploy` has migrations to apply on Render.
+--name init`) so `prisma migrate deploy` has migrations to apply on Render.
 
 ## Environment variables
 
-| Variable | Where | Purpose |
-| --- | --- | --- |
-| `DATABASE_URL` | Render (from database) | Prisma datasource (Postgres connection string). |
-| `RENDER_API_KEY` | Factory operator env | Authenticates the Render API client. |
-| `AI_BRIEF_PROVIDER` | Render (optional) | Selects a live AI brief provider; unset uses the deterministic fallback. |
-| `AI_BRIEF_API_KEY` | Render (optional) | API key for the live brief provider. |
-| `NODE_ENV` | Render | `production`. |
+| Variable            | Where                  | Purpose                                                                  |
+| ------------------- | ---------------------- | ------------------------------------------------------------------------ |
+| `DATABASE_URL`      | Render (from database) | Prisma datasource (Postgres connection string).                          |
+| `RENDER_API_KEY`    | Factory operator env   | Authenticates the Render API client.                                     |
+| `AI_BRIEF_PROVIDER` | Render (optional)      | Selects a live AI brief provider; unset uses the deterministic fallback. |
+| `AI_BRIEF_API_KEY`  | Render (optional)      | API key for the live brief provider.                                     |
+| `NODE_ENV`          | Render                 | `production`.                                                            |
 
 Host secrets are never passed into sandboxed generated-app commands; only the
 explicit deploy env is sent to Render.
 
 ## Deploy events + failure taxonomy
 
-| Event | Meaning | Retry |
-| --- | --- | --- |
-| `deploy.setup_required` | Preconditions/GitHub/Render setup incomplete — paused. | Yes, after setup |
-| `deploy.config_invalid` | Generated `render.yaml` failed validation. | Yes, after fix |
-| `deploy.provider_failed` | Render build/deploy failed (or timed out, or could not be triggered). | Yes |
-| `deploy.migration_failed` | `prisma migrate deploy` failed during the build. | Yes |
-| `deploy.health_pending` | Provider reported the deploy live; hosted health is being checked. | — |
-| `deploy.health_failed` | Hosted health never passed within the budget. | Yes |
-| `deploy.hosted_ready` | Provider success **and** hosted health passed — hosted URL emitted. | — |
+| Event                     | Meaning                                                               | Retry            |
+| ------------------------- | --------------------------------------------------------------------- | ---------------- |
+| `deploy.setup_required`   | Preconditions/GitHub/Render setup incomplete — paused.                | Yes, after setup |
+| `deploy.config_invalid`   | Generated `render.yaml` failed validation.                            | Yes, after fix   |
+| `deploy.provider_failed`  | Render build/deploy failed (or timed out, or could not be triggered). | Yes              |
+| `deploy.migration_failed` | `prisma migrate deploy` failed during the build.                      | Yes              |
+| `deploy.health_pending`   | Provider reported the deploy live; hosted health is being checked.    | —                |
+| `deploy.health_failed`    | Hosted health never passed within the budget.                         | Yes              |
+| `deploy.hosted_ready`     | Provider success **and** hosted health passed — hosted URL emitted.   | —                |
 
 Provider failure, deploy timeout, migration failure, and health failure attach
 the deploy log lines as event **evidence** and resolve to a **retryable**

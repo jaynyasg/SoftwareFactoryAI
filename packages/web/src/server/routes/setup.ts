@@ -20,6 +20,14 @@ async function getSetup(ctx: RouteContext): Promise<ApiResponse> {
       adapters: { status: 'unknown', detected: [] as readonly string[] },
       deploy: { status: 'required' },
       workspace: { root: process.cwd() },
+      runtime: ctx.config.runtime
+        ? {
+            mode: ctx.config.runtime.mode,
+            publicBaseUrl: ctx.config.runtime.publicBaseUrl,
+            factoryDir: ctx.config.runtime.factoryDir,
+            operatorTokenSource: ctx.config.runtime.operatorTokenSource,
+          }
+        : { mode: 'local' },
     },
   };
 }

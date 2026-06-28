@@ -39,6 +39,7 @@ async function createRun(ctx: RouteContext): Promise<ApiResponse> {
   const payload: RunCreatedPayload = {
     prompt: str(body.prompt),
     prdRef: str(body.prdRef),
+    prdText: str(body.prdText),
     title: str(body.title),
     localFolder: str(body.localFolder),
     githubRepo: str(body.githubRepo),
@@ -68,6 +69,7 @@ async function createRun(ctx: RouteContext): Promise<ApiResponse> {
   await ctx.planRun(runId, {
     prompt: payload.prompt,
     prdRef: payload.prdRef,
+    prdText: payload.prdText,
     title: payload.title,
     requestedWorkerCap: payload.requestedWorkerCap,
     reviewMode: payload.reviewMode,

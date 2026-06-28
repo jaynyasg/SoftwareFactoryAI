@@ -73,6 +73,7 @@ export interface WorkerContext {
   readonly intent: RunIntent;
   readonly prompt: string;
   readonly prdRef?: string;
+  readonly prdText?: string;
   readonly riskTier: RiskTier;
   /** Required inputs found in `priorArtifacts`. */
   readonly resolvedInputs: readonly ResolvedInput[];
@@ -127,6 +128,7 @@ export function compileContext(input: CompileContextInput): WorkerContext {
     intent: input.runRequest.intent,
     prompt: input.runRequest.prompt,
     prdRef: input.runRequest.prdRef,
+    prdText: input.runRequest.prdText,
     riskTier: input.riskTier,
     resolvedInputs,
     missingInputs,

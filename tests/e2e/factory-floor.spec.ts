@@ -4,7 +4,7 @@
  * Covers: the home intake/empty affordances with no fake progress; an active run
  * rendered entirely from seeded ledger events (supervisor, tickets, worker
  * capacity, trace ledger, review studio, artifact confidence, deploy, reduced-
- * trust, preview); the system-gated 1..10 worker cap; and the trace ledger
+ * trust, preview); the system-gated 1..20 worker cap; and the trace ledger
  * reconnect-from-last_sequence behavior under a failing poll.
  */
 import { expect, test } from '@playwright/test';
@@ -13,21 +13,27 @@ import { seedMarketplaceRun } from './seed-run';
 test('home offers prompt/PRD intake and setup status with no fake progress', async ({ page }) => {
   await page.goto('/');
 
-  await expect(page.getByLabel('Prompt or PRD')).toBeVisible();
-  await expect(page.getByLabel('PRD reference (path or URL, optional)')).toBeVisible();
+  await expect(page.getByLabel('Prompt (optional)')).toBeVisible();
+  await expect(page.getByLabel('PRD (optional)')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Browse PRD' })).toBeVisible();
+  await expect(page.getByRole('button', { name: /^Browse$/ })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Operator view' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Setup' })).toBeVisible();
 
   // Anti-slop: the run surface never shows a fake/decorative progress bar.
   await expect(page.getByRole('progressbar')).toHaveCount(0);
 });
 
-test('worker cap control allows 1..10 and is labeled system-gated', async ({ page }) => {
+test('worker cap control allows 1..20, defaults to 10, and is labeled system-gated', async ({
+  page,
+}) => {
   await page.goto('/');
 
-  const cap = page.getByLabel('Worker cap (1–10)');
+  const cap = page.getByLabel('Worker cap (1–20)');
   await expect(cap).toHaveAttribute('type', 'range');
   await expect(cap).toHaveAttribute('min', '1');
-  await expect(cap).toHaveAttribute('max', '10');
+  await expect(cap).toHaveAttribute('max', '20');
+  await expect(cap).toHaveValue('10');
   await expect(page.getByText('upper bound · system-gated')).toBeVisible();
 });
 

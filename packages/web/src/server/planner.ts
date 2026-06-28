@@ -32,6 +32,7 @@ import type { ModuleRegistry, PlanEventSink, ReviewMode } from '@software-factor
 export interface RunPlanInput {
   readonly prompt?: string;
   readonly prdRef?: string;
+  readonly prdText?: string;
   readonly title?: string;
   readonly requestedWorkerCap?: number;
   readonly reviewMode?: ReviewMode;

@@ -4,12 +4,12 @@
  * RunControl — prompt/PRD intake plus the run's operating controls
  * (DESIGN.md §5; plan R1/R5). Prompt/PRD text, local/GitHub destination,
  * execution-adapter selector, model profile + effort budget, review-mode toggle,
- * and an adaptive worker cap (1–10, explicitly labeled as a system-gated upper
+ * and an adaptive worker cap (1–20, default 10, explicitly labeled as a system-gated upper
  * bound). It also surfaces the local preview status for an active run and the
  * start/cancel actions, all guarded by the operator token + CSRF.
  */
-import { useId, useState } from 'react';
-import type { FormEvent } from 'react';
+import { useId, useRef, useState } from 'react';
+import type { ChangeEvent, FormEvent } from 'react';
 import type { ReviewMode } from '@software-factory/core';
 import type { DeployView, PreviewView } from '../../lib/run-view';
 import { useSession } from '../session-context';
@@ -38,6 +38,14 @@ const PREVIEW_LABEL: Readonly<Record<PreviewView['status'], string>> = {
   failed: 'failed',
 };
 
+interface DirectoryHandle {
+  readonly name?: string;
+}
+
+type WindowWithDirectoryPicker = Window & {
+  readonly showDirectoryPicker?: () => Promise<DirectoryHandle>;
+};
+
 export function RunControl({
   activeRun,
   preview,
@@ -59,10 +67,13 @@ export function RunControl({
 }) {
   const session = useSession();
   const fieldId = useId();
+  const prdFileRef = useRef<HTMLInputElement>(null);
 
   const [prompt, setPrompt] = useState('');
   const [prdRef, setPrdRef] = useState('');
+  const [prdText, setPrdText] = useState('');
   const [localFolder, setLocalFolder] = useState(defaultLocalFolder ?? '');
+  const [folderBrowseStatus, setFolderBrowseStatus] = useState<string | null>(null);
   const [githubRepo, setGithubRepo] = useState('');
   const [adapter, setAdapter] = useState<string>(ADAPTERS[0].id);
   const [model, setModel] = useState<string>(MODELS[0].id);
@@ -72,9 +83,47 @@ export function RunControl({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const canStart = (prompt.trim().length > 0 || prdRef.trim().length > 0) && !busy;
+  const canStart =
+    (prompt.trim().length > 0 || prdText.trim().length > 0 || prdRef.trim().length > 0) && !busy;
   const cancellable =
     activeRun !== undefined && ['created', 'planned', 'running'].includes(activeRun.status);
+
+  async function onPrdFileSelected(event: ChangeEvent<HTMLInputElement>): Promise<void> {
+    const file = event.target.files?.[0];
+    if (file === undefined) {
+      return;
+    }
+    setError(null);
+    try {
+      const text = await file.text();
+      setPrdText(text);
+      setPrdRef(file.name);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Could not read the PRD file.');
+    } finally {
+      event.target.value = '';
+    }
+  }
+
+  async function onBrowseLocalFolder(): Promise<void> {
+    setFolderBrowseStatus(null);
+    const picker = (window as WindowWithDirectoryPicker).showDirectoryPicker;
+    if (picker === undefined) {
+      setFolderBrowseStatus('Folder picker unavailable; paste the absolute path instead.');
+      return;
+    }
+    try {
+      const folder = await picker();
+      setFolderBrowseStatus(
+        `${folder.name ?? 'Folder'} selected. Browser keeps absolute paths private; verify the path field.`,
+      );
+    } catch (caught) {
+      if (caught instanceof DOMException && caught.name === 'AbortError') {
+        return;
+      }
+      setFolderBrowseStatus('Could not open the folder picker; paste the path instead.');
+    }
+  }
 
   async function onStart(event: FormEvent): Promise<void> {
     event.preventDefault();
@@ -87,6 +136,7 @@ export function RunControl({
       const result = await startRun(session, {
         prompt: prompt.trim() || undefined,
         prdRef: prdRef.trim() || undefined,
+        prdText: prdText.trim() || undefined,
         localFolder: localFolder.trim() || undefined,
         githubRepo: githubRepo.trim() || undefined,
         selectedAdapter: adapter,
@@ -98,6 +148,7 @@ export function RunControl({
       if (result.ok) {
         setPrompt('');
         setPrdRef('');
+        setPrdText('');
         onStarted?.(result.data.runId);
       } else {
         setError(result.message ?? `Could not start run (${result.error}).`);
@@ -138,28 +189,57 @@ export function RunControl({
     <section className="panel" aria-label="Run control">
       <header className="panel__header">
         <h2 className="panel__title">Run control</h2>
-        <span className="panel__hint">prompt or PRD → ticket DAG</span>
+        <span className="panel__hint">prompt and/or PRD → ticket DAG</span>
       </header>
       <form className="panel__body" onSubmit={(e) => void onStart(e)}>
         <div className="field">
           <label className="field__label" htmlFor={`${fieldId}-prompt`}>
-            Prompt or PRD
+            Prompt (optional)
           </label>
           <textarea
             id={`${fieldId}-prompt`}
             className="textarea"
-            placeholder="Describe what to build (e.g. an AI services marketplace with providers and proposals)…"
+            placeholder="Describe what to build, or add context for the PRD…"
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
           />
         </div>
 
+        <div className="field field--with-actions">
+          <div className="field__top">
+            <label className="field__label" htmlFor={`${fieldId}-prd-text`}>
+              PRD (optional)
+            </label>
+            <button
+              type="button"
+              className="btn btn--sm btn--ghost"
+              onClick={() => prdFileRef.current?.click()}
+            >
+              Browse PRD
+            </button>
+          </div>
+          <textarea
+            id={`${fieldId}-prd-text`}
+            className="textarea textarea--compact"
+            placeholder="Paste PRD content, or import a .md/.txt PRD…"
+            value={prdText}
+            onChange={(e) => setPrdText(e.target.value)}
+          />
+          <input
+            ref={prdFileRef}
+            type="file"
+            accept=".md,.markdown,.txt,.prd,.json,.yaml,.yml"
+            hidden
+            onChange={(e) => void onPrdFileSelected(e)}
+          />
+        </div>
+
         <div className="field">
-          <label className="field__label" htmlFor={`${fieldId}-prd`}>
-            PRD reference (path or URL, optional)
+          <label className="field__label" htmlFor={`${fieldId}-prd-ref`}>
+            PRD reference (path, URL, or imported file)
           </label>
           <input
-            id={`${fieldId}-prd`}
+            id={`${fieldId}-prd-ref`}
             className="input mono"
             placeholder="docs/PRD.md"
             value={prdRef}
@@ -169,15 +249,32 @@ export function RunControl({
 
         <div className="control-row control-row--destinations">
           <div className="field">
-            <label className="field__label" htmlFor={`${fieldId}-folder`}>
-              Local folder
-            </label>
+            <div className="field__top">
+              <label className="field__label" htmlFor={`${fieldId}-folder`}>
+                Local folder
+              </label>
+              <button
+                type="button"
+                className="btn btn--sm btn--ghost"
+                onClick={() => void onBrowseLocalFolder()}
+              >
+                Browse
+              </button>
+            </div>
             <input
               id={`${fieldId}-folder`}
               className="input mono"
               value={localFolder}
               onChange={(e) => setLocalFolder(e.target.value)}
+              aria-describedby={
+                folderBrowseStatus !== null ? `${fieldId}-folder-status` : undefined
+              }
             />
+            {folderBrowseStatus !== null ? (
+              <span className="field__note" id={`${fieldId}-folder-status`} role="status">
+                {folderBrowseStatus}
+              </span>
+            ) : null}
           </div>
 
           <div className="field">
@@ -271,14 +368,14 @@ export function RunControl({
 
         <div className="field">
           <label className="field__label" htmlFor={`${fieldId}-cap`}>
-            Worker cap (1–10)
+            Worker cap (1–20)
           </label>
           <input
             id={`${fieldId}-cap`}
             className="range"
             type="range"
             min={1}
-            max={10}
+            max={20}
             step={1}
             value={workerCap}
             onChange={(e) => setWorkerCap(Number(e.target.value))}

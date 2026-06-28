@@ -23,6 +23,13 @@ import { DeployStatus } from './DeployStatus';
 import { ArtifactDrawer } from './ArtifactDrawer';
 import { Mono, SeverityBadge } from './primitives';
 
+function truncateBlock(value: string, max = 520): string {
+  if (value.length <= max) {
+    return value;
+  }
+  return `${value.slice(0, max - 1).trimEnd()}…`;
+}
+
 function useIsSmall(): boolean {
   const [small, setSmall] = useState(false);
   useEffect(() => {
@@ -72,16 +79,22 @@ export function RunView({
           <SeverityBadge severity={runStatusSeverity(run.status)} label={run.status} />
         </header>
         <div className="panel__body">
-          {run.prompt ? (
-            <p style={{ fontSize: 'var(--fs-sm)' }}>{run.prompt}</p>
-          ) : run.prdRef ? (
+          {run.prompt ? <p style={{ fontSize: 'var(--fs-sm)' }}>{run.prompt}</p> : null}
+          {run.prdText ? (
+            <details className="source-details">
+              <summary>PRD content</summary>
+              <p>{truncateBlock(run.prdText)}</p>
+            </details>
+          ) : null}
+          {run.prdRef ? (
             <div className="row">
-              <span className="label">PRD</span>
+              <span className="label">PRD reference</span>
               <Mono value={run.prdRef} max={40} />
             </div>
-          ) : (
+          ) : null}
+          {!run.prompt && !run.prdText && !run.prdRef ? (
             <p className="muted">No prompt or PRD recorded.</p>
-          )}
+          ) : null}
           <div className="row">
             {run.plannedTicketCount !== undefined ? (
               <span className="badge">{run.plannedTicketCount} tickets planned</span>

@@ -65,6 +65,7 @@ async function mutate<T>(
 export interface StartRunInput {
   readonly prompt?: string;
   readonly prdRef?: string;
+  readonly prdText?: string;
   readonly title?: string;
   readonly localFolder?: string;
   readonly githubRepo?: string;

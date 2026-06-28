@@ -35,6 +35,25 @@ describe('planRun — marketplace intent', () => {
     expect(parseRunRequest(MARKETPLACE_PROMPT).intent).toBe('ai-services-marketplace');
   });
 
+  it('detects the marketplace intent from PRD text without a prompt', () => {
+    expect(
+      parseRunRequest({
+        prdText:
+          'AI Services Marketplace PRD: customers submit service requests, providers submit proposals, and customers review acceptance.',
+      }).intent,
+    ).toBe('ai-services-marketplace');
+  });
+
+  it('clamps requested worker cap to 1 through 20 without inventing a default', () => {
+    expect(
+      parseRunRequest({ prompt: MARKETPLACE_PROMPT, requestedWorkerCap: 25 }).requestedWorkerCap,
+    ).toBe(20);
+    expect(
+      parseRunRequest({ prompt: MARKETPLACE_PROMPT, requestedWorkerCap: 0 }).requestedWorkerCap,
+    ).toBe(1);
+    expect(parseRunRequest({ prompt: MARKETPLACE_PROMPT }).requestedWorkerCap).toBeUndefined();
+  });
+
   it('produces the full V1 pipeline (no triage)', () => {
     const plan = planRun(parseRunRequest(MARKETPLACE_PROMPT), EMPTY_REGISTRY);
     const ids = plan.tickets.map((ticket) => ticket.id);

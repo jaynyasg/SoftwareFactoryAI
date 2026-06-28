@@ -10,7 +10,7 @@ export const WORKER_PACKAGE_NAME = '@software-factory/worker' as const;
  */
 export const WORKER_BUILDS_ON = CORE_PACKAGE_NAME;
 
-/* U5 — Worker runner + adaptive 10-worker scheduling */
+/* U5 — Worker runner + adaptive 20-worker scheduling */
 
 // Pure adaptive-capacity computation (min across constraints + bounding reason).
 export * from './runner/capacity';

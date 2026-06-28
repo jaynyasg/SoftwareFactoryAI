@@ -9,7 +9,63 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+
+is_repo_root() {
+  [ -f "$1/pnpm-workspace.yaml" ] && [ -f "$1/packages/cli/src/index.ts" ]
+}
+
+resolve_repo_root() {
+  if [ -n "${SOFTWARE_FACTORY_REPO_ROOT:-}" ] && is_repo_root "$SOFTWARE_FACTORY_REPO_ROOT"; then
+    cd "$SOFTWARE_FACTORY_REPO_ROOT" && pwd
+    return
+  fi
+
+  local local_candidate
+  local_candidate="$(cd "$SCRIPT_DIR/../../.." 2>/dev/null && pwd || true)"
+  if [ -n "$local_candidate" ] && is_repo_root "$local_candidate"; then
+    echo "$local_candidate"
+    return
+  fi
+
+  local marker="$SCRIPT_DIR/repo-root.txt"
+  if [ -f "$marker" ]; then
+    local marked
+    marked="$(tr -d '\r\n' < "$marker")"
+    if [ -n "$marked" ] && is_repo_root "$marked"; then
+      cd "$marked" && pwd
+      return
+    fi
+  fi
+
+  local dir
+  dir="$(pwd)"
+  while [ "$dir" != "/" ]; do
+    if is_repo_root "$dir"; then
+      echo "$dir"
+      return
+    fi
+    dir="$(dirname "$dir")"
+  done
+
+  echo "Could not locate the Software Factory repo. Set SOFTWARE_FACTORY_REPO_ROOT to the repo root." >&2
+  return 1
+}
+
+is_remote_base_url() {
+  case "${SF_BASE_URL:-}" in
+    "" | http://127.0.0.1:* | http://localhost:* | http://[::1]:*)
+      return 1
+      ;;
+    http://* | https://*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+REPO_ROOT="$(resolve_repo_root)"
 CLI_ENTRY="$REPO_ROOT/packages/cli/src/index.ts"
 
 # Run the CLI through the repo's tsx (no global install needed). Prefer the pnpm
@@ -26,7 +82,11 @@ run_cli() {
 
 # Ensure a backend is up (connect if reachable, else boot a standalone one).
 # Best-effort: never block the actual command on start hiccups. Output -> stderr.
-run_cli start --json 1>&2 || true
+start_args=(start --json)
+if is_remote_base_url; then
+  start_args+=(--no-spawn)
+fi
+run_cli "${start_args[@]}" 1>&2 || true
 
 first="${1:-}"
 case "$first" in

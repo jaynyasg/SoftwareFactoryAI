@@ -1,5 +1,5 @@
 ---
-title: "feat: Build Software Factory V1"
+title: 'feat: Build Software Factory V1'
 type: feat
 status: completed
 date: 2026-06-27
@@ -18,37 +18,37 @@ This plan converts the existing CEO, engineering, design, and office-hours direc
 
 The existing strategy is directionally complete, but it was not yet executable by `ce-work` without interpretation. This plan fills these gaps:
 
-| Gap | Resolution in this plan |
-| --- | --- |
-| No repo-local CE plan artifact | This file becomes the active implementation plan under `docs/plans/`. |
-| Implementation tasks used checkboxes instead of stable units | Work is split into stable `U` units with dependencies, files, tests, and verification. |
-| Repo has no product scaffold | `U1` establishes the monorepo, package boundaries, commands, CI, and design-contract location. |
-| Approved design is outside the repo | `U1` and `U8` bring the approved Factory Floor direction into `docs/design/` and `packages/web`. |
-| Worker concurrency changed from 5 to adaptive 10 | `U5` defines adaptive concurrency up to 10, with resource throttling and tests for both full-capacity and reduced-capacity paths. |
-| "Skill-like" invocation was a product requirement but not an implementation unit | `U10` implements one CLI/API path plus Claude and Codex wrappers around the same backend. |
-| Observability needed both user and operator surfaces | `U2`, `U8`, and `U11` split ledger truth, run UI, and operator runbooks/metrics. |
-| Wetware graph/vector concepts are too large for V1 | `U4` implements a lightweight genome/context contract; full graph/vector intelligence remains deferred in `TODOS.md`. |
-| Render deploy needs local-first ordering and fallback repo ownership | `U9` requires local gates before deploy and supports user GitHub destination with factory-owned temporary repo fallback. |
+| Gap                                                                              | Resolution in this plan                                                                                                                            |
+| -------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| No repo-local CE plan artifact                                                   | This file becomes the active implementation plan under `docs/plans/`.                                                                              |
+| Implementation tasks used checkboxes instead of stable units                     | Work is split into stable `U` units with dependencies, files, tests, and verification.                                                             |
+| Repo has no product scaffold                                                     | `U1` establishes the monorepo, package boundaries, commands, CI, and design-contract location.                                                     |
+| Approved design is outside the repo                                              | `U1` and `U8` bring the approved Factory Floor direction into `docs/design/` and `packages/web`.                                                   |
+| Worker concurrency changed from 5 to adaptive 20                                 | `U5` defines adaptive concurrency up to 20 with a default of 10, resource throttling, and tests for both full-capacity and reduced-capacity paths. |
+| "Skill-like" invocation was a product requirement but not an implementation unit | `U10` implements one CLI/API path plus Claude and Codex wrappers around the same backend.                                                          |
+| Observability needed both user and operator surfaces                             | `U2`, `U8`, and `U11` split ledger truth, run UI, and operator runbooks/metrics.                                                                   |
+| Wetware graph/vector concepts are too large for V1                               | `U4` implements a lightweight genome/context contract; full graph/vector intelligence remains deferred in `TODOS.md`.                              |
+| Render deploy needs local-first ordering and fallback repo ownership             | `U9` requires local gates before deploy and supports user GitHub destination with factory-owned temporary repo fallback.                           |
 
 ## Requirements
 
-| ID | Requirement |
-| --- | --- |
-| R1 | Prompt/PRD intake must work from the web UI and from a skill-style CLI invocation. |
-| R2 | The factory must create a ticket DAG from the request and expose supervisor decisions. |
-| R3 | Workers must use explicit execution adapters, including local Codex CLI and Claude Code CLI adapters, with API execution behind the same interface. |
-| R4 | Concurrency must be adaptive up to 10 active workers when system, adapter, sandbox, write-scope, and review constraints allow. |
-| R5 | Human review is the default mode; an autonomous mode may run only when policy and risk tier allow it. |
-| R6 | Ledger events are the source of truth for run, ticket, worker, artifact, gate, review, preview, deploy, and provenance state. |
-| R7 | The UI must mimic the Ash SWF operating model: supervisor, tickets, worker parallelism, skill library, QA/retry loops, risk-tiered review, backlog, deploy, and skill update suggestions. |
-| R8 | Generated app V1 is a real AI Services Marketplace product slice, not a demo-only toy. |
-| R9 | The generated app must be locally testable and previewable before any hosted deploy is attempted. |
-| R10 | Render is the default hosted deploy target after local completion; GitHub is configured first, with factory-owned temporary repo fallback when the user does not provide one. |
-| R11 | Every artifact must carry provenance, confidence, gate evidence, and a handoff summary. |
-| R12 | Local operator access must protect mutating API routes and CLI calls with token/session, origin, CSRF, and stale-command checks. |
-| R13 | Sandbox and dependency policies must prevent host-secret leakage, unsafe commands, data-loss migrations, and dependency changes without risk-aware review. |
-| R14 | Observability must include user-facing run evidence and operator-facing health, resource, adapter, queue, and deploy diagnostics. |
-| R15 | The implementation must prepare for future existing-repo feature insertion without making it part of V1. |
+| ID  | Requirement                                                                                                                                                                               |
+| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| R1  | Prompt/PRD intake must work from the web UI and from a skill-style CLI invocation.                                                                                                        |
+| R2  | The factory must create a ticket DAG from the request and expose supervisor decisions.                                                                                                    |
+| R3  | Workers must use explicit execution adapters, including local Codex CLI and Claude Code CLI adapters, with API execution behind the same interface.                                       |
+| R4  | Concurrency must be adaptive up to 20 active workers when system, adapter, sandbox, write-scope, and review constraints allow, while defaulting to 10.                                    |
+| R5  | Human review is the default mode; an autonomous mode may run only when policy and risk tier allow it.                                                                                     |
+| R6  | Ledger events are the source of truth for run, ticket, worker, artifact, gate, review, preview, deploy, and provenance state.                                                             |
+| R7  | The UI must mimic the Ash SWF operating model: supervisor, tickets, worker parallelism, skill library, QA/retry loops, risk-tiered review, backlog, deploy, and skill update suggestions. |
+| R8  | Generated app V1 is a real AI Services Marketplace product slice, not a demo-only toy.                                                                                                    |
+| R9  | The generated app must be locally testable and previewable before any hosted deploy is attempted.                                                                                         |
+| R10 | Render is the default hosted deploy target after local completion; GitHub is configured first, with factory-owned temporary repo fallback when the user does not provide one.             |
+| R11 | Every artifact must carry provenance, confidence, gate evidence, and a handoff summary.                                                                                                   |
+| R12 | Local operator access must protect mutating API routes and CLI calls with token/session, origin, CSRF, and stale-command checks.                                                          |
+| R13 | Sandbox and dependency policies must prevent host-secret leakage, unsafe commands, data-loss migrations, and dependency changes without risk-aware review.                                |
+| R14 | Observability must include user-facing run evidence and operator-facing health, resource, adapter, queue, and deploy diagnostics.                                                         |
+| R15 | The implementation must prepare for future existing-repo feature insertion without making it part of V1.                                                                                  |
 
 ## Scope
 
@@ -57,7 +57,7 @@ The existing strategy is directionally complete, but it was not yet executable b
 - A local web/API/worker/CLI product that can create and run software-factory jobs.
 - A generated AI Services Marketplace app path using TypeScript, Next.js, local SQLite/test database, Render Postgres profile, Prisma or an equivalent lightweight ORM, Vitest, and Playwright.
 - Local BYO Codex CLI and Claude Code CLI execution adapters, plus API adapter stubs behind the same contract.
-- Dependency-aware worker scheduling with adaptive concurrency up to 10 active workers.
+- Dependency-aware worker scheduling with adaptive concurrency up to 20 active workers, defaulting to 10.
 - Append-only ledger, replay projections, review studio, gate evidence, artifact confidence, and provenance bundles.
 - Local preview and automated gate pipeline before hosted deployment.
 - Render deploy adapter with generated `render.yaml`, hosted health check, and deploy evidence.
@@ -518,7 +518,7 @@ Approach:
 
 - Implement the approved control-room ledger direction using the repo-owned design contract from `U1`.
 - First screen is the actual Factory Floor run surface, not a marketing landing page.
-- Include prompt/PRD intake, local folder selector, execution adapter selector, model and effort controls, review mode control, adaptive worker cap up to 10, local preview status, hosted deploy status, and setup checklist.
+- Include prompt/PRD intake, local folder selector, execution adapter selector, model and effort controls, review mode control, adaptive worker cap up to 20 with default 10, local preview status, hosted deploy status, and setup checklist.
 - Show supervisor decisions, worker ticket states, gate evidence, trace severity, artifact confidence, review decisions, deploy logs, and provenance from ledger projections only.
 - Use decision cards for human approvals. Default mode is human review; autonomous mode remains explicit and does not pause on review risk tiers.
 - Provide loading, empty, error, success, partial, reduced-trust, setup-required, stale-command, and reconnecting states.
@@ -530,7 +530,7 @@ Test Scenarios:
 - Active run renders tickets, supervisor decisions, worker count, gate states, preview, ledger, review studio, artifacts, provenance, and deploy state from events.
 - Decision card approval/rejection uses command guard and handles stale subject versions.
 - Trace ledger reconnects with `last_sequence` or polling fallback.
-- Worker cap control allows 1 through 10 and labels cap as system-gated.
+- Worker cap control allows 1 through 20, defaults to 10, and labels cap as system-gated.
 - Artifact confidence blends gate pass rate, provenance completeness, dependency risk, and preview evidence.
 - Responsive tests pass for desktop, tablet, and mobile.
 - Keyboard and screen-reader checks pass for core review actions.
@@ -718,17 +718,17 @@ Final integration must run the golden AI Services Marketplace flow through promp
 
 ## Risk Register
 
-| Risk | Mitigation |
-| --- | --- |
-| Repo begins with no scaffold | U1 is a dedicated scaffold and CI unit. |
-| Local Codex/Claude CLI behavior varies by installation/auth state | Use adapter contract tests, setup detection, normalized failures, and optional live tests. |
-| Adaptive 10-worker cap overloads local machine | Capacity manager throttles based on measured local limits and emits ledgered reasons. |
-| Generated code accesses host secrets or unsafe paths | Sandbox policy, command guard, secret scan, and reduced-trust fallback gating. |
-| UI claims progress that did not happen | UI reads only ledger projections and shows reconnect/projection-gap states explicitly. |
-| Render deploy becomes a second product too early | U9 limits deploy to generated config, default Render path, mocked CI tests, and optional credentialed E2E. |
-| Full wetware graph/vector model expands V1 beyond reach | U4 implements lightweight contracts and keeps full graph/vector work deferred. |
-| Skill wrappers fork orchestration logic | U10 requires wrappers to call the same CLI/backend and pass contract tests. |
-| Human review/autonomous mode becomes ambiguous | U3 and U4 centralize review policy, risk tiers, and stale-command checks. |
+| Risk                                                              | Mitigation                                                                                                 |
+| ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| Repo begins with no scaffold                                      | U1 is a dedicated scaffold and CI unit.                                                                    |
+| Local Codex/Claude CLI behavior varies by installation/auth state | Use adapter contract tests, setup detection, normalized failures, and optional live tests.                 |
+| Adaptive 20-worker cap overloads local machine                    | Capacity manager throttles based on measured local limits and emits ledgered reasons.                      |
+| Generated code accesses host secrets or unsafe paths              | Sandbox policy, command guard, secret scan, and reduced-trust fallback gating.                             |
+| UI claims progress that did not happen                            | UI reads only ledger projections and shows reconnect/projection-gap states explicitly.                     |
+| Render deploy becomes a second product too early                  | U9 limits deploy to generated config, default Render path, mocked CI tests, and optional credentialed E2E. |
+| Full wetware graph/vector model expands V1 beyond reach           | U4 implements lightweight contracts and keeps full graph/vector work deferred.                             |
+| Skill wrappers fork orchestration logic                           | U10 requires wrappers to call the same CLI/backend and pass contract tests.                                |
+| Human review/autonomous mode becomes ambiguous                    | U3 and U4 centralize review policy, risk tiers, and stale-command checks.                                  |
 
 ## Documentation Updates
 
@@ -746,7 +746,7 @@ Final integration must run the golden AI Services Marketplace flow through promp
 - The same run can be created from `software-factory run "<prompt>"` and from Claude/Codex skill wrappers.
 - The supervisor creates a visible ticket DAG for the AI Services Marketplace app.
 - Workers execute through explicit adapters and emit ledger events.
-- Scheduler supports requested cap 1 through 10 and throttles with evidence when constraints require it.
+- Scheduler supports requested cap 1 through 20, defaults to 10, and throttles with evidence when constraints require it.
 - Human review is default; autonomous mode is explicit and does not pause on review risk tiers.
 - Generated app passes local install, lint, typecheck, unit tests, Playwright smoke, and preview health before deploy.
 - Review studio shows risk tier, decision cards, trace severity, artifact confidence, diffs/logs, and provenance.

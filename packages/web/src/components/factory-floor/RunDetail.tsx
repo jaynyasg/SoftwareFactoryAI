@@ -27,6 +27,12 @@ export function RunDetail({
         <Link className="btn btn--sm btn--ghost" href="/">
           ← Factory floor
         </Link>
+        <Link
+          className="btn btn--sm btn--ghost"
+          href={`/operator?runId=${encodeURIComponent(runId)}`}
+        >
+          Operator view
+        </Link>
       </div>
       <RunControl
         activeRun={{

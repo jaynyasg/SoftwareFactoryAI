@@ -292,8 +292,8 @@ describe('computeEffectiveCapacity', () => {
     expect(result.reason).toMatch(/adapter capacity/i);
   });
 
-  it('clamps the requested cap to [1, 10]', () => {
-    expect(computeEffectiveCapacity({ ...base, requestedCap: 25 }).requested).toBe(10);
+  it('clamps the requested cap to [1, 20]', () => {
+    expect(computeEffectiveCapacity({ ...base, requestedCap: 25 }).requested).toBe(20);
     expect(computeEffectiveCapacity({ ...base, requestedCap: 0 }).requested).toBe(1);
   });
 
