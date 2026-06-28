@@ -352,6 +352,10 @@ See `docs/runbooks/cloud-deployment.md` for the full hosted setup.
 
 ## Architecture
 
+For the deeper system map, runtime topology, invocation flows, MCP bridge, event
+ledger, worker scheduler, and cloud deployment boundaries, see
+`ARCHITECTURE.md`.
+
 ```mermaid
 flowchart LR
   UI["Factory Floor UI"] --> API["Next /api route handler"]
