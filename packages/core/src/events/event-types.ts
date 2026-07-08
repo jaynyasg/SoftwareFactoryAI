@@ -393,6 +393,161 @@ export interface WorkspaceUnavailablePayload {
   readonly requiredAction?: string;
 }
 
+// execution (run controls, full-factory U5)
+/**
+ * Execution state events describe the run's EXECUTION lifecycle, distinct from
+ * the run's planning lifecycle: a run may be planned but never executed, and
+ * execution can pause/resume/block/fail without changing planning history.
+ * `run.started` (existing) marks the first real execution start; these events
+ * carry the rest of the execution state machine.
+ */
+export interface ExecutionPausedPayload {
+  readonly reason?: string;
+}
+export interface ExecutionResumedPayload {
+  readonly reason?: string;
+}
+export interface ExecutionBlockedPayload {
+  /** Why execution cannot proceed (preflight, intervention, abandoned lease…). */
+  readonly reason: string;
+  /** What the operator must do before execution can continue. */
+  readonly requiredAction?: string;
+}
+export interface ExecutionCompletedPayload {
+  readonly summary?: string;
+}
+export interface ExecutionFailedPayload {
+  readonly reason: string;
+}
+
+// preflight (dry-run execution rehearsal, full-factory U5 / CEO expansion X2)
+/**
+ * The named preflight checks a dry-run rehearsal verifies BEFORE any worker
+ * mutates files: ticket DAG integrity, workspace readiness, write scopes,
+ * credentials, adapter readiness, gate setup, deploy prerequisites, and
+ * outstanding operator approvals.
+ */
+export const PREFLIGHT_CHECKS = [
+  'dag',
+  'workspace',
+  'write_scopes',
+  'credentials',
+  'adapters',
+  'gates',
+  'deploy',
+  'approvals',
+] as const;
+export type PreflightCheck = (typeof PREFLIGHT_CHECKS)[number];
+
+export interface PreflightStartedPayload {
+  /** 1-based preflight attempt for this run (re-runs increment it). */
+  readonly attempt: number;
+  readonly checks: readonly PreflightCheck[];
+}
+export interface PreflightCheckPassedPayload {
+  readonly attempt: number;
+  readonly check: PreflightCheck;
+  readonly detail?: string;
+}
+export interface PreflightCheckFailedPayload {
+  readonly attempt: number;
+  readonly check: PreflightCheck;
+  readonly reason: string;
+  /** What the operator must change before the check can pass. */
+  readonly requiredAction?: string;
+}
+export interface PreflightPassedPayload {
+  readonly attempt: number;
+  readonly checkCount: number;
+}
+export interface PreflightFailedPayload {
+  readonly attempt: number;
+  readonly reason: string;
+  readonly failedChecks: readonly PreflightCheck[];
+}
+
+// queue (ledger-backed durable execution queue, full-factory U5 / KTD4 / E2)
+/** What a queue job executes. U5 ships run execution + gate re-runs. */
+export type QueueJobKind = 'run-execution' | 'gate-rerun';
+
+/** Terminal (or requeue) outcome recorded when a claimed job is released. */
+export type QueueReleaseOutcome = 'completed' | 'failed' | 'blocked' | 'cancelled' | 'requeued';
+
+export interface QueueEnqueuedPayload {
+  readonly jobId: string;
+  readonly jobKind: QueueJobKind;
+  /** 1-based execution attempt for this job (operator retries increment it). */
+  readonly attempt: number;
+  readonly reason?: string;
+  /** Optional ticket focus for retry-ticket commands (consumed by U6). */
+  readonly ticketId?: string;
+}
+export interface QueueClaimedPayload {
+  readonly jobId: string;
+  readonly jobKind: QueueJobKind;
+  readonly attempt: number;
+  readonly leaseId: string;
+  /** The daemon (process) instance that owns the lease. */
+  readonly ownerId: string;
+  /** Epoch ms when the lease expires unless heartbeaten. */
+  readonly leaseExpiresAt: number;
+}
+export interface QueueHeartbeatPayload {
+  readonly jobId: string;
+  readonly jobKind: QueueJobKind;
+  readonly attempt: number;
+  readonly leaseId: string;
+  readonly ownerId: string;
+  /** The EXTENDED lease expiry. */
+  readonly leaseExpiresAt: number;
+}
+export interface QueueReleasedPayload {
+  readonly jobId: string;
+  readonly jobKind: QueueJobKind;
+  readonly attempt: number;
+  readonly leaseId?: string;
+  readonly outcome: QueueReleaseOutcome;
+  readonly reason?: string;
+}
+export interface QueueLeaseAbandonedPayload {
+  readonly jobId: string;
+  readonly jobKind: QueueJobKind;
+  readonly attempt: number;
+  readonly leaseId: string;
+  /** The owner that stopped heartbeating (when known). */
+  readonly ownerId?: string;
+  readonly reason: string;
+}
+
+// intervention (operator intervention queue, full-factory U5 / CEO expansion X4)
+/** The human decision classes the intervention queue collects. */
+export const INTERVENTION_KINDS = [
+  'approval',
+  'missing_credentials',
+  'source_choice',
+  'unsafe_path',
+  'adapter_setup',
+  'deploy_setup',
+  'retry_choice',
+  'policy_block',
+] as const;
+export type InterventionKind = (typeof INTERVENTION_KINDS)[number];
+
+export interface InterventionRaisedPayload {
+  readonly interventionId: string;
+  readonly kind: InterventionKind;
+  /** The stage the intervention blocks (e.g. `preflight`, `execution`). */
+  readonly blockingStage: string;
+  readonly reason: string;
+  /** The action the operator must take to unblock the stage. */
+  readonly requiredAction: string;
+}
+export interface InterventionResolvedPayload {
+  readonly interventionId: string;
+  readonly resolution: string;
+  readonly note?: string;
+}
+
 // ticket
 export interface TicketCreatedPayload {
   readonly title: string;
@@ -589,6 +744,23 @@ export interface EventPayloadMap {
   'workspace.checkout_completed': WorkspaceCheckoutCompletedPayload;
   'workspace.checkout_failed': WorkspaceCheckoutFailedPayload;
   'workspace.unavailable': WorkspaceUnavailablePayload;
+  'execution.paused': ExecutionPausedPayload;
+  'execution.resumed': ExecutionResumedPayload;
+  'execution.blocked': ExecutionBlockedPayload;
+  'execution.completed': ExecutionCompletedPayload;
+  'execution.failed': ExecutionFailedPayload;
+  'preflight.started': PreflightStartedPayload;
+  'preflight.check_passed': PreflightCheckPassedPayload;
+  'preflight.check_failed': PreflightCheckFailedPayload;
+  'preflight.passed': PreflightPassedPayload;
+  'preflight.failed': PreflightFailedPayload;
+  'queue.enqueued': QueueEnqueuedPayload;
+  'queue.claimed': QueueClaimedPayload;
+  'queue.heartbeat': QueueHeartbeatPayload;
+  'queue.released': QueueReleasedPayload;
+  'queue.lease_abandoned': QueueLeaseAbandonedPayload;
+  'intervention.raised': InterventionRaisedPayload;
+  'intervention.resolved': InterventionResolvedPayload;
   'ticket.created': TicketCreatedPayload;
   'ticket.queued': EmptyPayload;
   'ticket.state_changed': TicketStateChangedPayload;
@@ -709,6 +881,23 @@ export const EVENT_TYPES = [
   'workspace.checkout_completed',
   'workspace.checkout_failed',
   'workspace.unavailable',
+  'execution.paused',
+  'execution.resumed',
+  'execution.blocked',
+  'execution.completed',
+  'execution.failed',
+  'preflight.started',
+  'preflight.check_passed',
+  'preflight.check_failed',
+  'preflight.passed',
+  'preflight.failed',
+  'queue.enqueued',
+  'queue.claimed',
+  'queue.heartbeat',
+  'queue.released',
+  'queue.lease_abandoned',
+  'intervention.raised',
+  'intervention.resolved',
   'ticket.created',
   'ticket.queued',
   'ticket.state_changed',

@@ -130,10 +130,11 @@ function operatorApprovalsFor(
     }
   }
   if (run.mode === 'research-plan-and-start') {
-    // U5 seam: execution controls (start/queue/daemon) do not exist yet. The
-    // requested start stays a recorded, operator-visible pending approval.
+    // U5: the run mode IS the durable operator start request. Execution still
+    // requires the dry-run preflight rehearsal (X2) to pass before the queue
+    // accepts the work, so the contract records that condition explicitly.
     approvals.push(
-      'Operator start approval: execution controls are not yet available; the recorded start request stays pending until they exist.',
+      'Operator start approval: start request recorded (mode research-plan-and-start); execution proceeds once the dry-run preflight passes.',
     );
   }
   return approvals;

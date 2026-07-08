@@ -34,6 +34,8 @@ import { createFileSystemEventStore } from '@software-factory/core';
 import type { EventStore, OperatorTokenProvider } from '@software-factory/core';
 import { createApp } from './app';
 import type { App } from './app';
+import { createExecutionDaemon } from './execution/daemon';
+import type { ExecutionDaemon } from './execution/daemon';
 import { createRuntimeOperatorTokenProvider, resolveRuntimeConfig } from './runtime';
 import type { LocalSession } from '../lib/session';
 
@@ -45,6 +47,7 @@ interface FactorySingletons {
   store?: EventStore;
   provider?: OperatorTokenProvider;
   app?: App;
+  daemon?: ExecutionDaemon;
 }
 
 const globalRef = globalThis as typeof globalThis & { __softwareFactory__?: FactorySingletons };
@@ -69,12 +72,47 @@ export function getStore(): EventStore {
   return singletons.store;
 }
 
+/**
+ * The process-wide execution daemon (full-factory U5, hardening E1).
+ *
+ * Bootstrapped EXACTLY ONCE per process: the daemon lives on the same
+ * globalThis singleton record as the store/app, so Next's separate module
+ * graphs (server components vs route handlers) and repeated requests all see
+ * one daemon owner. `start()` runs the initial reconcile pass (resume safe
+ * queued work, abandon stale leases) and the interval loop; SIGTERM/SIGINT
+ * stop it gracefully so in-flight work yields and requeues.
+ */
+export function getExecutionDaemon(): ExecutionDaemon {
+  if (singletons.daemon === undefined) {
+    const runtime = resolveRuntimeConfig();
+    const daemon = createExecutionDaemon({
+      store: getStore(),
+      config: runtime.execution,
+    });
+    singletons.daemon = daemon;
+    daemon.start().catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[software-factory] execution daemon failed to start: ${message}`);
+    });
+    const shutdown = (): void => {
+      daemon.stop().catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`[software-factory] execution daemon failed to stop: ${message}`);
+      });
+    };
+    process.once('SIGTERM', shutdown);
+    process.once('SIGINT', shutdown);
+  }
+  return singletons.daemon;
+}
+
 /** The process-wide local API app. Built once, reused across requests. */
 export function getApp(): App {
   const runtime = resolveRuntimeConfig();
   singletons.app ??= createApp({
     store: getStore(),
     operatorToken: operatorTokenProvider(),
+    execution: getExecutionDaemon(),
     config: {
       allowedOrigins: runtime.allowedOrigins,
       csrfToken: csrfToken(),

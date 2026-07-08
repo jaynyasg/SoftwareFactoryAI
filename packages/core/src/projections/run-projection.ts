@@ -220,23 +220,38 @@ export interface SupervisorDecisionView {
 }
 
 /**
- * Projected execution intent (full-factory U3; the U5 seam).
+ * Projected execution state (full-factory U3 seam, realized by U5).
  *
- * Run modes can REQUEST execution (`research-plan-and-start`), but execution
- * controls (start command, queue, daemon) are U5 and do not exist yet. This
- * state makes that explicit instead of pretending a run started:
- *  - `not_requested` — the run mode never asked for execution (plan-only /
- *    research-and-plan, or a pre-U3 ledger without a mode).
- *  - `pending`       — a start was requested and the run is created/planned;
- *    it stays pending until U5 execution controls exist to act on it.
- *  - `started`       — a `run.started` event was observed on the ledger.
+ * Derived ONLY from recorded events — never invented:
+ *  - `not_requested` — the run never asked for execution (plan-only /
+ *    research-and-plan, or a pre-U3 ledger without a mode) and no execution
+ *    command touched it.
+ *  - `pending`       — a start was requested (mode `research-plan-and-start`)
+ *    but no execution/queue events exist yet (e.g. execution controls are
+ *    disabled on this instance, or a pre-U5 ledger).
+ *  - `queued`        — a `queue.enqueued` run-execution job is awaiting the
+ *    execution daemon (or was requeued for a safe restart resume).
+ *  - `started`       — execution is running (`run.started` / resumed).
+ *  - `paused`        — the operator paused execution; no new worker starts.
+ *  - `blocked`       — preflight failed, execution blocked, or a queue lease
+ *    was abandoned; an operator intervention is required to proceed.
+ *  - `completed`     — `execution.completed` was recorded.
+ *  - `failed`        — `execution.failed` was recorded.
+ *  - `cancelled`     — the run was cancelled after execution activity began.
  *  - `unavailable`   — a start was requested but the run failed or was
- *    cancelled, so execution cannot proceed.
- *
- * U5 replaces `pending` with real queue/daemon states; until then no component
- * may treat `pending` as running.
+ *    cancelled before any execution activity, so execution cannot proceed.
  */
-export type RunExecutionState = 'not_requested' | 'pending' | 'started' | 'unavailable';
+export type RunExecutionState =
+  | 'not_requested'
+  | 'pending'
+  | 'queued'
+  | 'started'
+  | 'paused'
+  | 'blocked'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'unavailable';
 
 /** The latest projected build contract (from `contract.generated`). */
 export interface BuildContractView extends ContractGeneratedPayload {
@@ -263,8 +278,10 @@ export interface RunProjection {
   readonly callerFamily?: CallerFamily;
   /** Requested run mode (from the `run.created` payload); absent = plan-only. */
   readonly mode?: RunMode;
-  /** Explicit execution intent — see `RunExecutionState` (the U5 seam). */
+  /** Explicit execution state — see `RunExecutionState` (realized in U5). */
   readonly executionState: RunExecutionState;
+  /** Human-facing reason for a blocked/failed/paused execution state. */
+  readonly executionReason?: string;
   /** Latest build contract, when `contract.generated` exists on the ledger. */
   readonly buildContract?: BuildContractView;
   readonly plannedTicketCount?: number;
@@ -305,6 +322,10 @@ export function projectRun(raw: readonly unknown[], runId?: string): RunProjecti
   let completedAt: number | undefined;
   let failureReason: string | undefined;
   let lastSequence = 0;
+  // Execution fold (U5): derived exclusively from recorded execution/queue/
+  // preflight events. `undefined` means no execution activity was recorded.
+  let executionFold: RunExecutionState | undefined;
+  let executionReason: string | undefined;
 
   for (const event of runEvents) {
     ledger.push(toLedgerRow(event));
@@ -343,6 +364,8 @@ export function projectRun(raw: readonly unknown[], runId?: string): RunProjecti
       case 'run.started':
         status = 'running';
         startedAt = event.timestamp;
+        executionFold = 'started';
+        executionReason = undefined;
         break;
       case 'run.completed':
         status = 'completed';
@@ -357,6 +380,77 @@ export function projectRun(raw: readonly unknown[], runId?: string): RunProjecti
         status = 'cancelled';
         completedAt = event.timestamp;
         failureReason = event.payload.reason ?? failureReason;
+        // Cancel propagates to execution only when execution activity exists;
+        // otherwise the legacy post-fold `unavailable` derivation applies.
+        if (executionFold !== undefined) {
+          executionFold = 'cancelled';
+          executionReason = event.payload.reason ?? executionReason;
+        }
+        break;
+      case 'queue.enqueued':
+        if (event.payload.jobKind === 'run-execution') {
+          executionFold = 'queued';
+          executionReason = event.payload.reason;
+        }
+        break;
+      case 'queue.released':
+        if (event.payload.jobKind === 'run-execution') {
+          // Terminal outcomes are also carried by execution.* events; folding
+          // the release keeps the state honest even if one write was lost.
+          switch (event.payload.outcome) {
+            case 'completed':
+              executionFold = 'completed';
+              break;
+            case 'failed':
+              executionFold = 'failed';
+              executionReason = event.payload.reason ?? executionReason;
+              break;
+            case 'blocked':
+              executionFold = 'blocked';
+              executionReason = event.payload.reason ?? executionReason;
+              break;
+            case 'cancelled':
+              executionFold = 'cancelled';
+              executionReason = event.payload.reason ?? executionReason;
+              break;
+            case 'requeued':
+              executionFold = 'queued';
+              executionReason = event.payload.reason;
+              break;
+            default:
+              break;
+          }
+        }
+        break;
+      case 'queue.lease_abandoned':
+        if (event.payload.jobKind === 'run-execution') {
+          executionFold = 'blocked';
+          executionReason = event.payload.reason;
+        }
+        break;
+      case 'execution.paused':
+        executionFold = 'paused';
+        executionReason = event.payload.reason;
+        break;
+      case 'execution.resumed':
+        executionFold = 'started';
+        executionReason = undefined;
+        break;
+      case 'execution.blocked':
+        executionFold = 'blocked';
+        executionReason = event.payload.reason;
+        break;
+      case 'execution.completed':
+        executionFold = 'completed';
+        executionReason = undefined;
+        break;
+      case 'execution.failed':
+        executionFold = 'failed';
+        executionReason = event.payload.reason;
+        break;
+      case 'preflight.failed':
+        executionFold = 'blocked';
+        executionReason = event.payload.reason;
         break;
       case 'supervisor.decision':
         supervisorDecisions.push({
@@ -371,11 +465,14 @@ export function projectRun(raw: readonly unknown[], runId?: string): RunProjecti
     }
   }
 
-  // U5 seam: derive the explicit execution intent from recorded events only.
-  // `pending` is an honest "start requested, execution controls not yet
-  // available" state — never a claim that anything is running.
+  // Derive the explicit execution state from recorded events only. When queue/
+  // execution events exist the fold wins; otherwise the U3 intent semantics
+  // apply: `pending` is an honest "start requested, no execution activity yet"
+  // state — never a claim that anything is running.
   let executionState: RunExecutionState = 'not_requested';
-  if (startedAt !== undefined) {
+  if (executionFold !== undefined) {
+    executionState = executionFold;
+  } else if (startedAt !== undefined) {
     executionState = 'started';
   } else if (mode === 'research-plan-and-start') {
     executionState = status === 'failed' || status === 'cancelled' ? 'unavailable' : 'pending';
@@ -398,6 +495,7 @@ export function projectRun(raw: readonly unknown[], runId?: string): RunProjecti
     callerFamily,
     mode,
     executionState,
+    executionReason,
     buildContract,
     plannedTicketCount,
     startedAt,

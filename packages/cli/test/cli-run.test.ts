@@ -114,6 +114,30 @@ function makeFakeBackend(opts: { failCreateWith?: ApiError } = {}): FakeBackend 
     review() {
       return Promise.reject(new Error('not used'));
     },
+    startRun() {
+      return Promise.reject(new Error('not used'));
+    },
+    pauseRun() {
+      return Promise.reject(new Error('not used'));
+    },
+    resumeRun() {
+      return Promise.reject(new Error('not used'));
+    },
+    retryRun() {
+      return Promise.reject(new Error('not used'));
+    },
+    rerunGates() {
+      return Promise.reject(new Error('not used'));
+    },
+    getExecution() {
+      return Promise.reject(new Error('not used'));
+    },
+    listInterventions() {
+      return Promise.reject(new Error('not used'));
+    },
+    resolveIntervention() {
+      return Promise.reject(new Error('not used'));
+    },
     getSetup() {
       return Promise.resolve({
         operatorToken: { present: true },

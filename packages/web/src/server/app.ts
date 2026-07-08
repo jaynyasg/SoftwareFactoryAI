@@ -37,7 +37,11 @@ import { runRoutes } from './routes/runs';
 import { eventRoutes } from './routes/events';
 import { reviewRoutes } from './routes/review';
 import { setupRoutes } from './routes/setup';
+import { executionRoutes } from './routes/execution';
 import { researchRoutes } from './research/research-routes';
+import { createRuntimePreflight } from './execution/preflight';
+import type { PreflightRunResult, PreflightRunner } from './execution/preflight';
+import type { ExecutionDaemon } from './execution/daemon';
 import { createRuntimeResearcher } from './research/runtime-researcher';
 import type { ResearchTriggerInput, RunResearcher } from './research/runtime-researcher';
 import { createRuntimeWorkspaceMaterializer } from './workspace/runtime-materializer';
@@ -56,6 +60,8 @@ export type {
   RunWorkspaceMaterializer,
   WorkspaceTriggerInput,
 } from './workspace/runtime-materializer';
+export type { ExecutionDaemon } from './execution/daemon';
+export type { PreflightRunner, PreflightRunResult } from './execution/preflight';
 
 /* ----------------------------------------------------------------------------
  * Transport types
@@ -137,6 +143,23 @@ export interface AppDeps {
    * to disable the workspace trigger entirely.
    */
   readonly materializer?: RunWorkspaceMaterializer | null;
+  /**
+   * Execution daemon (full-factory U5, hardening E1). The daemon OWNS worker
+   * execution; routes only enqueue/mutate queue state and `notify()` it.
+   * Unlike the researcher/materializer, the app never constructs a daemon
+   * itself: its lifecycle (start/stop, exactly once per process) belongs to
+   * the server entry points — `instance.ts` (Next-mounted singleton) and
+   * `standalone.ts`. Omitted/`null` disables the execution command surface
+   * (start/pause/resume/retry/gates fail closed with 503).
+   */
+  readonly execution?: ExecutionDaemon | null;
+  /**
+   * Preflight runner (X2 dry-run rehearsal) invoked before a start may
+   * enqueue execution. Defaults to the runtime preflight built from the
+   * runtime config (`createRuntimePreflight`). Pass `null` to disable — start
+   * then fails closed rather than skipping the rehearsal.
+   */
+  readonly preflight?: PreflightRunner | null;
 }
 
 /* ----------------------------------------------------------------------------
@@ -205,6 +228,18 @@ export interface RouteContext {
   ): Promise<WorkspaceMaterializationResult | null>;
   /** Whether a workspace materializer is wired on this instance. */
   readonly workspaceEnabled: boolean;
+  /**
+   * The process execution daemon (U5), or `null` when execution controls are
+   * disabled on this instance. Routes use it ONLY to `notify()` after queue
+   * mutations and to propagate cancellation — never to run work in-request.
+   */
+  readonly executionDaemon: ExecutionDaemon | null;
+  /**
+   * Run one preflight rehearsal pass (X2) for a run, appending `preflight.*`
+   * events and interventions for failures. Resolves `null` when preflight is
+   * disabled (start then fails closed).
+   */
+  runPreflight(runId: string): Promise<PreflightRunResult | null>;
 }
 
 export type RouteHandler = (ctx: RouteContext) => Promise<ApiResponse>;
@@ -464,12 +499,31 @@ export function createApp(deps: AppDeps): App {
     return materializer(store, runId, input);
   }
 
+  // Execution daemon (U5): the app NEVER constructs one — lifecycle ownership
+  // stays with the server entry points. Omitted/null -> execution disabled.
+  const executionDaemon: ExecutionDaemon | null = deps.execution ?? null;
+
+  // `undefined` -> default runtime preflight; `null` -> preflight disabled
+  // (start fails closed rather than skipping the rehearsal).
+  const preflight: PreflightRunner | null =
+    deps.preflight === undefined
+      ? createRuntimePreflight({ runtime: config.runtime, clock })
+      : deps.preflight;
+
+  async function runPreflightForRun(runId: string): Promise<PreflightRunResult | null> {
+    if (preflight === null) {
+      return null;
+    }
+    return preflight(store, runId);
+  }
+
   const routes: RouteDef[] = [
     ...runRoutes(),
     ...eventRoutes(),
     ...reviewRoutes(),
     ...setupRoutes(),
     ...researchRoutes(),
+    ...executionRoutes(),
   ];
 
   async function guardMutation(
@@ -544,6 +598,8 @@ export function createApp(deps: AppDeps): App {
       researchEnabled: researcher !== null,
       materializeWorkspace: materializeWorkspaceForRun,
       workspaceEnabled: materializer !== null,
+      executionDaemon,
+      runPreflight: runPreflightForRun,
     };
   }
 

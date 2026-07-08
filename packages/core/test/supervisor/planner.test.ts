@@ -395,9 +395,7 @@ describe('build contract (full-factory U3 / X3)', () => {
     });
     const contract = await deriveFor(store, runId);
 
-    expect(contract.operatorApprovals.join(' ')).toContain(
-      'execution controls are not yet available',
-    );
+    expect(contract.operatorApprovals.join(' ')).toContain('start request recorded');
     expect(contract.operatorApprovals.join(' ')).toContain('Which auth provider?');
     expect(contract.risks.join(' ')).toContain('Blocking research gap');
   });

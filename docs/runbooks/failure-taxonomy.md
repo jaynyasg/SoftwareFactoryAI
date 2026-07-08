@@ -32,6 +32,10 @@ event taxonomy: every event type whose name contains `fail`, `error`, `reject`,
 | `research.failed`           | error    | yes      | yes       |
 | `workspace.checkout_failed` | error    | yes      | yes       |
 | `workspace.unavailable`     | warn     | yes      | no        |
+| `execution.blocked`         | warn     | yes      | no        |
+| `execution.failed`          | error    | yes      | yes       |
+| `preflight.check_failed`    | warn     | yes      | yes       |
+| `preflight.failed`          | error    | yes      | yes       |
 | `ticket.dead_lettered`      | error    | yes      | no        |
 | `worker.retry`              | warn     | no       | yes       |
 | `worker.failed`             | error    | yes      | yes       |
@@ -149,6 +153,53 @@ The requested source cannot back a workspace on this runtime:
 Follow the recorded `requiredAction` — provide a GitHub repository, upload PRD
 content, or choose an approved folder — then retry materialization. A blind
 retry without a setup change converges on the same recorded state.
+
+## Execution + preflight failures
+
+Execution is daemon-owned (E1): HTTP/CLI/MCP/Action commands enqueue or mutate
+execution state on the ledger, and the execution daemon claims queue leases and
+runs the work. A dry-run preflight rehearsal (X2) must pass before a start
+enqueues worker execution.
+
+### execution.blocked
+
+**Execution blocked** · warn · blocking · not retryable.
+
+Execution cannot proceed until an operator acts. Sources include a failed
+preflight rehearsal, an abandoned queue lease after a crash/restart, or a
+missing execution integration. The event's `reason`/`requiredAction` plus the
+paired **operator intervention queue** entry (`intervention.raised`) say exactly
+what to do; resolve the intervention, then retry (`POST /api/runs/:id/retry`)
+or start the run again. A blind retry without the required action converges on
+the same blocked state.
+
+### execution.failed
+
+**Execution failed** · error · blocking · retryable.
+
+The execution attempt for this run failed (worker/executor error). Inspect the
+recorded reason plus worker/adapter evidence, fix the cause, then retry
+execution within the bounded retry budget — retries increment the queue job
+attempt and the budget is enforced before enqueue.
+
+### preflight.check_failed
+
+**Preflight check failed** · warn · blocking · retryable.
+
+One named dry-run rehearsal check failed before any worker mutated files: `dag`,
+`workspace`, `write_scopes`, `credentials`, `adapters`, `gates`, `deploy`, or
+`approvals`. Each failure records a `requiredAction` and raises an intervention
+entry. Complete the action (materialize the workspace, add credentials, resolve
+blocking research gaps…), then start the run again — preflight re-runs on the
+next start attempt.
+
+### preflight.failed
+
+**Preflight failed** · error · blocking · retryable.
+
+The dry-run execution rehearsal failed overall, so the start command did **not**
+enqueue worker execution — no partial worker side effects exist. The event lists
+the failed checks; resolve their interventions and start the run again.
 
 ## Adapter failures
 

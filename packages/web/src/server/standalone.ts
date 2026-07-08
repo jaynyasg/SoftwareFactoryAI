@@ -24,6 +24,8 @@ import { pathToFileURL } from 'node:url';
 import { createFileSystemEventStore } from '@software-factory/core';
 import { createApp } from './app';
 import type { RunningServer } from './app';
+import { createExecutionDaemon } from './execution/daemon';
+import type { ExecutionDaemon } from './execution/daemon';
 import { createRuntimeOperatorTokenProvider, resolveRuntimeConfig } from './runtime';
 
 export interface StandaloneOptions {
@@ -41,11 +43,18 @@ export interface StandaloneServer {
   readonly operatorTokenPath: string;
   /** The operator token minted/loaded for this server (loopback only). */
   readonly operatorToken: string;
+  /** The single execution daemon owned by this server process (E1). */
+  readonly daemon: ExecutionDaemon;
+  /** Graceful shutdown: stop the daemon (yield/requeue), then the server. */
+  close(): Promise<void>;
 }
 
 /**
  * Build and start the standalone API server. The returned handle exposes the
  * bound URL plus the operator-token location so callers can report it.
+ *
+ * Exactly ONE execution daemon is bootstrapped per server (U5/E1): requests
+ * enqueue work and `notify()` it; the daemon owns the queue loop and leases.
  */
 export async function startStandaloneServer(
   options: StandaloneOptions = {},
@@ -59,18 +68,34 @@ export async function startStandaloneServer(
   const session = await provider.getOrCreate();
   const store = createFileSystemEventStore({ baseDir: join(factoryDir, 'events') });
 
+  // One daemon per process: bootstrapped BEFORE the listener so the initial
+  // reconcile pass (resume safe queued work, abandon stale leases) runs first.
+  const daemon = createExecutionDaemon({ store, config: runtime.execution });
+  await daemon.start();
+
   // No CSRF token here: the CLI is a non-browser caller authenticated by the
   // operator token. The default genome planner plans every created run.
   const app = createApp({
     store,
     operatorToken: provider,
+    execution: daemon,
     config: { allowedOrigins: runtime.allowedOrigins, runtime, allowSameHostOrigin: true },
   });
 
   const port = options.port ?? runtime.port;
   const host = options.host ?? runtime.host;
   const server = await app.listen(port, host);
-  return { server, factoryDir, operatorTokenPath, operatorToken: session.token };
+  return {
+    server,
+    factoryDir,
+    operatorTokenPath,
+    operatorToken: session.token,
+    daemon,
+    close: async () => {
+      await daemon.stop();
+      await server.close();
+    },
+  };
 }
 
 function parsePortArg(argv: readonly string[]): number | undefined {
@@ -103,7 +128,7 @@ async function main(): Promise<void> {
   );
 
   const shutdown = (): void => {
-    void started.server.close().finally(() => process.exit(0));
+    void started.close().finally(() => process.exit(0));
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);

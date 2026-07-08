@@ -38,6 +38,15 @@ import { eventsCommand } from './commands/events';
 import { artifactsCommand } from './commands/artifacts';
 import { startCommand } from './commands/start';
 import type { SpawnedBackend } from './commands/start';
+import {
+  interventionsCommand,
+  pauseRunCommand,
+  rerunGatesCommand,
+  resolveInterventionCommand,
+  resumeRunCommand,
+  retryRunCommand,
+  startRunCommand,
+} from './commands/execution';
 
 /** Stable package identifier for the factory CLI. */
 export const CLI_PACKAGE_NAME = '@software-factory/cli' as const;
@@ -60,6 +69,7 @@ const BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   'no-follow',
   'no-spawn',
   'help',
+  'open',
 ]);
 
 /** Minimal argv parser: `--key value`, `--key=value`, `--flag`, `--no-flag`. */
@@ -192,12 +202,22 @@ Run modes:
   plan-only                (default) blueprint only — research/execution do not run
   research-and-plan        bounded research runs first; the enriched brief feeds
                            planning and a build contract is generated
-  research-plan-and-start  as above, plus the start request is recorded; execution
-                           controls are not yet available, so the run settles at
-                           planned with an explicit execution-pending state
+  research-plan-and-start  as above, plus the start request is recorded and, when
+                           execution controls are enabled, preflighted and enqueued
+                           for the execution daemon
   software-factory status    <runId> [--json]
   software-factory events    <runId> [--follow] [--since <n>] [--json]
   software-factory artifacts <runId> [--json]
+
+Execution controls (U5 — the execution daemon owns the work; commands
+enqueue/mutate state and print projected results):
+  software-factory start-run    <runId> [--expected-version <n>] [--reason <r>] [--json]
+  software-factory pause        <runId> [--expected-version <n>] [--reason <r>] [--json]
+  software-factory resume       <runId> [--expected-version <n>] [--json]
+  software-factory retry        <runId> [--ticket <id>] [--expected-version <n>] [--json]
+  software-factory rerun-gates  <runId> [--expected-version <n>] [--json]
+  software-factory interventions [--run <id>] [--kind <k>] [--stage <s>] [--open] [--json]
+  software-factory resolve      <interventionId> --resolution <r> [--note <n>] [--json]
 
 Environment:
   SF_BASE_URL         backend base URL (default ${DEFAULT_BASE_URL})
@@ -324,6 +344,79 @@ export async function runCli(argv: readonly string[], deps: RunCliDeps = {}): Pr
         await artifactsCommand({ runId, json }, { client, io });
         return 0;
       }
+      case 'start-run':
+      case 'pause':
+      case 'resume':
+      case 'retry':
+      case 'rerun-gates': {
+        const runId = positionals[0];
+        if (runId === undefined) {
+          io.err(`${command} requires a <runId>.`);
+          return 2;
+        }
+        const client = await buildClient();
+        const args = {
+          runId,
+          expectedVersion: flagNum(flags, 'expected-version'),
+          reason: flagStr(flags, 'reason'),
+          ticketId: flagStr(flags, 'ticket'),
+          json,
+        };
+        const deps = { client, io };
+        switch (command) {
+          case 'start-run':
+            await startRunCommand(args, deps);
+            break;
+          case 'pause':
+            await pauseRunCommand(args, deps);
+            break;
+          case 'resume':
+            await resumeRunCommand(args, deps);
+            break;
+          case 'retry':
+            await retryRunCommand(args, deps);
+            break;
+          default:
+            await rerunGatesCommand(args, deps);
+            break;
+        }
+        return 0;
+      }
+      case 'interventions': {
+        const client = await buildClient();
+        await interventionsCommand(
+          {
+            runId: flagStr(flags, 'run') ?? flagStr(flags, 'run-id'),
+            kind: flagStr(flags, 'kind'),
+            severity: flagStr(flags, 'severity'),
+            blockingStage: flagStr(flags, 'stage'),
+            open: flagBool(flags, 'open'),
+            json,
+          },
+          { client, io },
+        );
+        return 0;
+      }
+      case 'resolve': {
+        const interventionId = positionals[0];
+        const resolution = flagStr(flags, 'resolution');
+        if (interventionId === undefined || resolution === undefined) {
+          io.err('resolve requires an <interventionId> and a --resolution <r>.');
+          return 2;
+        }
+        const client = await buildClient();
+        await resolveInterventionCommand(
+          {
+            interventionId,
+            resolution,
+            note: flagStr(flags, 'note'),
+            expectedVersion: flagNum(flags, 'expected-version'),
+            json,
+          },
+          { client, io },
+        );
+        return 0;
+      }
       default: {
         io.err(`Unknown command: ${command}\n`);
         io.out(HELP);
@@ -371,3 +464,12 @@ export { statusCommand } from './commands/status';
 export { eventsCommand } from './commands/events';
 export { artifactsCommand } from './commands/artifacts';
 export { startCommand, reachable } from './commands/start';
+export {
+  startRunCommand,
+  pauseRunCommand,
+  resumeRunCommand,
+  retryRunCommand,
+  rerunGatesCommand,
+  interventionsCommand,
+  resolveInterventionCommand,
+} from './commands/execution';

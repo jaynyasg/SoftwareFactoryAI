@@ -116,6 +116,82 @@ export interface ReviewInput {
   readonly mode?: ReviewMode;
 }
 
+/* Execution controls (full-factory U5). Commands enqueue/mutate queue state on
+ * the backend and return projected state — the CLI never waits for workers. */
+
+export interface ExecutionCommandInput {
+  /** Optimistic-concurrency check; rejected with 409 when stale. */
+  readonly expectedVersion?: number;
+  readonly reason?: string;
+}
+
+export interface RetryRunInput extends ExecutionCommandInput {
+  /** Optional ticket focus for the retry (consumed by execution integration). */
+  readonly ticketId?: string;
+}
+
+/** Compact projected execution state returned by execution commands. */
+export interface ExecutionSummary {
+  readonly state: string;
+  readonly reason?: string;
+}
+
+/** Projected queue-job view returned by execution commands. */
+export interface QueueJobSummary {
+  readonly jobId: string;
+  readonly jobKind: string;
+  readonly attempt: number;
+  readonly status: string;
+  readonly reason?: string;
+}
+
+export interface ExecutionCommandResult {
+  readonly runId: string;
+  readonly queued?: boolean;
+  readonly alreadyQueued?: boolean;
+  readonly paused?: boolean;
+  readonly resumed?: boolean;
+  readonly execution?: ExecutionSummary;
+  readonly job?: QueueJobSummary;
+  readonly run?: RunProjection;
+}
+
+export interface InterventionSummary {
+  readonly interventionId: string;
+  readonly runId: string;
+  readonly kind: string;
+  readonly severity: string;
+  readonly blockingStage: string;
+  readonly reason: string;
+  readonly requiredAction: string;
+  readonly status: string;
+  readonly resolution?: string;
+}
+
+export interface ListInterventionsQuery {
+  readonly runId?: string;
+  readonly kind?: string;
+  readonly severity?: string;
+  readonly blockingStage?: string;
+  readonly open?: boolean;
+}
+
+export interface ListInterventionsResult {
+  readonly interventions: readonly InterventionSummary[];
+  readonly openCount: number;
+}
+
+export interface ResolveInterventionInput {
+  readonly resolution: string;
+  readonly note?: string;
+  readonly expectedVersion?: number;
+}
+
+export interface ResolveInterventionResult {
+  readonly alreadyResolved?: boolean;
+  readonly intervention?: InterventionSummary;
+}
+
 export interface SetupResult {
   readonly operatorToken: { readonly present: boolean };
   readonly sandbox: { readonly status: string };
@@ -140,6 +216,19 @@ export interface ApiClient {
   cancelRun(runId: string, input: CancelRunInput): Promise<{ runId: string; run: RunProjection }>;
   review(runId: string, input: ReviewInput): Promise<{ runId: string; run: RunProjection }>;
   getSetup(): Promise<SetupResult>;
+  /** Preflight + enqueue execution for a planned run (U5). */
+  startRun(runId: string, input?: ExecutionCommandInput): Promise<ExecutionCommandResult>;
+  pauseRun(runId: string, input?: ExecutionCommandInput): Promise<ExecutionCommandResult>;
+  resumeRun(runId: string, input?: ExecutionCommandInput): Promise<ExecutionCommandResult>;
+  retryRun(runId: string, input?: RetryRunInput): Promise<ExecutionCommandResult>;
+  rerunGates(runId: string, input?: ExecutionCommandInput): Promise<ExecutionCommandResult>;
+  /** Projected execution state: queue job, preflight, open interventions. */
+  getExecution(runId: string): Promise<Record<string, unknown>>;
+  listInterventions(query?: ListInterventionsQuery): Promise<ListInterventionsResult>;
+  resolveIntervention(
+    interventionId: string,
+    input: ResolveInterventionInput,
+  ): Promise<ResolveInterventionResult>;
 }
 
 function trimBase(url: string): string {
@@ -276,6 +365,77 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
     async getSetup() {
       const body = await get('/api/setup');
       return body as unknown as SetupResult;
+    },
+    async startRun(runId, input = {}) {
+      const body = await mutate(`/api/runs/${encodeURIComponent(runId)}/start`, {
+        expectedVersion: input.expectedVersion,
+        reason: input.reason,
+      });
+      return body as unknown as ExecutionCommandResult;
+    },
+    async pauseRun(runId, input = {}) {
+      const body = await mutate(`/api/runs/${encodeURIComponent(runId)}/pause`, {
+        expectedVersion: input.expectedVersion,
+        reason: input.reason,
+      });
+      return body as unknown as ExecutionCommandResult;
+    },
+    async resumeRun(runId, input = {}) {
+      const body = await mutate(`/api/runs/${encodeURIComponent(runId)}/resume`, {
+        expectedVersion: input.expectedVersion,
+        reason: input.reason,
+      });
+      return body as unknown as ExecutionCommandResult;
+    },
+    async retryRun(runId, input = {}) {
+      const body = await mutate(`/api/runs/${encodeURIComponent(runId)}/retry`, {
+        expectedVersion: input.expectedVersion,
+        reason: input.reason,
+        ticketId: input.ticketId,
+      });
+      return body as unknown as ExecutionCommandResult;
+    },
+    async rerunGates(runId, input = {}) {
+      const body = await mutate(`/api/runs/${encodeURIComponent(runId)}/gates/rerun`, {
+        expectedVersion: input.expectedVersion,
+        reason: input.reason,
+      });
+      return body as unknown as ExecutionCommandResult;
+    },
+    async getExecution(runId) {
+      return get(`/api/runs/${encodeURIComponent(runId)}/execution`);
+    },
+    async listInterventions(query = {}) {
+      const params = new URLSearchParams();
+      if (query.runId !== undefined) {
+        params.set('runId', query.runId);
+      }
+      if (query.kind !== undefined) {
+        params.set('kind', query.kind);
+      }
+      if (query.severity !== undefined) {
+        params.set('severity', query.severity);
+      }
+      if (query.blockingStage !== undefined) {
+        params.set('blockingStage', query.blockingStage);
+      }
+      if (query.open === true) {
+        params.set('open', '1');
+      }
+      const suffix = params.size > 0 ? `?${params.toString()}` : '';
+      const body = await get(`/api/interventions${suffix}`);
+      return body as unknown as ListInterventionsResult;
+    },
+    async resolveIntervention(interventionId, input) {
+      const body = await mutate(
+        `/api/interventions/${encodeURIComponent(interventionId)}/resolve`,
+        {
+          resolution: input.resolution,
+          note: input.note,
+          expectedVersion: input.expectedVersion,
+        },
+      );
+      return body as unknown as ResolveInterventionResult;
     },
   };
 }

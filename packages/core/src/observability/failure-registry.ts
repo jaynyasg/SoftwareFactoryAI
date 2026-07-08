@@ -39,6 +39,10 @@ export const FAILURE_EVENT_TYPES = [
   'research.failed',
   'workspace.checkout_failed',
   'workspace.unavailable',
+  'execution.blocked',
+  'execution.failed',
+  'preflight.check_failed',
+  'preflight.failed',
   'ticket.dead_lettered',
   'worker.retry',
   'worker.failed',
@@ -133,6 +137,42 @@ const ENTRY_SPECS: readonly EntrySpec[] = [
     retryable: false,
     rescueAction:
       'The requested source cannot back a workspace on this runtime (cloud runs never read laptop paths; local folders must resolve inside the approved boundary or an explicitly approved operator folder). Follow the recorded requiredAction — provide a GitHub repository, upload PRD content, or choose an approved folder — then retry materialization. See workspace-materialization.md.',
+  },
+  {
+    type: 'execution.blocked',
+    title: 'Execution blocked',
+    severity: 'warn',
+    blocking: true,
+    retryable: false,
+    rescueAction:
+      'Execution cannot proceed until an operator acts: read the recorded reason/requiredAction and the open intervention-queue entry (failed preflight check, abandoned queue lease, or missing execution integration), resolve it, then retry or re-start execution.',
+  },
+  {
+    type: 'execution.failed',
+    title: 'Execution failed',
+    severity: 'error',
+    blocking: true,
+    retryable: true,
+    rescueAction:
+      'The execution attempt for this run failed. Inspect the execution.failed reason plus worker/adapter evidence, fix the cause, then retry execution (POST /api/runs/:id/retry) within the bounded retry budget.',
+  },
+  {
+    type: 'preflight.check_failed',
+    title: 'Preflight check failed',
+    severity: 'warn',
+    blocking: true,
+    retryable: true,
+    rescueAction:
+      'One dry-run rehearsal check (DAG, workspace, write scopes, credentials, adapters, gates, deploy, or approvals) failed before any worker mutated files. Follow the recorded requiredAction for the check, then start the run again — preflight re-runs on the next start.',
+  },
+  {
+    type: 'preflight.failed',
+    title: 'Preflight failed',
+    severity: 'error',
+    blocking: true,
+    retryable: true,
+    rescueAction:
+      'The dry-run execution rehearsal failed, so start did NOT enqueue worker execution. Resolve the failed checks listed on the event (each has an intervention-queue entry with a required action), then start the run again.',
   },
   {
     type: 'ticket.dead_lettered',

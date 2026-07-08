@@ -221,6 +221,12 @@ describe('command guard over mutating routes', () => {
             checkoutCredentialsPresent: false,
             dirtyStatePolicy: 'allow_dirty',
           },
+          execution: {
+            leaseMs: 60_000,
+            heartbeatMs: 15_000,
+            reconcileIntervalMs: 30_000,
+            maxAttempts: 3,
+          },
         },
       },
       planner: null,
@@ -275,5 +281,31 @@ describe('command guard over mutating routes', () => {
     const res = await app.handle(req('POST', '/api/runs', authedHeaders(), { prompt: 'x' }));
     expect(res.status).toBe(201);
     expect(await types(store, 'run-1')).toEqual(['run.created']);
+  });
+
+  it('guards execution commands before availability checks: missing token on start appends only security.block', async () => {
+    const { app, store } = makeApp();
+    await app.handle(req('POST', '/api/runs', authedHeaders(), { prompt: 'x' }));
+    // No daemon is wired on this app, but the guard must run FIRST: the denial
+    // is recorded and no execution_disabled/preflight side effects occur.
+    const res = await app.handle(
+      req('POST', '/api/runs/run-1/start', { origin: ORIGIN, 'x-csrf-token': CSRF }, {}),
+    );
+    expect(res.status).toBe(401);
+    expect(errorOf(res)).toBe('missing_token');
+    expect(await types(store, 'run-1')).toEqual(['run.created', 'security.block']);
+  });
+
+  it('rejects a stale execution pause with security.command_rejected and no execution event', async () => {
+    const { app, store } = makeApp();
+    await app.handle(req('POST', '/api/runs', authedHeaders(), { prompt: 'x' }));
+    const res = await app.handle(
+      req('POST', '/api/runs/run-1/pause', authedHeaders(), { expectedVersion: 0 }),
+    );
+    expect(res.status).toBe(409);
+    expect(errorOf(res)).toBe('stale_subject_version');
+    const seen = await types(store, 'run-1');
+    expect(seen).toEqual(['run.created', 'security.command_rejected']);
+    expect(seen).not.toContain('execution.paused');
   });
 });

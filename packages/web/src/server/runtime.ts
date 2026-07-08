@@ -63,6 +63,24 @@ export interface WorkspaceRuntimeConfig {
   readonly dirtyStatePolicy: 'allow_dirty' | 'reject_dirty';
 }
 
+/**
+ * Execution queue/daemon runtime configuration (full-factory U5).
+ *
+ * The plan fixes the queue INVARIANTS (claim/lease/heartbeat/reconcile with
+ * abandoned-lease recovery); these numbers are deliberately configurable and
+ * were chosen while writing the restart/stale-lease tests.
+ */
+export interface ExecutionRuntimeConfig {
+  /** How long a claimed queue lease lives without a heartbeat (ms). */
+  readonly leaseMs: number;
+  /** Heartbeat cadence for in-flight work (ms); must be well under leaseMs. */
+  readonly heartbeatMs: number;
+  /** Reconciler pass interval: resume safe work, abandon stale leases (ms). */
+  readonly reconcileIntervalMs: number;
+  /** Max execution attempts per queue job (operator retries included). */
+  readonly maxAttempts: number;
+}
+
 export interface RuntimeConfig {
   readonly mode: FactoryRuntimeMode;
   readonly host: string;
@@ -74,6 +92,7 @@ export interface RuntimeConfig {
   readonly csrfToken?: string;
   readonly research: ResearchRuntimeConfig;
   readonly workspace: WorkspaceRuntimeConfig;
+  readonly execution: ExecutionRuntimeConfig;
 }
 
 interface RuntimeEnv {
@@ -100,6 +119,10 @@ interface RuntimeEnv {
   readonly SF_WORKSPACE_CHECKOUT_ROOT?: string;
   readonly SF_WORKSPACE_DIRTY_POLICY?: string;
   readonly SF_GIT_CHECKOUT_TOKEN?: string;
+  readonly SF_EXEC_LEASE_MS?: string;
+  readonly SF_EXEC_HEARTBEAT_MS?: string;
+  readonly SF_EXEC_RECONCILE_INTERVAL_MS?: string;
+  readonly SF_EXEC_MAX_ATTEMPTS?: string;
 }
 
 function clean(value: string | undefined): string | undefined {
@@ -149,6 +172,26 @@ function findWorkspaceFactoryDir(start: string): string {
 
 const DEFAULT_RESEARCH_MAX_SOURCES = 12;
 const DEFAULT_RESEARCH_MAX_DURATION_MS = 120_000;
+
+const DEFAULT_EXEC_LEASE_MS = 60_000;
+const DEFAULT_EXEC_HEARTBEAT_MS = 15_000;
+const DEFAULT_EXEC_RECONCILE_INTERVAL_MS = 30_000;
+const DEFAULT_EXEC_MAX_ATTEMPTS = 3;
+
+/** Resolve the execution queue/daemon config from the environment. */
+export function resolveExecutionRuntimeConfig(
+  env: RuntimeEnv = process.env as RuntimeEnv,
+): ExecutionRuntimeConfig {
+  return {
+    leaseMs: parsePort(env.SF_EXEC_LEASE_MS, DEFAULT_EXEC_LEASE_MS),
+    heartbeatMs: parsePort(env.SF_EXEC_HEARTBEAT_MS, DEFAULT_EXEC_HEARTBEAT_MS),
+    reconcileIntervalMs: parsePort(
+      env.SF_EXEC_RECONCILE_INTERVAL_MS,
+      DEFAULT_EXEC_RECONCILE_INTERVAL_MS,
+    ),
+    maxAttempts: parsePort(env.SF_EXEC_MAX_ATTEMPTS, DEFAULT_EXEC_MAX_ATTEMPTS),
+  };
+}
 
 function parseBool(value: string | undefined): boolean {
   const cleaned = clean(value)?.toLowerCase();
@@ -239,6 +282,7 @@ export function resolveRuntimeConfig(
     csrfToken: clean(env.SF_CSRF_TOKEN),
     research: resolveResearchRuntimeConfig(env),
     workspace: resolveWorkspaceRuntimeConfig(env, factoryDir),
+    execution: resolveExecutionRuntimeConfig(env),
   };
 }
 

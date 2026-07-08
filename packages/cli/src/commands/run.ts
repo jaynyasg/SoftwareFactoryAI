@@ -37,8 +37,9 @@ export interface RunCommandArgs {
   /**
    * `--mode plan-only|research-and-plan|research-plan-and-start`. Omitted =
    * the backend's plan-only default (V1 behavior). `research-plan-and-start`
-   * records the start request; execution controls are not yet available, so
-   * the run settles at planned with an explicit execution-pending state.
+   * records the start request; on backends with execution controls it is
+   * preflighted and enqueued for the execution daemon, otherwise the run
+   * settles at planned with an explicit execution-pending state.
    */
   readonly mode?: RunMode;
   readonly workerCap?: number;

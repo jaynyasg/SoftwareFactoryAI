@@ -512,10 +512,8 @@ describe('POST /api/runs — run modes (full-factory U3)', () => {
     // The start request itself is durable on run.created for U5 to act on.
     const created = events.find((e) => e.type === 'run.created');
     expect((created?.payload as { mode?: string }).mode).toBe('research-plan-and-start');
-    // The contract names the missing start approval.
-    expect(run.buildContract?.operatorApprovals.join(' ')).toContain(
-      'execution controls are not yet available',
-    );
+    // The contract names the recorded start approval.
+    expect(run.buildContract?.operatorApprovals.join(' ')).toContain('start request recorded');
   });
 
   it('repeated creates with the same idempotency key duplicate NO research, plan, or contract events', async () => {

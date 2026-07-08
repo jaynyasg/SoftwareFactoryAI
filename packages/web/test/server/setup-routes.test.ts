@@ -44,6 +44,12 @@ function runtimeConfig(
       dirtyStatePolicy: 'allow_dirty',
       ...workspace,
     },
+    execution: {
+      leaseMs: 60_000,
+      heartbeatMs: 15_000,
+      reconcileIntervalMs: 30_000,
+      maxAttempts: 3,
+    },
   };
 }
 

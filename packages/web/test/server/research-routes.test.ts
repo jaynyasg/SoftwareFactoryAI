@@ -431,6 +431,12 @@ describe('createRuntimeResearcher (default wiring)', () => {
         checkoutCredentialsPresent: false,
         dirtyStatePolicy: 'allow_dirty',
       },
+      execution: {
+        leaseMs: 60_000,
+        heartbeatMs: 15_000,
+        reconcileIntervalMs: 30_000,
+        maxAttempts: 3,
+      },
     };
   }
 

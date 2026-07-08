@@ -21,9 +21,12 @@
  *   - `research-and-plan`          — bounded research runs BEFORE planning; the
  *     enriched brief feeds the planner and a build contract is generated.
  *   - `research-plan-and-start`    — as above, plus the start request is
- *     recorded on the run. Execution controls (start/queue/daemon) are U5 and
- *     DO NOT exist yet, so the run projects `executionState: 'pending'` and a
- *     `defer-execution` supervisor decision instead of pretending to start.
+ *     recorded on the run and (U5) consumed: when an execution daemon is wired
+ *     the run is preflighted and its execution job enqueued; on instances
+ *     without execution controls the run projects `executionState: 'pending'`
+ *     and a `defer-execution` supervisor decision instead of pretending to
+ *     start. Explicit controls live in ./execution.ts (start/pause/resume/
+ *     retry/gates).
  *
  * Mutations pass through `ctx.guardMutation` first; on denial the guard has
  * already appended the security event and we return its response unchanged
@@ -53,17 +56,18 @@ import type {
 import { projectWorkspace, workspaceContractEvidence } from '@software-factory/worker';
 import type { ApiResponse, RouteContext, RouteDef } from '../app';
 import { asRecord, num, reviewMode, str } from './parse';
+import { requestExecutionStart } from './execution';
 
 function callerFamily(value: unknown): CallerFamily | undefined {
   return value === 'claude' || value === 'codex' || value === 'api' ? value : undefined;
 }
 
-/** Explicit "start requested but not yet possible" block for API responses. */
+/** Explicit "start requested but not possible HERE" block for API responses. */
 const EXECUTION_PENDING = {
   state: 'pending' as const,
   reason:
-    'Execution controls are not yet available; the requested start is recorded on the run ' +
-    'and will be acted on once execution controls exist.',
+    'Execution controls are not enabled on this server instance; the requested start is ' +
+    'recorded on the run and will be acted on by an instance with an execution daemon.',
 };
 
 /**
@@ -255,38 +259,57 @@ async function createRun(ctx: RouteContext): Promise<ApiResponse> {
       await emitBuildContract(ctx.writer, runId, contract);
 
       if (effectiveMode === 'research-plan-and-start') {
-        // U5 seam: no queue/daemon exists yet. Record an explicit, idempotent
-        // "execution deferred" decision so the pending state is on the ledger
-        // (and in the operator UI) — never a fake `run.started`.
-        await ctx.writer.append({
-          runId,
-          type: 'supervisor.decision',
-          actor: { kind: 'supervisor', id: 'supervisor' },
-          subject: { kind: 'run', id: runId },
-          severity: 'warn',
-          idempotencyKey: `${runId}:supervisor.decision:defer-execution`,
-          payload: {
-            decision: 'defer-execution',
-            rationale:
-              'Start was requested (mode research-plan-and-start), but execution controls are ' +
-              'not yet available. The start request is recorded on the run; execution stays ' +
-              'pending until the execution queue and daemon exist.',
-            confidence: 1,
-          },
-        });
+        if (ctx.executionDaemon === null) {
+          // Execution controls are disabled on THIS instance. Record an
+          // explicit, idempotent "execution deferred" decision so the pending
+          // state is on the ledger — never a fake `run.started`.
+          await ctx.writer.append({
+            runId,
+            type: 'supervisor.decision',
+            actor: { kind: 'supervisor', id: 'supervisor' },
+            subject: { kind: 'run', id: runId },
+            severity: 'warn',
+            idempotencyKey: `${runId}:supervisor.decision:defer-execution`,
+            payload: {
+              decision: 'defer-execution',
+              rationale:
+                'Start was requested (mode research-plan-and-start), but execution controls are ' +
+                'not available on this instance. The start request is recorded on the run; ' +
+                'execution stays pending until an execution daemon acts on it.',
+              confidence: 1,
+            },
+          });
+        } else {
+          // U5: consume the recorded start request — preflight, then enqueue.
+          // Idempotent on re-create: an already-active job is returned, not
+          // re-enqueued; a failed preflight records blocked state plus
+          // interventions instead of partial worker execution.
+          await requestExecutionStart(ctx, runId, {
+            command: 'start',
+            reason: 'run mode research-plan-and-start',
+          });
+        }
       }
     }
   }
 
   const finalEvents = await ctx.reader.readRun(runId);
+  const finalRun = projectRun(finalEvents, runId);
   return {
     status,
     body: {
       runId,
       deduplicated: result.deduplicated,
-      run: projectRun(finalEvents, runId),
+      run: finalRun,
       ...(effectiveWantsResearch ? { research: projectResearch(finalEvents, runId) } : {}),
-      ...(effectiveMode === 'research-plan-and-start' ? { execution: EXECUTION_PENDING } : {}),
+      ...(effectiveMode === 'research-plan-and-start'
+        ? {
+            execution:
+              ctx.executionDaemon === null
+                ? EXECUTION_PENDING
+                : { state: finalRun.executionState, reason: finalRun.executionReason },
+          }
+        : {}),
     },
   };
 }
@@ -331,6 +354,11 @@ async function cancelRun(ctx: RouteContext): Promise<ApiResponse> {
     severity: 'warn',
     payload: { reason: str(body.reason) },
   });
+  // Cancel propagates to queued and active execution work (U5): the daemon
+  // aborts in-flight jobs and releases queued/abandoned ones as cancelled.
+  if (ctx.executionDaemon !== null) {
+    await ctx.executionDaemon.cancelRun(runId);
+  }
   const run = projectRun(await ctx.reader.readRun(runId), runId);
   return { status: 200, body: { runId, run } };
 }
