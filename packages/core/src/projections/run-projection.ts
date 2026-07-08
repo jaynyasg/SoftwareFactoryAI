@@ -370,6 +370,13 @@ export function projectRun(raw: readonly unknown[], runId?: string): RunProjecti
       case 'run.completed':
         status = 'completed';
         completedAt = event.timestamp;
+        // A completed run completes its execution lifecycle too (e.g. a
+        // gate-rerun job finishing a previously gate-blocked run — U7). Only
+        // when execution activity exists; plan-only ledgers stay untouched.
+        if (executionFold !== undefined) {
+          executionFold = 'completed';
+          executionReason = undefined;
+        }
         break;
       case 'run.failed':
         status = 'failed';

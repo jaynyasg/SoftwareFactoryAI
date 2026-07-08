@@ -12,8 +12,9 @@
  * probes are injectable so tests (and later units) can harden or override
  * them; defaults fail closed where state is verifiable today. The adapter
  * readiness check is REAL (U6) when an adapter catalog is wired (run-settings
- * selection + setup detection); gate wiring is U7 and deploy checks are U8,
- * which still pass with explicit deferral notes.
+ * selection + setup detection), and the gate-readiness check is REAL (U7):
+ * every contract gate expectation must map to a known gate implementation.
+ * Deploy checks are U8 and still pass with an explicit deferral note.
  */
 import {
   PREFLIGHT_CHECKS,
@@ -36,6 +37,7 @@ import type {
 import { projectWorkspace } from '@software-factory/worker';
 import type { WorkspaceProjection } from '@software-factory/worker';
 import { raiseIntervention } from './interventions';
+import { isKnownGateExpectation } from './gate-stages';
 import { resolveWorkspaceRuntimeConfig } from '../runtime';
 import type { RuntimeConfig, WorkspaceRuntimeConfig } from '../runtime';
 
@@ -260,13 +262,29 @@ function probeAdapters(ctx: PreflightProbeContext): PreflightCheckOutcome {
   );
 }
 
+/**
+ * Real gate-readiness check (U7): every gate expectation the build contract
+ * records must map to a known gate implementation, and the instance must have
+ * gate stages enabled when expectations exist. Fails closed with an actionable
+ * intervention — no deferral notes.
+ */
 function probeGates(ctx: PreflightProbeContext): PreflightCheckOutcome {
   const expectations = ctx.run.buildContract?.gateExpectations ?? [];
+  if (expectations.length === 0) {
+    return pass('gates', 'No gate expectations planned for this run.');
+  }
+  const unknown = expectations.filter((expectation) => !isKnownGateExpectation(expectation));
+  if (unknown.length > 0) {
+    return fail(
+      'gates',
+      `Gate expectation(s) do not map to a known gate implementation: ${unknown.join(', ')}.`,
+      'Re-derive the build contract (re-plan the run) or update the gate-stage wiring so every expected gate is implemented, then start again.',
+      'approval',
+    );
+  }
   return pass(
     'gates',
-    expectations.length > 0
-      ? `Gate expectations: ${expectations.join(', ')}. Gate wiring runs post-ticket (U7).`
-      : 'No gate expectations planned for this run.',
+    `${expectations.length} gate expectation(s) map to configured gate stages: ${expectations.join(', ')}. Post-ticket gates run in the repair loop; post-run gates must pass before run completion.`,
   );
 }
 

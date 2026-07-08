@@ -36,6 +36,7 @@ import { computeEffectiveCapacity, type CapacityConstraintName, MAX_WORKER_CAP }
 import { conflicts, createWriteScopeTracker, type WriteScope } from './write-scope';
 import { createCancellation, type CancellationScope } from './cancellation';
 import { runTicket } from './worker-runner';
+import type { TicketRunner } from './gated-ticket-runner';
 
 /** A schedulable ticket: a DAG node carrying everything needed to run it. */
 export interface ScheduleNode extends DagNode {
@@ -107,6 +108,13 @@ export interface RunSchedulerInput<TNode extends ScheduleNode = ScheduleNode> {
    * yield the caller can requeue and resume later.
    */
   readonly shouldContinue?: () => boolean | Promise<boolean>;
+  /**
+   * Pluggable single-ticket runner (U7). Defaults to the plain `runTicket`;
+   * the gated ticket runner wraps it with post-ticket gates + the bounded
+   * repair loop. The scheduler's DAG/capacity/write-scope behavior is
+   * identical either way.
+   */
+  readonly ticketRunner?: TicketRunner;
 }
 
 /** A recorded capacity reduction (one per distinct throttled capacity value). */
@@ -264,11 +272,13 @@ export async function runScheduler<TNode extends ScheduleNode = ScheduleNode>(
     });
   };
 
+  const ticketRunner: TicketRunner = input.ticketRunner ?? runTicket;
+
   const startTicket = (node: TNode): void => {
     const adapterForNode = input.selectAdapter ? input.selectAdapter(node) : adapter;
     const token = runToken.child();
     ticketTokens.set(node.id, token);
-    const promise = runTicket(
+    const promise = ticketRunner(
       {
         runId,
         compileInput: node.compileInput,

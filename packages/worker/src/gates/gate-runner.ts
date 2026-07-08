@@ -19,6 +19,7 @@ import type {
   EventActor,
   EventEvidence,
   EventStore,
+  GateStage,
 } from '@software-factory/core';
 import type { Gate, GateContext, GateEvidence, GateResult } from './command-gate';
 import { createCommandGate } from './command-gate';
@@ -78,6 +79,12 @@ export interface RunGatesParams {
   readonly context: GateContext;
   /** Per-gate retry budget (total attempts per gate). Default 1. */
   readonly maxAttemptsPerGate?: number;
+  /**
+   * Run-lifecycle stage recorded on every gate event (U7): `post_ticket` for
+   * per-ticket gates, `post_run` for whole-run gates. Omitted = stage-less
+   * events, exactly as pre-U7 callers emitted them.
+   */
+  readonly stage?: GateStage;
   readonly clock?: () => number;
 }
 
@@ -131,7 +138,7 @@ export async function runGates(
         actor,
         subject: { kind: 'gate', id: gate.name },
         severity: 'info',
-        payload: { gate: gate.name },
+        payload: { gate: gate.name, stage: params.stage, attempt },
       });
 
       let result: GateResult;
@@ -154,7 +161,7 @@ export async function runGates(
           subject: { kind: 'gate', id: gate.name },
           severity: 'success',
           evidence: toEventEvidence(result.evidence),
-          payload: { gate: gate.name, summary: result.summary },
+          payload: { gate: gate.name, summary: result.summary, stage: params.stage },
         });
         break;
       }
@@ -172,7 +179,7 @@ export async function runGates(
         subject: { kind: 'gate', id: gate.name },
         severity: 'error',
         evidence: toEventEvidence(result.evidence),
-        payload: { gate: gate.name, reason },
+        payload: { gate: gate.name, reason, stage: params.stage },
       });
       results.push(result);
       return {

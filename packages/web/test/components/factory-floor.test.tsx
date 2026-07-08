@@ -17,7 +17,13 @@ import {
   projectTickets,
 } from '@software-factory/core';
 import { buildMarketplaceRunEvents } from '../../../../tests/fixtures/marketplace-run';
-import { deriveDeploy, derivePreview, deriveReviews } from '../../src/lib/run-view';
+import {
+  deriveDeploy,
+  deriveGateOutcomes,
+  derivePreview,
+  deriveRepairSummaries,
+  deriveReviews,
+} from '../../src/lib/run-view';
 import type { RunAggregate, SetupStatus } from '../../src/lib/types';
 import { SessionProvider } from '../../src/components/session-context';
 import { SupervisorPanel } from '../../src/components/factory-floor/SupervisorPanel';
@@ -30,7 +36,9 @@ import { SetupChecklist } from '../../src/components/factory-floor/SetupChecklis
 import { RunControl } from '../../src/components/factory-floor/RunControl';
 import { RunView } from '../../src/components/factory-floor/RunView';
 import { FactoryFloor } from '../../src/components/factory-floor/FactoryFloor';
+import { ReviewStudio } from '../../src/components/factory-floor/ReviewStudio';
 import { Mono } from '../../src/components/factory-floor/primitives';
+import type { BlockedStageView, ReviewItem } from '../../src/lib/run-view';
 
 const SESSION = { operatorToken: 'tok-test', csrfToken: 'csrf-test' };
 
@@ -52,6 +60,9 @@ function buildAggregate(runId = 'run-test'): { aggregate: RunAggregate } {
     preview: derivePreview(events),
     deploy: deriveDeploy(events),
     reviews: deriveReviews(events),
+    gates: deriveGateOutcomes(events),
+    repairs: deriveRepairSummaries(events),
+    interventions: [],
     lastSequence: run.lastSequence,
     tail: run.ledger,
   };
@@ -217,6 +228,113 @@ describe('RunView (active run integration)', () => {
     expect(screen.getByLabelText('Deploy status')).toBeInTheDocument();
     expect(screen.getByText('Scaffold the marketplace app')).toBeInTheDocument();
     expect(screen.getByTestId('run-reduced-trust')).toBeInTheDocument();
+  });
+});
+
+describe('ReviewStudio gate visibility + blocked stages (U7)', () => {
+  const COUNTS = { warn: 1, error: 1, critical: 0 };
+
+  it('renders latest gate outcomes with stage, attempts, and evidence detail', () => {
+    const { aggregate } = buildAggregate();
+    render(
+      withSession(
+        <ReviewStudio
+          runId="run-test"
+          reviewMode="human"
+          expectedVersion={aggregate.lastSequence}
+          reviews={[]}
+          artifacts={aggregate.artifacts}
+          counts={aggregate.operator.counts}
+          gates={aggregate.gates}
+          repairs={aggregate.repairs}
+          blockedStages={[]}
+        />,
+      ),
+    );
+
+    const rows = screen.getAllByTestId('gate-row');
+    expect(rows.length).toBeGreaterThanOrEqual(2);
+    // The marketplace fixture records a lint pass and a test failure.
+    const lint = rows.find((row) => within(row).queryByText('lint') !== null);
+    const test = rows.find((row) => within(row).queryByText('test') !== null);
+    expect(lint).toBeDefined();
+    expect(within(lint!).getByText('passed')).toBeInTheDocument();
+    expect(test).toBeDefined();
+    expect(within(test!).getByText('failed')).toBeInTheDocument();
+  });
+
+  it('marks policy blocks as never approvable and offers no decision card for them', () => {
+    const blockedStages: BlockedStageView[] = [
+      {
+        interventionId: 'run-test:execution:blocked:1',
+        kind: 'policy_block',
+        blockingStage: 'execution',
+        severity: 'warn',
+        reason: 'The plan requires human triage before any build execution.',
+        requiredAction: 'Complete triage, re-plan, and start again.',
+        approvable: false,
+      },
+      {
+        interventionId: 'run-test:gates:blocked:1',
+        kind: 'retry_choice',
+        blockingStage: 'gates',
+        severity: 'warn',
+        reason: 'Post-run gate "unit-test" failed.',
+        requiredAction: 'Fix the cause, then re-run gates or approve the stage review.',
+        approvable: true,
+      },
+    ];
+    render(
+      withSession(
+        <ReviewStudio
+          runId="run-test"
+          reviewMode="autonomous"
+          expectedVersion={7}
+          reviews={[]}
+          artifacts={[]}
+          counts={COUNTS}
+          blockedStages={blockedStages}
+        />,
+      ),
+    );
+
+    expect(screen.getAllByTestId('blocked-stage')).toHaveLength(2);
+    // KTD6: the policy block is loudly not-approvable, in autonomous mode too.
+    expect(screen.getByTestId('policy-blocked')).toHaveTextContent(/cannot be approved/i);
+    // No decision card exists at all (no pending stage review was supplied).
+    expect(screen.queryByRole('group', { name: /review decision/i })).toBeNull();
+  });
+
+  it('renders a decision card for a pending STAGE review at any tier and mode', () => {
+    const reviews: ReviewItem[] = [
+      {
+        sequence: 12,
+        riskTier: 'low',
+        summary: 'Post-run gate "unit-test" failed.',
+        status: 'pending',
+        evidence: [{ label: 'unit-test:failure', ref: 'exit:1', note: '2 tests failed' }],
+        stage: 'gates',
+      },
+    ];
+    render(
+      withSession(
+        <ReviewStudio
+          runId="run-test"
+          reviewMode="autonomous"
+          expectedVersion={12}
+          reviews={reviews}
+          artifacts={[]}
+          counts={COUNTS}
+        />,
+      ),
+    );
+
+    const card = screen.getByRole('group', { name: /review decision/i });
+    expect(card).toBeInTheDocument();
+    expect(within(card).getByText(/resumes the gates stage/i)).toBeInTheDocument();
+    expect(
+      within(card).getByRole('button', { name: /approve low-risk review/i }),
+    ).toBeInTheDocument();
   });
 });
 

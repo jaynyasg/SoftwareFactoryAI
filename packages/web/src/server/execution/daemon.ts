@@ -85,6 +85,13 @@ export interface TicketExecutionResult {
    * problems, and approval gaps from adapter setup failures.
    */
   readonly interventionKind?: InterventionKind;
+  /**
+   * The stage the intervention blocks (U7). Defaults to `execution` for
+   * run-execution jobs and `gates` for gate-rerun jobs; the executor sets
+   * `gates` explicitly when a post-run gate stage blocked a run-execution job,
+   * so review approvals resume the CORRECT stage.
+   */
+  readonly blockingStage?: string;
 }
 
 /** The interface U6 implements: run the tickets for one claimed queue job. */
@@ -376,7 +383,8 @@ export function createExecutionDaemon(options: ExecutionDaemonOptions): Executio
           runId: job.runId,
           interventionId: `${job.jobId}:blocked:${job.attempt}`,
           kind: result.interventionKind ?? 'adapter_setup',
-          blockingStage: 'execution',
+          blockingStage:
+            result.blockingStage ?? (job.jobKind === 'gate-rerun' ? 'gates' : 'execution'),
           reason,
           requiredAction,
           ticketId: job.ticketId,

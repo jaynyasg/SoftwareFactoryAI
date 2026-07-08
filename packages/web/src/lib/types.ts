@@ -14,7 +14,14 @@ import type {
   RunProjection,
   TicketView,
 } from '@software-factory/core';
-import type { DeployView, PreviewView, ReviewItem } from './run-view';
+import type {
+  BlockedStageView,
+  DeployView,
+  GateOutcomeRow,
+  PreviewView,
+  RepairSummaryRow,
+  ReviewItem,
+} from './run-view';
 
 /** The full projected view of one run, ready to render. */
 export interface RunAggregate {
@@ -28,6 +35,12 @@ export interface RunAggregate {
   readonly deploy: DeployView;
   /** Risk-tiered review requests folded with their decisions. */
   readonly reviews: readonly ReviewItem[];
+  /** Latest gate outcomes per (ticket, gate) with evidence (U7). */
+  readonly gates: readonly GateOutcomeRow[];
+  /** Ledger-derived repair-loop summaries per ticket (U7). */
+  readonly repairs: readonly RepairSummaryRow[];
+  /** OPEN interventions blocking this run's stages (approvability per policy). */
+  readonly interventions: readonly BlockedStageView[];
   readonly lastSequence: number;
   /** Ledger rows with `sequence > afterSequence` (the reconnect/resume slice). */
   readonly tail: readonly LedgerRow[];

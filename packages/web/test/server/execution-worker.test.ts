@@ -762,7 +762,7 @@ describe('scheduler-backed executor: cancellation and shutdown', () => {
 
 /* ----------------------------------------------------------------------------
  * 7. Fail-closed edges: unready workspace, failed tickets stay retryable,
- *    and gate re-runs stay honestly deferred (U7)
+ *    and gate re-runs block honestly when no gate stages are configured
  * ------------------------------------------------------------------------- */
 
 describe('scheduler-backed executor: fail-closed edges', () => {
@@ -835,7 +835,7 @@ describe('scheduler-backed executor: fail-closed edges', () => {
     expect(run.status).toBe('completed');
   });
 
-  it('gate-rerun jobs stay honestly blocked until U7', async () => {
+  it('gate-rerun jobs block honestly when NO gate stages are configured on the instance', async () => {
     const adapter = immediateAdapter();
     const { app, store, daemon } = makeHarness({ adapter });
     const runId = await createPlannedRun(app);
@@ -849,7 +849,12 @@ describe('scheduler-backed executor: fail-closed edges', () => {
     expect(adapter.started).toHaveLength(0);
     const open = projectInterventions(await store.readRun(runId)).open;
     expect(
-      open.some((item) => item.kind === 'retry_choice' && item.reason.includes('U7')),
+      open.some(
+        (item) =>
+          item.kind === 'retry_choice' &&
+          item.blockingStage === 'gates' &&
+          item.reason.includes('Gate stages are not configured'),
+      ),
     ).toBe(true);
   });
 });

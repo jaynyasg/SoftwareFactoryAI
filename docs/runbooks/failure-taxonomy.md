@@ -46,6 +46,7 @@ event taxonomy: every event type whose name contains `fail`, `error`, `reject`,
 | `sandbox.fallback`          | warn     | no       | no        |
 | `sandbox.error`             | error    | yes      | yes       |
 | `gate.failed`               | error    | yes      | yes       |
+| `repair.failed`             | error    | yes      | no        |
 | `preview.failed`            | error    | yes      | yes       |
 | `deploy.setup_required`     | warn     | yes      | no        |
 | `deploy.config_invalid`     | error    | yes      | yes       |
@@ -260,6 +261,18 @@ and resources, then re-run — or allow the policy-gated local fallback.
 A blocking gate failed (lint / typecheck / unit-test / secret-scan /
 dependency-audit / preview-health). Read the gate output/evidence, fix the
 generated code, and let the bounded gate retry re-run, or re-run the ticket.
+
+### repair.failed
+
+**Repair budget exhausted** · error · blocking · not retryable.
+
+The bounded post-ticket gate-repair loop for a ticket exhausted its retry
+budget. Repair attempts are ledger-derived (`repair.started` counts), so a
+process restart never resets the budget. The run escalates instead of looping:
+an operator intervention (`retry_choice`) and a stage review (`review.requested`
+with `stage: execution`) are raised with the failing gate's evidence. Fix the
+underlying cause, then approve the escalated review or retry execution — a
+blind retry will exhaust again.
 
 ### preview.failed
 

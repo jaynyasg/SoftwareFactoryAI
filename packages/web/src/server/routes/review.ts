@@ -10,9 +10,20 @@
  * a client cannot relax the gate by posting `mode:'human'` or `riskTier:'low'`.
  * Autonomous mode no longer stops for any risk tier; human mode reports approval
  * requirements only for high-risk work. Appends `review.decided`.
+ *
+ * STAGE RESUME (U7): when the approved decision closes a pending stage review
+ * (`review.requested` with `stage: gates|execution`, requested by a blocked
+ * gate stage or an exhausted repair loop), the route resolves the stage's open
+ * approval-resolvable interventions and re-enqueues the CORRECT job — the
+ * gate-rerun job for `gates`, an execution retry for `execution`. KTD6 holds
+ * in every mode: `canReviewUnblock` never admits `policy_block` (or
+ * setup-class) interventions, so a policy-blocked action cannot be approved
+ * through this route — not even in autonomous mode — and nothing is
+ * re-enqueued when only unresolvable blocks are open.
  */
 import {
   DEFAULT_REVIEW_MODE,
+  canReviewUnblock,
   projectRun,
   projectTickets,
   resolveReview,
@@ -20,6 +31,19 @@ import {
 import type { ReviewDecision, ReviewMode, RiskTier, TicketView } from '@software-factory/core';
 import type { ApiResponse, RouteContext, RouteDef } from '../app';
 import { asRecord, num, str } from './parse';
+import { deriveReviews } from '../../lib/run-view';
+import {
+  enqueueJob,
+  gateRerunJobId,
+  isActiveJobStatus,
+  projectExecutionQueue,
+} from '../execution/queue';
+import {
+  filterInterventions,
+  projectInterventions,
+  resolveIntervention,
+} from '../execution/interventions';
+import { requestExecutionStart } from './execution';
 
 function isRiskTier(value: unknown): value is RiskTier {
   return value === 'low' || value === 'medium' || value === 'high';
@@ -44,6 +68,101 @@ function highestTicketRisk(tickets: readonly TicketView[]): RiskTier | undefined
     }
   }
   return highest;
+}
+
+/** Outcome of a stage resume attempted by an approved review decision. */
+export interface StageResumeResult {
+  readonly stage: 'gates' | 'execution';
+  /** Interventions resolved by the approval (approval-resolvable kinds only). */
+  readonly resolvedInterventions: readonly string[];
+  /** Whether the stage's job is (re-)queued after the approval. */
+  readonly queued: boolean;
+  readonly note?: string;
+}
+
+/**
+ * Resolve the blocked stage's approval-resolvable interventions and
+ * re-enqueue the matching job. KTD6: interventions whose kind fails
+ * `canReviewUnblock` (policy blocks, missing setup) are NEVER resolved here,
+ * and when none are resolvable the approval resumes nothing.
+ */
+async function resumeBlockedStage(
+  ctx: RouteContext,
+  runId: string,
+  stage: 'gates' | 'execution',
+): Promise<StageResumeResult> {
+  const events = await ctx.reader.readRun(runId);
+  const open = filterInterventions(projectInterventions(events), {
+    runId,
+    blockingStage: stage,
+    openOnly: true,
+  });
+  const resolvable = open.filter((item) => canReviewUnblock(item.kind));
+  if (resolvable.length === 0) {
+    return {
+      stage,
+      resolvedInterventions: [],
+      queued: false,
+      note:
+        open.length > 0
+          ? 'No approval-resolvable intervention is open for this stage (policy/setup blocks require their recorded action, not an approval).'
+          : 'No open intervention blocks this stage.',
+    };
+  }
+  for (const intervention of resolvable) {
+    await resolveIntervention(ctx.store, intervention, {
+      resolution: 'approved',
+      note: 'Review approval resumed the blocked stage.',
+    });
+  }
+  const resolvedIds = resolvable.map((item) => item.interventionId);
+
+  const daemon = ctx.executionDaemon;
+  if (daemon === null) {
+    return {
+      stage,
+      resolvedInterventions: resolvedIds,
+      queued: false,
+      note: 'Execution controls are disabled on this instance; nothing was re-enqueued.',
+    };
+  }
+
+  if (stage === 'gates') {
+    const jobId = gateRerunJobId(runId);
+    const existing = projectExecutionQueue(await ctx.reader.readRun(runId), runId).byJobId[jobId];
+    if (existing !== undefined && isActiveJobStatus(existing.status)) {
+      return { stage, resolvedInterventions: resolvedIds, queued: true };
+    }
+    const attempt = (existing?.attempt ?? 0) + 1;
+    if (attempt > daemon.config.maxAttempts) {
+      return {
+        stage,
+        resolvedInterventions: resolvedIds,
+        queued: false,
+        note: `Gate re-run attempt ${attempt} exceeds the retry budget (${daemon.config.maxAttempts}).`,
+      };
+    }
+    await enqueueJob(ctx.store, {
+      runId,
+      jobId,
+      jobKind: 'gate-rerun',
+      attempt,
+      reason: 'review approval resumed the gate stage',
+    });
+    daemon.notify();
+    return { stage, resolvedInterventions: resolvedIds, queued: true };
+  }
+
+  const outcome = await requestExecutionStart(ctx, runId, {
+    command: 'retry',
+    reason: 'review approval resumed execution',
+  });
+  return {
+    stage,
+    resolvedInterventions: resolvedIds,
+    queued: outcome.kind === 'queued' || outcome.kind === 'already_active',
+    note: outcome.kind === 'queued' || outcome.kind === 'already_active' ? undefined : outcome.kind,
+  };
 }
 
 async function decideReview(ctx: RouteContext): Promise<ApiResponse> {
@@ -98,10 +217,29 @@ async function decideReview(ctx: RouteContext): Promise<ApiResponse> {
     severity: decision === 'approved' ? 'success' : 'warn',
     payload: { riskTier, decision, rationale: str(body.rationale) },
   });
+
+  // U7: an APPROVED decision closes the oldest pending review (same FIFO as
+  // `deriveReviews`); when that review carries a blocked stage, the approval
+  // resumes it. Rejections record the decision and resume nothing.
+  let resumed: StageResumeResult | null = null;
+  if (decision === 'approved') {
+    const pendingStage = deriveReviews(events).find((item) => item.status === 'pending')?.stage;
+    if (pendingStage !== undefined) {
+      resumed = await resumeBlockedStage(ctx, runId, pendingStage);
+    }
+  }
+
   const run = projectRun(await ctx.reader.readRun(runId), runId);
   return {
     status: 200,
-    body: { runId, decision, riskTier, requiredApprovals: resolution.requiredApprovals, run },
+    body: {
+      runId,
+      decision,
+      riskTier,
+      requiredApprovals: resolution.requiredApprovals,
+      resumed,
+      run,
+    },
   };
 }
 

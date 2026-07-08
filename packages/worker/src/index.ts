@@ -20,6 +20,8 @@ export * from './runner/write-scope';
 export * from './runner/cancellation';
 // Single-ticket runner: context compile, streaming, bounded retry, ledger.
 export * from './runner/worker-runner';
+// Gated ticket runner: post-ticket gates + bounded, ledger-derived repair loop (U7).
+export * from './runner/gated-ticket-runner';
 // Adaptive scheduler: ready tickets -> concurrent workers up to capacity.
 export * from './runner/scheduler';
 
@@ -72,6 +74,8 @@ export * from './gates/secret-scan-gate';
 export * from './gates/preview-health-gate';
 // Blocking gate orchestrator (ordered, bounded retry, structured failure context).
 export * from './gates/gate-runner';
+// Replayable gate/repair projection: outcomes, feedback, ledger-derived budgets (U7).
+export * from './gates/gate-projection';
 
 // Local preview server: start command, poll health, expose URL only when ready.
 export * from './preview/preview-server';

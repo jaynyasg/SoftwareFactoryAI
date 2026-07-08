@@ -36,6 +36,7 @@ import { createApp } from './app';
 import type { App } from './app';
 import { createExecutionDaemon } from './execution/daemon';
 import type { ExecutionDaemon } from './execution/daemon';
+import { createRuntimeGateStages } from './execution/gate-stages';
 import { createSchedulerTicketExecutor } from './execution/ticket-executor';
 import { createRuntimeOperatorTokenProvider, resolveRuntimeConfig } from './runtime';
 import type { LocalSession } from '../lib/session';
@@ -97,9 +98,12 @@ export function getExecutionDaemon(): ExecutionDaemon {
       store: getStore(),
       config: runtime.execution,
       // U6: the real scheduler-backed executor (ticket DAG -> workers).
+      // U7: gate stages wired for real — post-ticket gates + repair loop and
+      // the post-run gate stage that must pass before run.completed.
       executor: createSchedulerTicketExecutor({
         runtime,
         adapters: getAdapterCatalog(),
+        gateStages: createRuntimeGateStages({ runtime }),
       }),
     });
     singletons.daemon = daemon;

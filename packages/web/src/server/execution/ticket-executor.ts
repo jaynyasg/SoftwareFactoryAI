@@ -23,13 +23,26 @@
  *      previous attempt so duplicate claims/requeues NEVER re-run them,
  *   6. runs the adaptive scheduler with the daemon's abort signal (cancel /
  *      graceful shutdown) and pause hook (`shouldContinue`), heartbeating the
- *      queue lease as ledger writes flow, and
- *   7. maps the scheduler outcome onto the executor contract: completed /
+ *      queue lease as ledger writes flow,
+ *   7. runs the quality-gate stages (U7) when a gate config is wired:
+ *      post-ticket gates + the bounded, ledger-derived repair loop run inside
+ *      the scheduler via the gated ticket runner; the POST-RUN gate stage runs
+ *      after every ticket completed and must pass before `run.completed` is
+ *      emitted (idempotent key `<runId>:run.completed`, so replays and
+ *      duplicate attempts converge). Gate failures BLOCK with evidence, raise
+ *      a `retry_choice` intervention, and request a stage review
+ *      (`review.requested` with `stage: gates|execution`) that a human
+ *      approval can resume. Repair-budget exhaustion escalates the same way
+ *      instead of looping. Gate-rerun queue jobs re-run the post-run stage for
+ *      real, and
+ *   8. maps the scheduler outcome onto the executor contract: completed /
  *      failed (retryable, with per-ticket reasons) / blocked (with an
  *      intervention classification) / yielded (pause or shutdown -> requeue).
  *
- * Gate wiring is U7 (gate-rerun jobs stay honestly blocked); packaging/deploy
- * orchestration is U8 (their tickets execute as ordinary adapter tasks here).
+ * U8 PACKAGING SEAM: packaging, provenance, preview health, and deploy
+ * triggering hook in AFTER the post-run gate stage passes — i.e. exactly where
+ * `emitRunCompleted` is called below. U8 inserts its orchestration between
+ * "post-run gates passed" and the `run.completed` emission.
  */
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -47,14 +60,28 @@ import type {
   AdapterSelection,
   AppendResult,
   AppendableEvent,
+  EventEvidence,
   EventStore,
   ExecutionSchedulePlan,
   ModuleRegistry,
+  RiskTier,
   RunProjection,
   TicketProjection,
 } from '@software-factory/core';
-import { projectWorkspace, runScheduler } from '@software-factory/worker';
-import type { SchedulerResult, WorkspaceProjection } from '@software-factory/worker';
+import {
+  createGatedTicketRunner,
+  projectGateRepair,
+  projectWorkspace,
+  runGates,
+  runScheduler,
+} from '@software-factory/worker';
+import type {
+  GateFailureContext,
+  SchedulerResult,
+  TicketRunner,
+  WorkspaceProjection,
+} from '@software-factory/worker';
+import type { ExecutorGateStages } from './gate-stages';
 import type {
   TicketExecutionContext,
   TicketExecutionResult,
@@ -91,14 +118,48 @@ export interface SchedulerTicketExecutorOptions {
   readonly ticketTimeoutMs?: number;
   /** Queue-lease heartbeat throttle (ms). Defaults to the runtime cadence. */
   readonly heartbeatIntervalMs?: number;
+  /**
+   * Quality-gate stage config (U7). When wired (the server entry points pass
+   * `createRuntimeGateStages`), post-ticket gates + the bounded repair loop
+   * run inside the scheduler and the post-run gate stage must pass before
+   * `run.completed`. Omitted = no gate stages (deterministic unit tests and
+   * pre-U7 behavior); gate-rerun jobs then block honestly.
+   */
+  readonly gateStages?: ExecutorGateStages;
 }
 
 function blocked(
   reason: string,
   requiredAction: string,
   interventionKind: TicketExecutionResult['interventionKind'],
+  blockingStage?: string,
 ): TicketExecutionResult {
-  return { status: 'blocked', reason, requiredAction, interventionKind };
+  return { status: 'blocked', reason, requiredAction, interventionKind, blockingStage };
+}
+
+/** Map structured gate evidence onto ledger event evidence. */
+function gateFailureEvidence(failure: GateFailureContext | undefined): EventEvidence[] | undefined {
+  if (failure === undefined) {
+    return undefined;
+  }
+  return failure.evidence.map((item) => ({
+    label: item.label,
+    ref: item.command ?? item.ref,
+    note: item.outputExcerpt ?? item.detail,
+  }));
+}
+
+const RISK_RANK: Readonly<Record<RiskTier, number>> = { low: 0, medium: 1, high: 2 };
+
+/** Highest projected ticket risk tier (review metadata for stage reviews). */
+function highestTicketRisk(tickets: TicketProjection): RiskTier {
+  let highest: RiskTier = 'low';
+  for (const ticket of tickets.tickets) {
+    if (ticket.riskTier !== undefined && RISK_RANK[ticket.riskTier] > RISK_RANK[highest]) {
+      highest = ticket.riskTier;
+    }
+  }
+  return highest;
 }
 
 async function defaultEnsureDir(path: string): Promise<void> {
@@ -164,6 +225,7 @@ export function createSchedulerTicketExecutor(
   options: SchedulerTicketExecutorOptions = {},
 ): TicketExecutor {
   const catalog = options.adapters ?? createDefaultAdapterCatalog();
+  const gateStages = options.gateStages;
   const workspaceConfig = options.runtime?.workspace ?? resolveWorkspaceRuntimeConfig();
   const freshWorkspaceRoot = options.freshWorkspaceRoot ?? workspaceConfig.checkoutRoot;
   const ensureWorkspaceDir = options.ensureWorkspaceDir ?? defaultEnsureDir;
@@ -191,15 +253,6 @@ export function createSchedulerTicketExecutor(
   };
 
   return async (ctx: TicketExecutionContext): Promise<TicketExecutionResult> => {
-    if (ctx.jobKind !== 'run-execution') {
-      // Gate re-runs are U7; block honestly instead of pretending to re-gate.
-      return blocked(
-        'Gate re-run execution is not available yet (planned unit U7).',
-        'Wait for the gate/repair-loop integration (U7); the queued gate re-run stays recorded and can be retried once it lands.',
-        'retry_choice',
-      );
-    }
-
     const events = await ctx.store.readRun(ctx.runId);
     const run: RunProjection = projectRun(events, ctx.runId);
     const tickets: TicketProjection = projectTickets(events, ctx.runId);
@@ -213,9 +266,10 @@ export function createSchedulerTicketExecutor(
       );
     }
 
-    // KTD6: policy-blocked actions stay blocked in human AND autonomous modes.
-    // A triage plan means the request needs human clarification before any
-    // build execution; autonomous mode cannot bypass this policy block.
+    // KTD6: policy-blocked actions stay blocked in human AND autonomous modes
+    // and for EVERY job kind (a review approval or gate re-run cannot bypass
+    // policy either). A triage plan means the request needs human
+    // clarification before any build execution.
     if (tickets.byId['triage'] !== undefined) {
       return blocked(
         `The plan requires human triage before any build execution (review mode "${
@@ -225,20 +279,6 @@ export function createSchedulerTicketExecutor(
         'policy_block',
       );
     }
-
-    // Adapter selection from run settings + setup detection.
-    const selection = await selectExecutionAdapter(catalog, run.selectedAdapter, {
-      signal: ctx.signal,
-    });
-    if (selection.adapter === undefined) {
-      await recordAdapterSelectionFailure(ctx, selection, clock);
-      return blocked(
-        selection.reason ?? 'No execution adapter could be selected.',
-        selection.requiredAction ?? 'Configure an execution adapter, then retry.',
-        'adapter_setup',
-      );
-    }
-    const adapter = selection.adapter;
 
     // Workspace resolution: materialized workspace for source-backed runs,
     // fresh generated workspace for prompt/PRD-only runs. Source-backed runs
@@ -271,23 +311,15 @@ export function createSchedulerTicketExecutor(
       await ensureWorkspaceDir(workspaceDir);
     }
 
-    // Compile the projected ticket DAG into scheduler nodes.
-    const registry = await loadRegistry();
-    const runRequest = parseRunRequest({
-      prompt: run.prompt,
-      prdRef: run.prdRef,
-      prdText: run.prdText,
-      title: run.title,
-      requestedWorkerCap: run.requestedWorkerCap,
-      reviewMode: run.reviewMode,
-      mode: run.mode,
-    });
-    const plan: ExecutionSchedulePlan = compileExecutionNodes({
-      runRequest,
-      tickets: tickets.tickets,
-      modules: registry,
-      workspaceDir,
-    });
+    // Extend the lease before any long stage, then let heartbeats ride along
+    // with ledger writes (scheduler AND gate stages).
+    await ctx.heartbeat();
+    const heartbeatingStore = withLeaseHeartbeat(
+      ctx.store,
+      () => ctx.heartbeat(),
+      clock ?? Date.now,
+      heartbeatIntervalMs,
+    );
 
     const emitRunCompleted = async (summary: string): Promise<void> => {
       await ctx.store.append({
@@ -302,21 +334,187 @@ export function createSchedulerTicketExecutor(
       });
     };
 
+    /**
+     * Request a stage review a human approval can resume (U7). Idempotent per
+     * job attempt, so replays and duplicate blocked reports converge.
+     */
+    const emitStageReview = async (
+      stage: 'gates' | 'execution',
+      summary: string,
+      evidence: EventEvidence[] | undefined,
+    ): Promise<void> => {
+      await ctx.store.append({
+        runId: ctx.runId,
+        type: 'review.requested',
+        actor: { kind: 'gate', id: 'gate-stage', display: 'gate-stage' },
+        subject: { kind: 'run', id: ctx.runId },
+        severity: 'warn',
+        timestamp: clock?.(),
+        idempotencyKey: `${ctx.jobId}:review.requested:${ctx.attempt}`,
+        evidence,
+        payload: { riskTier: highestTicketRisk(tickets), summary, stage },
+      });
+    };
+
+    /**
+     * Run the POST-RUN gate stage. Resolves `null` when the stage passed (or
+     * no gates are configured for the run); otherwise resolves the blocked (or
+     * yielded, on abort) executor result — with the stage review requested and
+     * the gate evidence already on the ledger.
+     */
+    const runPostRunStage = async (): Promise<TicketExecutionResult | null> => {
+      if (gateStages === undefined) {
+        return null;
+      }
+      const currentRun = projectRun(await ctx.store.readRun(ctx.runId), ctx.runId);
+      const stageCtx = { runId: ctx.runId, workspaceDir, run: currentRun, signal: ctx.signal };
+      const gates = await gateStages.postRun(stageCtx);
+      if (gates.length === 0) {
+        return null;
+      }
+      const gateContext = await gateStages.context(stageCtx);
+      const stage = await runGates(
+        {
+          runId: ctx.runId,
+          gates,
+          context: gateContext,
+          maxAttemptsPerGate: gateStages.maxAttemptsPerGate,
+          stage: 'post_run',
+          clock,
+        },
+        { store: heartbeatingStore },
+      );
+      if (stage.passed) {
+        return null;
+      }
+      if (ctx.signal.aborted) {
+        // Cancellation/shutdown raced the gate stage: yield instead of
+        // recording a misleading gate block.
+        return {
+          status: 'yielded',
+          reason: 'Execution aborted while the post-run gate stage was running.',
+        };
+      }
+      const failure = stage.failure;
+      const reason = `Post-run gate "${failure?.gate ?? 'gate'}" failed: ${
+        failure?.reason ?? 'the gate stage did not pass'
+      }`;
+      await emitStageReview('gates', reason, gateFailureEvidence(failure));
+      return blocked(
+        reason,
+        'Read the recorded gate evidence, fix the cause, then re-run gates (POST /api/runs/:id/gates/rerun) or approve the pending stage review to re-run them.',
+        'retry_choice',
+        'gates',
+      );
+    };
+
+    /* ------------------------------------------------------------------
+     * Gate re-run jobs (U7): re-run the post-run gate stage for REAL.
+     * ---------------------------------------------------------------- */
+    if (ctx.jobKind === 'gate-rerun') {
+      if (gateStages === undefined) {
+        return blocked(
+          'Gate stages are not configured on this server instance, so gates cannot be re-run.',
+          'Enable the gate-stage wiring (createRuntimeGateStages) on this instance, then re-run gates.',
+          'retry_choice',
+          'gates',
+        );
+      }
+      const stageResult = await runPostRunStage();
+      if (stageResult !== null) {
+        return stageResult;
+      }
+      // Gates passed (or the run expects none): the run counts as complete
+      // only when every planned ticket is also complete.
+      const after = projectTickets(await ctx.store.readRun(ctx.runId), ctx.runId);
+      const allDone = after.tickets.every((ticket) => ticket.state === 'completed');
+      if (allDone) {
+        const summary = `Post-run gates passed on re-run; all ${after.tickets.length} ticket(s) complete.`;
+        await emitRunCompleted(summary);
+        return { status: 'completed', summary };
+      }
+      return {
+        status: 'completed',
+        summary:
+          'Post-run gates passed on re-run, but not every ticket is complete; retry execution to finish the remaining tickets.',
+      };
+    }
+
+    // Adapter selection from run settings + setup detection.
+    const selection = await selectExecutionAdapter(catalog, run.selectedAdapter, {
+      signal: ctx.signal,
+    });
+    if (selection.adapter === undefined) {
+      await recordAdapterSelectionFailure(ctx, selection, clock);
+      return blocked(
+        selection.reason ?? 'No execution adapter could be selected.',
+        selection.requiredAction ?? 'Configure an execution adapter, then retry.',
+        'adapter_setup',
+      );
+    }
+    const adapter = selection.adapter;
+
+    // Compile the projected ticket DAG into scheduler nodes. Prior gate
+    // failures recorded on the ledger feed each ticket's compile input, so a
+    // resumed repair sees the failure context it is fixing (U7).
+    const registry = await loadRegistry();
+    const runRequest = parseRunRequest({
+      prompt: run.prompt,
+      prdRef: run.prdRef,
+      prdText: run.prdText,
+      title: run.title,
+      requestedWorkerCap: run.requestedWorkerCap,
+      reviewMode: run.reviewMode,
+      mode: run.mode,
+    });
+    const priorGateState = projectGateRepair(events, ctx.runId);
+    const plan: ExecutionSchedulePlan = compileExecutionNodes({
+      runRequest,
+      tickets: tickets.tickets,
+      modules: registry,
+      workspaceDir,
+      gateFeedback: priorGateState.gateFeedback,
+    });
+
     if (plan.completed.length === plan.nodes.length) {
+      // Every ticket already completed on a previous attempt; the run still
+      // only counts as complete once the post-run gate stage passes.
+      const stageResult = await runPostRunStage();
+      if (stageResult !== null) {
+        return stageResult;
+      }
       const summary = `All ${plan.nodes.length} ticket(s) were already completed on a previous attempt.`;
       await emitRunCompleted(summary);
       return { status: 'completed', summary };
     }
 
-    // Extend the lease before the (potentially long) scheduler run, then let
-    // heartbeats ride along with ledger writes.
-    await ctx.heartbeat();
-    const heartbeatingStore = withLeaseHeartbeat(
-      ctx.store,
-      () => ctx.heartbeat(),
-      clock ?? Date.now,
-      heartbeatIntervalMs,
-    );
+    // Post-ticket gates + bounded repair loop (U7): wrap the plain ticket
+    // runner when a gate config is wired; otherwise the scheduler uses the
+    // default `runTicket` unchanged.
+    const ticketRunner: TicketRunner | undefined =
+      gateStages === undefined
+        ? undefined
+        : createGatedTicketRunner({
+            gates: (stageCtx) =>
+              gateStages.postTicket({
+                runId: stageCtx.runId,
+                ticketId: stageCtx.ticketId,
+                workspaceDir: stageCtx.workspaceDir,
+                run,
+                signal: ctx.signal,
+              }),
+            gateContext: (stageCtx) =>
+              gateStages.context({
+                runId: stageCtx.runId,
+                ticketId: stageCtx.ticketId,
+                workspaceDir: stageCtx.workspaceDir,
+                run,
+                signal: ctx.signal,
+              }),
+            maxRepairAttempts: gateStages.maxRepairAttempts,
+            maxAttemptsPerGate: gateStages.maxAttemptsPerGate,
+            clock,
+          });
 
     let result: SchedulerResult;
     try {
@@ -335,6 +533,7 @@ export function createSchedulerTicketExecutor(
         completed: plan.completed,
         cancellation: ctx.signal,
         shouldContinue: () => ctx.shouldContinue(),
+        ticketRunner,
       });
     } catch (error) {
       // buildTicketDag (invalid planned dependencies) or an infrastructure
@@ -374,7 +573,39 @@ export function createSchedulerTicketExecutor(
     }
     if (result.failed.length > 0) {
       // Re-project so failure reasons come from the recorded worker events.
-      const after = projectTickets(await ctx.store.readRun(ctx.runId), ctx.runId);
+      const afterEvents = await ctx.store.readRun(ctx.runId);
+      const after = projectTickets(afterEvents, ctx.runId);
+
+      // U7 escalation: a ticket that exhausted its bounded repair budget
+      // BLOCKS with an intervention + stage review instead of looping through
+      // blind retries. Retry counters are ledger-derived (`repair.started`
+      // counts), so this stays true across restarts.
+      const repairState = projectGateRepair(afterEvents, ctx.runId);
+      const exhausted = result.failed.filter((id) =>
+        repairState.exhaustedTickets.includes(id),
+      );
+      if (exhausted.length > 0) {
+        const details = exhausted.map((id) => {
+          const repair = repairState.repairs[id];
+          return `${id} (gate "${repair?.lastGate ?? 'gate'}" after ${
+            repair?.attemptsUsed ?? 0
+          } repair attempt(s): ${repair?.lastReason ?? 'still failing'})`;
+        });
+        const reason = `Repair budget exhausted for ${exhausted.length} ticket(s): ${details.join('; ')}.`;
+        const evidence: EventEvidence[] = exhausted.map((id) => ({
+          label: `repair:${id}`,
+          ref: repairState.repairs[id]?.lastGate,
+          note: repairState.repairs[id]?.lastReason,
+        }));
+        await emitStageReview('execution', reason, evidence);
+        return blocked(
+          reason,
+          'Read the recorded gate/repair evidence, fix the cause, then approve the pending stage review or retry execution (POST /api/runs/:id/retry).',
+          'retry_choice',
+          'execution',
+        );
+      }
+
       const failures = result.failed.map((id) => {
         const reason = after.byId[id]?.failureReason;
         return reason !== undefined ? `${id} (${reason})` : id;
@@ -404,6 +635,14 @@ export function createSchedulerTicketExecutor(
       };
     }
 
+    // Every ticket completed (post-ticket gates included). The run counts as
+    // complete only once the POST-RUN gate stage also passes (U7).
+    const stageResult = await runPostRunStage();
+    if (stageResult !== null) {
+      return stageResult;
+    }
+    // U8 PACKAGING SEAM: package/provenance/preview/deploy orchestration hooks
+    // in HERE — after post-run gates pass and before run.completed is emitted.
     const summary = `${result.completed.length}/${plan.nodes.length} ticket(s) completed via adapter "${adapter.id}".`;
     await emitRunCompleted(summary);
     return { status: 'completed', summary };

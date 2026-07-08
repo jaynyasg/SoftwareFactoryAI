@@ -12,6 +12,7 @@
  * projected state derived from real events — never invented state.
  */
 import {
+  canReviewUnblock,
   computeOperatorMetrics,
   computeRunDiagnostics,
   isRealRun,
@@ -23,7 +24,15 @@ import {
 import type { FactoryEvent, RunProjection } from '@software-factory/core';
 import { getApp } from './instance';
 import type { ApiResponse } from './app';
-import { deriveDeploy, derivePreview, deriveReviews } from '../lib/run-view';
+import { filterInterventions, projectInterventions } from './execution/interventions';
+import {
+  deriveDeploy,
+  deriveGateOutcomes,
+  derivePreview,
+  deriveRepairSummaries,
+  deriveReviews,
+} from '../lib/run-view';
+import type { BlockedStageView } from '../lib/run-view';
 import type { OperatorAggregate, RunAggregate, SetupStatus } from '../lib/types';
 
 export type { OperatorAggregate, RunAggregate, SetupStatus } from '../lib/types';
@@ -61,6 +70,22 @@ export async function loadRunAggregate(
   const preview = derivePreview(events);
   const deploy = deriveDeploy(events);
   const reviews = deriveReviews(events);
+  const gates = deriveGateOutcomes(events);
+  const repairs = deriveRepairSummaries(events);
+  // OPEN interventions for the run, with approvability computed here from the
+  // CORE review policy (KTD6) so the client never re-implements it.
+  const interventions: BlockedStageView[] = filterInterventions(projectInterventions(events), {
+    runId,
+    openOnly: true,
+  }).map((item) => ({
+    interventionId: item.interventionId,
+    kind: item.kind,
+    blockingStage: item.blockingStage,
+    severity: item.severity,
+    reason: item.reason,
+    requiredAction: item.requiredAction,
+    approvable: canReviewUnblock(item.kind),
+  }));
   const tail = run.ledger.filter((row) => row.sequence > afterSequence);
   return {
     run,
@@ -70,6 +95,9 @@ export async function loadRunAggregate(
     preview,
     deploy,
     reviews,
+    gates,
+    repairs,
+    interventions,
     lastSequence: run.lastSequence,
     tail,
   };

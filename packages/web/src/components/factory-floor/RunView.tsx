@@ -184,6 +184,9 @@ export function RunView({
             reviews={reviews}
             artifacts={artifacts}
             counts={operator.counts}
+            gates={snapshot.gates}
+            repairs={snapshot.repairs}
+            blockedStages={snapshot.interventions}
             reducedTrust={reducedTrust}
             onReload={refresh}
           />

@@ -12,6 +12,8 @@ import type {
   EventEvidence,
   EventSeverity,
   FactoryEvent,
+  GateStage,
+  InterventionKind,
   ReviewDecision,
   RiskTier,
   RunStatus,
@@ -154,6 +156,12 @@ export interface ReviewItem {
   readonly status: 'pending' | ReviewDecision;
   readonly rationale?: string;
   readonly evidence: readonly EventEvidence[];
+  /**
+   * The blocked stage this review would resume when approved (U7): `gates`
+   * re-runs the post-run gate stage, `execution` retries execution. Absent
+   * for plain risk-tier reviews.
+   */
+  readonly stage?: 'gates' | 'execution';
 }
 
 interface MutableReview {
@@ -163,6 +171,7 @@ interface MutableReview {
   status: 'pending' | ReviewDecision;
   rationale?: string;
   evidence: readonly EventEvidence[];
+  stage?: 'gates' | 'execution';
 }
 
 /**
@@ -180,6 +189,7 @@ export function deriveReviews(events: readonly FactoryEvent[]): ReviewItem[] {
         summary: event.payload.summary,
         status: 'pending',
         evidence: event.evidence ?? [],
+        stage: event.payload.stage,
       });
     } else if (event.type === 'review.decided') {
       const pending = items.find((item) => item.status === 'pending');
@@ -198,6 +208,147 @@ export function deriveReviews(events: readonly FactoryEvent[]): ReviewItem[] {
     }
   }
   return items;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Gate / repair / blocked-stage derivations (U7; read event payloads)        */
+/* -------------------------------------------------------------------------- */
+
+/** Latest observed outcome of one gate (per ticket scope), for the gate panel. */
+export interface GateOutcomeRow {
+  /** Ticket id for post-ticket gates; absent for run-level gates. */
+  readonly ticketId?: string;
+  readonly gate: string;
+  readonly stage?: GateStage;
+  readonly status: 'running' | 'passed' | 'failed';
+  /** Pass summary or failure reason from the event payload. */
+  readonly detail?: string;
+  /** Total gate.started attempts observed for this scope+gate. */
+  readonly attempts: number;
+  readonly evidence: readonly EventEvidence[];
+}
+
+/** Fold `gate.*` events into the latest outcome per (scope, gate). Pure. */
+export function deriveGateOutcomes(events: readonly FactoryEvent[]): GateOutcomeRow[] {
+  const rows = new Map<string, GateOutcomeRow & { order: number }>();
+  let order = 0;
+  for (const event of events) {
+    if (
+      event.type !== 'gate.started' &&
+      event.type !== 'gate.passed' &&
+      event.type !== 'gate.failed'
+    ) {
+      continue;
+    }
+    const key = `${event.ticketId ?? ''}|${event.payload.gate}`;
+    const existing = rows.get(key);
+    const base = existing ?? {
+      ticketId: event.ticketId,
+      gate: event.payload.gate,
+      stage: undefined,
+      status: 'running' as const,
+      detail: undefined,
+      attempts: 0,
+      evidence: [] as readonly EventEvidence[],
+      order: (order += 1),
+    };
+    if (event.type === 'gate.started') {
+      rows.set(key, {
+        ...base,
+        stage: event.payload.stage ?? base.stage,
+        status: 'running',
+        attempts: base.attempts + 1,
+      });
+    } else if (event.type === 'gate.passed') {
+      rows.set(key, {
+        ...base,
+        stage: event.payload.stage ?? base.stage,
+        status: 'passed',
+        detail: event.payload.summary,
+        evidence: event.evidence ?? [],
+      });
+    } else {
+      rows.set(key, {
+        ...base,
+        stage: event.payload.stage ?? base.stage,
+        status: 'failed',
+        detail: event.payload.reason,
+        evidence: event.evidence ?? [],
+      });
+    }
+  }
+  return [...rows.values()]
+    .sort((a, b) => a.order - b.order)
+    .map(({ order: _order, ...row }) => row);
+}
+
+/** Ledger-derived repair-loop state for one ticket. */
+export interface RepairSummaryRow {
+  readonly ticketId: string;
+  /** Repair attempts consumed (count of `repair.started`; ledger-derived). */
+  readonly attempts: number;
+  readonly status: 'repairing' | 'succeeded' | 'exhausted';
+  readonly gate?: string;
+  readonly reason?: string;
+}
+
+/** Fold `repair.*` events into per-ticket repair summaries. Pure. */
+export function deriveRepairSummaries(events: readonly FactoryEvent[]): RepairSummaryRow[] {
+  const rows = new Map<string, RepairSummaryRow>();
+  for (const event of events) {
+    if (
+      (event.type !== 'repair.started' &&
+        event.type !== 'repair.succeeded' &&
+        event.type !== 'repair.failed') ||
+      event.ticketId === undefined
+    ) {
+      continue;
+    }
+    const existing = rows.get(event.ticketId);
+    const attempts = Math.max(existing?.attempts ?? 0, event.payload.attempt);
+    if (event.type === 'repair.started') {
+      rows.set(event.ticketId, {
+        ticketId: event.ticketId,
+        attempts,
+        status: 'repairing',
+        gate: event.payload.gate,
+        reason: event.payload.reason,
+      });
+    } else if (event.type === 'repair.succeeded') {
+      rows.set(event.ticketId, {
+        ticketId: event.ticketId,
+        attempts,
+        status: 'succeeded',
+        gate: event.payload.gate,
+        reason: undefined,
+      });
+    } else {
+      rows.set(event.ticketId, {
+        ticketId: event.ticketId,
+        attempts,
+        status: 'exhausted',
+        gate: event.payload.gate,
+        reason: event.payload.reason,
+      });
+    }
+  }
+  return [...rows.values()];
+}
+
+/**
+ * An OPEN operator intervention rendered as a blocked stage in the Review
+ * Studio. `approvable` is computed SERVER-SIDE from the core review policy
+ * (KTD6): `policy_block` and setup-class kinds are never approval-resolvable.
+ */
+export interface BlockedStageView {
+  readonly interventionId: string;
+  readonly kind: InterventionKind;
+  readonly blockingStage: string;
+  readonly severity: EventSeverity;
+  readonly reason: string;
+  readonly requiredAction: string;
+  /** Whether a review approval may resolve this entry (core policy). */
+  readonly approvable: boolean;
 }
 
 /* -------------------------------------------------------------------------- */

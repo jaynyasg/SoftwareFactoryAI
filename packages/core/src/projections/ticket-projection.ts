@@ -66,6 +66,11 @@ function apply(ticket: MutableTicket, event: FactoryEvent): void {
       break;
     case 'ticket.state_changed':
       ticket.state = event.payload.state;
+      // A failed transition carries its reason (e.g. a gate-repair exhaustion
+      // recorded by the U7 repair loop) so projections explain the failure.
+      if (event.payload.state === 'failed' && event.payload.reason !== undefined) {
+        ticket.failureReason = event.payload.reason;
+      }
       break;
     case 'ticket.dead_lettered':
       ticket.state = 'dead_lettered';

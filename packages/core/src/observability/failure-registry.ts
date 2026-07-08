@@ -53,6 +53,7 @@ export const FAILURE_EVENT_TYPES = [
   'sandbox.fallback',
   'sandbox.error',
   'gate.failed',
+  'repair.failed',
   'preview.failed',
   'deploy.setup_required',
   'deploy.config_invalid',
@@ -263,6 +264,15 @@ const ENTRY_SPECS: readonly EntrySpec[] = [
     retryable: true,
     rescueAction:
       'Read the failed gate output/evidence (lint/typecheck/test/secret-scan/dependency-audit/preview-health), fix the generated code, and let the bounded gate retry re-run, or re-run the ticket.',
+  },
+  {
+    type: 'repair.failed',
+    title: 'Repair budget exhausted',
+    severity: 'error',
+    blocking: true,
+    retryable: false,
+    rescueAction:
+      'The bounded gate-repair loop for a ticket exhausted its retry budget (the attempt count is ledger-derived and observable). Read the failing gate evidence, fix the underlying cause, then approve the escalated review / resolve the retry_choice intervention to retry execution — a blind retry will exhaust again.',
   },
   {
     type: 'preview.failed',

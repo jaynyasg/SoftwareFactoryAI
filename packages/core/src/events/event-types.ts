@@ -620,14 +620,58 @@ export interface SandboxErrorPayload {
 }
 
 // gate
+/**
+ * Which run-lifecycle stage a gate event belongs to (full-factory U7):
+ *  - `post_ticket` — gates run against ONE ticket's output right after its
+ *    worker completes (failures feed the bounded repair loop), and
+ *  - `post_run`    — gates run against the whole workspace after every ticket
+ *    completed (failures block `run.completed` until re-run or approval).
+ * Absent on pre-U7 ledgers, which stays valid: stage-less gate events replay
+ * exactly as before.
+ */
+export type GateStage = 'post_ticket' | 'post_run';
+
 export interface GateStartedPayload {
   readonly gate: string;
+  /** Lifecycle stage this gate run belongs to (U7; absent on older ledgers). */
+  readonly stage?: GateStage;
+  /** 1-based attempt within the current gate-stage run (bounded budget). */
+  readonly attempt?: number;
 }
 export interface GatePassedPayload {
   readonly gate: string;
   readonly summary?: string;
+  readonly stage?: GateStage;
 }
 export interface GateFailedPayload {
+  readonly gate: string;
+  readonly reason: string;
+  readonly stage?: GateStage;
+}
+
+// repair (bounded gate-repair loop, full-factory U7)
+/**
+ * Repair events record the bounded post-ticket repair loop: a failed gate
+ * feeds structured feedback back into the ticket's worker context and the
+ * ticket re-runs. Attempt numbers are 1-based and LEDGER-DERIVED (the count of
+ * prior `repair.started` events for the ticket), so a process restart resumes
+ * the SAME budget instead of resetting it.
+ */
+export interface RepairStartedPayload {
+  /** 1-based repair attempt for this ticket (monotonic across restarts). */
+  readonly attempt: number;
+  /** The gate whose failure triggered this repair. */
+  readonly gate: string;
+  readonly reason: string;
+}
+export interface RepairSucceededPayload {
+  /** The repair attempt that produced a passing gate stage. */
+  readonly attempt: number;
+  readonly gate: string;
+}
+export interface RepairFailedPayload {
+  /** The final repair attempt made before the budget was exhausted. */
+  readonly attempt: number;
   readonly gate: string;
   readonly reason: string;
 }
@@ -636,6 +680,12 @@ export interface GateFailedPayload {
 export interface ReviewRequestedPayload {
   readonly riskTier: RiskTier;
   readonly summary?: string;
+  /**
+   * The blocked stage a human approval would resume (full-factory U7):
+   * `gates` re-enqueues the gate re-run job, `execution` retries the
+   * run-execution job. Absent for plain risk-tier reviews.
+   */
+  readonly stage?: 'gates' | 'execution';
 }
 export interface ReviewDecidedPayload {
   readonly riskTier: RiskTier;
@@ -782,6 +832,9 @@ export interface EventPayloadMap {
   'gate.started': GateStartedPayload;
   'gate.passed': GatePassedPayload;
   'gate.failed': GateFailedPayload;
+  'repair.started': RepairStartedPayload;
+  'repair.succeeded': RepairSucceededPayload;
+  'repair.failed': RepairFailedPayload;
   'review.requested': ReviewRequestedPayload;
   'review.decided': ReviewDecidedPayload;
   'preview.starting': EmptyPayload;
@@ -919,6 +972,9 @@ export const EVENT_TYPES = [
   'gate.started',
   'gate.passed',
   'gate.failed',
+  'repair.started',
+  'repair.succeeded',
+  'repair.failed',
   'review.requested',
   'review.decided',
   'preview.starting',

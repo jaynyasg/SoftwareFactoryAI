@@ -6,7 +6,7 @@
  * any risk tier; separate command/security policies still block policy-blocked
  * actions. Every function here is pure.
  */
-import type { ReviewMode, RiskTier } from '../events/event-types';
+import type { InterventionKind, ReviewMode, RiskTier } from '../events/event-types';
 
 /** Human review is the default unless a run explicitly opts into autonomy. */
 export const DEFAULT_REVIEW_MODE: ReviewMode = 'human';
@@ -76,4 +76,25 @@ export function resolveReview(riskTier: RiskTier, mode: ReviewMode): ReviewResol
     requiredApprovals: requiredApprovals(riskTier),
     humanReviewReason: 'Human mode stops for high-risk work.',
   };
+}
+
+/**
+ * Intervention kinds a review APPROVAL may resolve to resume a blocked stage
+ * (full-factory U7). This is the KTD6 boundary: `policy_block` is NEVER
+ * approval-resolvable — a policy-blocked action stays blocked in human AND
+ * autonomous modes — and setup-class kinds (credentials, source, path, adapter,
+ * deploy) need a concrete setup change, not an approval.
+ */
+export const REVIEW_RESOLVABLE_INTERVENTION_KINDS: readonly InterventionKind[] = [
+  'approval',
+  'retry_choice',
+];
+
+/**
+ * Whether a review approval may resolve an intervention of this kind and
+ * resume its blocked stage. Pure; mode-independent by design (KTD6): NO review
+ * mode can approve through a policy block or substitute for missing setup.
+ */
+export function canReviewUnblock(kind: InterventionKind): boolean {
+  return REVIEW_RESOLVABLE_INTERVENTION_KINDS.includes(kind);
 }

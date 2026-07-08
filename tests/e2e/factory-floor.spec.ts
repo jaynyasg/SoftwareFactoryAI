@@ -77,6 +77,30 @@ test('active run renders supervisor, tickets, workers, ledger, review, confidenc
   await expect(page.getByTestId('preview-status')).toContainText('ready');
 });
 
+test('review studio surfaces gate outcomes with pass/fail evidence from ledger events (U7)', async ({
+  page,
+}) => {
+  const runId = await seedMarketplaceRun(page.request, 'e2e-gates');
+  await page.goto(`/runs/${runId}`);
+
+  // Gate visibility: the latest outcome per gate renders from projections —
+  // the seeded run recorded a lint pass (scaffold) and a test failure
+  // (data-model) — without opening raw JSON.
+  const gates = page.getByLabel('gate evidence');
+  await expect(gates).toBeVisible();
+  const rows = gates.getByTestId('gate-row');
+  await expect(rows).toHaveCount(2);
+
+  const lintRow = rows.filter({ hasText: 'lint' });
+  await expect(lintRow.getByText('passed')).toBeVisible();
+  await expect(lintRow.getByText('no lint errors')).toBeVisible();
+
+  const testRow = rows.filter({ hasText: 'failed' });
+  await expect(testRow).toHaveCount(1);
+  await expect(testRow.getByText('test', { exact: true })).toBeVisible();
+  await expect(testRow.getByText(/2 unit tests failing/)).toBeVisible();
+});
+
 test('trace ledger shows reconnecting and resumes from last_sequence when polling fails', async ({
   page,
 }) => {
