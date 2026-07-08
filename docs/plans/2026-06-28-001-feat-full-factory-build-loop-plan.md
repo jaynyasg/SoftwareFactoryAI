@@ -1079,9 +1079,9 @@ coordinate or sequence merges around `packages/web/src/server/*` and
 | CEO Review    | `/plan-ceo-review`    | Scope & strategy                | 1    | CLEAR   | 4 proposals, 4 accepted, 0 deferred                 |
 | Codex Review  | `/codex review`       | Independent 2nd opinion         | 0    | NOT RUN | Not requested                                       |
 | Eng Review    | `/plan-eng-review`    | Architecture & tests (required) | 2    | CLEAR   | Latest: 4 issues, 0 critical gaps; fixes folded in  |
-| Design Review | `/plan-design-review` | UI/UX gaps                      | 0    | NOT RUN | UI scope exists in U9; run before UI implementation |
+| Design Review | `/plan-design-review` | UI/UX gaps                      | 1    | CLEAR   | score: 7/10 -> 9/10, 6 constraints folded into U9   |
 | DX Review     | `/plan-devex-review`  | Developer experience gaps       | 0    | NOT RUN | Not requested                                       |
 
-- **VERDICT:** CEO + ENG CLEARED - ready to implement; design review remains recommended before U9 UI work.
+- **VERDICT:** CEO + ENG + DESIGN CLEARED - ready to implement.
 
 NO UNRESOLVED DECISIONS
