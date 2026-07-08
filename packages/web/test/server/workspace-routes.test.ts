@@ -424,6 +424,35 @@ describe('materialization feeds the build contract and research (U3/U2 seams)', 
     expect(afterContract?.workspace).toMatch(/checked out at/i);
   });
 
+  it('does not regress the contract to pre-materialization state on an idempotent re-create', async () => {
+    const { app } = makeApp({ mode: 'cloud', researcher: stubResearcher(), planner: undefined });
+    const body = {
+      prompt: 'Build the fixture app',
+      githubRepo: 'octo/fixture',
+      mode: 'research-and-plan',
+      idempotencyKey: 'k-recreate-1',
+    };
+    const created = await app.handle(req('POST', '/api/runs', authedHeaders(), body));
+    expect(created.status).toBe(201);
+    const runId = record(created).runId as string;
+
+    const materialized = await app.handle(
+      req('POST', `/api/runs/${runId}/workspace`, authedHeaders(), {}),
+    );
+    expect(materialized.status).toBe(201);
+
+    // A retried create (same idempotency key) re-derives the contract; it must
+    // keep the materialized workspace evidence rather than appending a
+    // less-informed contract that would win latest-wins projection.
+    const recreated = await app.handle(req('POST', '/api/runs', authedHeaders(), body));
+    expect(record(recreated).deduplicated).toBe(true);
+    const contract = (record(recreated).run as { buildContract?: { workspace: string } })
+      .buildContract;
+    expect(contract?.workspace).toContain('octo/fixture');
+    expect(contract?.workspace).toMatch(/checked out at/i);
+    expect(contract?.workspace).not.toMatch(/pending workspace materialization/i);
+  });
+
   it('research scans the materialized checkout instead of reporting it unavailable', async () => {
     // `researcher: undefined` wires the REAL runtime researcher.
     const det = deterministic();
