@@ -10,9 +10,10 @@
  *
  * Checks derive from replayed projections plus runtime config. Individual
  * probes are injectable so tests (and later units) can harden or override
- * them; defaults fail closed where state is verifiable today and pass with an
- * explicit deferral note where deep verification belongs to a later unit
- * (adapter probing in U6, gate wiring in U7, deploy checks in U8).
+ * them; defaults fail closed where state is verifiable today. The adapter
+ * readiness check is REAL (U6) when an adapter catalog is wired (run-settings
+ * selection + setup detection); gate wiring is U7 and deploy checks are U8,
+ * which still pass with explicit deferral notes.
  */
 import {
   PREFLIGHT_CHECKS,
@@ -20,9 +21,11 @@ import {
   projectResearch,
   projectRun,
   projectTickets,
+  selectExecutionAdapter,
   validateAndSortEvents,
 } from '@software-factory/core';
 import type {
+  AdapterCatalog,
   EventStore,
   InterventionKind,
   PreflightCheck,
@@ -217,12 +220,43 @@ function probeCredentials(ctx: PreflightProbeContext): PreflightCheckOutcome {
   return pass('credentials', 'No missing execution credentials detected.');
 }
 
+/**
+ * Real adapter readiness check (U6): resolve the adapter from the run's
+ * recorded settings (or setup detection) against the catalog and probe its
+ * setup. Not-ready selections fail the check with an adapter_setup
+ * intervention carrying the concrete remediation.
+ */
+function createAdapterReadinessProbe(catalog: AdapterCatalog): PreflightProbe {
+  return async (ctx: PreflightProbeContext): Promise<PreflightCheckOutcome> => {
+    const selection = await selectExecutionAdapter(catalog, ctx.run.selectedAdapter);
+    if (selection.ready && selection.adapter !== undefined) {
+      const capacity = selection.setup?.capacity;
+      return pass(
+        'adapters',
+        `Adapter "${selection.adapter.id}" (${selection.adapter.family}) is ${
+          selection.source === 'run_settings' ? 'selected and ready' : 'detected and ready'
+        }${capacity !== undefined ? ` (capacity ${capacity})` : ''}.`,
+      );
+    }
+    return fail(
+      'adapters',
+      selection.reason ?? 'No execution adapter is ready on this instance.',
+      selection.requiredAction ??
+        'Configure and authenticate an execution adapter, then start again.',
+      'adapter_setup',
+    );
+  };
+}
+
 function probeAdapters(ctx: PreflightProbeContext): PreflightCheckOutcome {
+  // Fallback when NO adapter catalog is wired on this instance (the server
+  // entry points always wire one): readiness is still enforced fail-closed at
+  // execution time by the scheduler's setup probe.
   return pass(
     'adapters',
     ctx.run.selectedAdapter !== undefined
-      ? `Adapter "${ctx.run.selectedAdapter}" is selected; deep readiness probing runs at execution time (U6).`
-      : 'Adapter selection is deferred to the scheduler at execution time (U6).',
+      ? `Adapter "${ctx.run.selectedAdapter}" is selected; no adapter catalog is wired on this instance, so readiness is verified fail-closed at execution time.`
+      : 'No adapter catalog is wired on this instance; adapter selection and readiness are verified fail-closed at execution time.',
   );
 }
 
@@ -364,6 +398,13 @@ export interface RuntimePreflightOptions {
   readonly clock?: () => number;
   /** Per-check probe overrides (tests, later units). */
   readonly probes?: PreflightProbes;
+  /**
+   * Adapter catalog for the REAL adapter readiness check (U6). When provided,
+   * the `adapters` check resolves the run's adapter (run settings + setup
+   * detection) and fails on a not-ready selection. Server entry points always
+   * wire one; without it, readiness stays enforced at execution time.
+   */
+  readonly adapters?: AdapterCatalog;
 }
 
 const PREFLIGHT_ACTOR = { kind: 'system', id: 'preflight' } as const;
@@ -377,6 +418,9 @@ export function createRuntimePreflight(options: RuntimePreflightOptions = {}): P
   const workspaceConfig = options.runtime?.workspace ?? resolveWorkspaceRuntimeConfig();
   const probes: Readonly<Record<PreflightCheck, PreflightProbe>> = {
     ...DEFAULT_PROBES,
+    ...(options.adapters !== undefined
+      ? { adapters: createAdapterReadinessProbe(options.adapters) }
+      : {}),
     ...options.probes,
   };
 

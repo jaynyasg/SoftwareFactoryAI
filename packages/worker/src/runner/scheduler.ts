@@ -94,6 +94,19 @@ export interface RunSchedulerInput<TNode extends ScheduleNode = ScheduleNode> {
   readonly constraints?: SchedulerConstraints;
   /** Run-level cancellation (a signal or a cancellation scope). */
   readonly cancellation?: AbortSignal | CancellationScope;
+  /**
+   * Ticket ids already settled as completed on a previous attempt (U6 resume).
+   * Pre-settled tickets never re-run and satisfy their dependents' dependencies;
+   * ids not present in the DAG are ignored.
+   */
+  readonly completed?: readonly string[];
+  /**
+   * Pause hook (U6). Checked before each slot-fill pass: when it resolves
+   * `false` the scheduler starts NO new tickets, lets in-flight work settle,
+   * and exits with `yielded: true` while unfinished work remains — a safe
+   * yield the caller can requeue and resume later.
+   */
+  readonly shouldContinue?: () => boolean | Promise<boolean>;
 }
 
 /** A recorded capacity reduction (one per distinct throttled capacity value). */
@@ -107,6 +120,7 @@ export interface CapacityReduction {
 /** The outcome of a scheduler run. */
 export interface SchedulerResult {
   readonly runId: string;
+  /** Settled-complete tickets, INCLUDING any pre-settled via `input.completed`. */
   readonly completed: readonly string[];
   readonly failed: readonly string[];
   readonly cancelled: readonly string[];
@@ -118,6 +132,8 @@ export interface SchedulerResult {
   readonly cancelledRun: boolean;
   /** `true` when ready work could not progress (defensive anti-hang exit). */
   readonly stalled: boolean;
+  /** `true` when the run yielded on pause (`shouldContinue` false) with work left. */
+  readonly yielded: boolean;
   readonly capacityReductions: readonly CapacityReduction[];
 }
 
@@ -164,16 +180,20 @@ export async function runScheduler<TNode extends ScheduleNode = ScheduleNode>(
       });
     }
     runToken.dispose();
-    const all = (input.dag ?? buildDag(input.tickets)).nodes.map((n) => n.id);
+    const failedDag = input.dag ?? buildDag(input.tickets);
+    const preSettled = new Set(
+      (input.completed ?? []).filter((id) => failedDag.byId.has(id)),
+    );
     return {
       runId,
-      completed: [],
+      completed: [...preSettled],
       failed: [],
       cancelled: [],
-      unfinished: all,
+      unfinished: failedDag.nodes.map((n) => n.id).filter((id) => !preSettled.has(id)),
       setupFailed: true,
       cancelledRun: runToken.aborted,
       stalled: false,
+      yielded: false,
       capacityReductions: [],
     };
   }
@@ -187,6 +207,13 @@ export async function runScheduler<TNode extends ScheduleNode = ScheduleNode>(
   const writeScopeAvailable = input.constraints?.writeScopeAvailable ?? MAX_WORKER_CAP;
 
   const completed = new Set<string>();
+  // Pre-settle tickets completed on a previous attempt (U6 resume): they never
+  // re-run and immediately satisfy their dependents. Unknown ids are ignored.
+  for (const id of input.completed ?? []) {
+    if (dag.byId.has(id)) {
+      completed.add(id);
+    }
+  }
   const failed = new Set<string>();
   const cancelled = new Set<string>();
   const running = new Map<string, Promise<void>>();
@@ -196,6 +223,7 @@ export async function runScheduler<TNode extends ScheduleNode = ScheduleNode>(
   const reductions: CapacityReduction[] = [];
   let lastEmittedCapacity: number | undefined;
   let stalled = false;
+  let yielded = false;
   let infraError: unknown;
 
   const isSettled = (id: string): boolean =>
@@ -330,9 +358,18 @@ export async function runScheduler<TNode extends ScheduleNode = ScheduleNode>(
     if (runToken.aborted) {
       break;
     }
-    await fillSlots();
+    // Pause hook (U6): when the caller reports the run may not continue, start
+    // no new tickets; in-flight work settles safely, then the run yields.
+    const paused = input.shouldContinue !== undefined && !(await input.shouldContinue());
+    if (!paused) {
+      await fillSlots();
+    }
     if (running.size === 0) {
       if (allSettled()) {
+        break;
+      }
+      if (paused) {
+        yielded = true;
         break;
       }
       const anyReady = readyTickets(dag, completed).some((node) => !isSettled(node.id));
@@ -369,6 +406,7 @@ export async function runScheduler<TNode extends ScheduleNode = ScheduleNode>(
     setupFailed: false,
     cancelledRun: runToken.aborted,
     stalled,
+    yielded,
     capacityReductions: reductions,
   };
 }

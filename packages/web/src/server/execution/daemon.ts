@@ -24,7 +24,7 @@
  * deterministically with no real waits.
  */
 import { projectRun } from '@software-factory/core';
-import type { EventStore } from '@software-factory/core';
+import type { EventStore, InterventionKind } from '@software-factory/core';
 import {
   abandonLease,
   claimJob,
@@ -78,6 +78,12 @@ export interface TicketExecutionResult {
   readonly reason?: string;
   readonly summary?: string;
   readonly requiredAction?: string;
+  /**
+   * Intervention-queue classification for a `blocked` result (X4). Defaults to
+   * `adapter_setup`; U6 uses it to distinguish policy blocks, workspace/source
+   * problems, and approval gaps from adapter setup failures.
+   */
+  readonly interventionKind?: InterventionKind;
 }
 
 /** The interface U6 implements: run the tickets for one claimed queue job. */
@@ -372,7 +378,7 @@ export function createExecutionDaemon(options: ExecutionDaemonOptions): Executio
         await raiseIntervention(store, {
           runId: job.runId,
           interventionId: `${job.jobId}:blocked:${job.attempt}`,
-          kind: 'adapter_setup',
+          kind: result.interventionKind ?? 'adapter_setup',
           blockingStage: 'execution',
           reason,
           requiredAction,

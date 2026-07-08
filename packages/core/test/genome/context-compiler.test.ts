@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
   compileContext,
+  compileExecutionNodes,
+  createModuleRegistry,
+  fallbackModuleContract,
   parseRunRequest,
   type ArtifactRef,
   type CompileContextInput,
   type ContextTicket,
+  type ExecutableTicket,
   type ModuleContract,
 } from '../../src/index';
 
@@ -106,5 +110,126 @@ describe('compileContext', () => {
 
   it('is deterministic for identical inputs', () => {
     expect(compileContext(baseInput())).toEqual(compileContext(baseInput()));
+  });
+});
+
+/* ----------------------------------------------------------------------------
+ * compileExecutionNodes (U6): projected ticket DAG -> scheduler nodes
+ * ------------------------------------------------------------------------- */
+
+function module(
+  id: string,
+  requiredInputs: readonly string[],
+  expectedOutputs: readonly string[],
+): ModuleContract {
+  return {
+    id,
+    version: '1.0.0',
+    title: `Module ${id}`,
+    description: `Test module ${id}.`,
+    requiredInputs: [...requiredInputs],
+    expectedOutputs: [...expectedOutputs],
+    allowedTools: ['fs.read', 'fs.write'],
+    riskHint: {},
+    artifactContracts: expectedOutputs.map((key) => ({ key, kind: 'code', required: true })),
+  };
+}
+
+const EXEC_TICKETS: readonly ExecutableTicket[] = [
+  {
+    ticketId: 'scaffold',
+    title: 'Scaffold the app',
+    moduleId: 'scaffold-app',
+    dependsOn: [],
+    riskTier: 'low',
+    state: 'completed',
+  },
+  {
+    ticketId: 'data-model',
+    title: 'Define the data model',
+    moduleId: 'data-model',
+    dependsOn: ['scaffold'],
+    riskTier: 'medium',
+    state: 'created',
+  },
+  {
+    ticketId: 'review-acceptance',
+    title: 'Implement review and acceptance',
+    dependsOn: ['data-model'],
+    state: 'created',
+  },
+];
+
+function execRegistry(): ReturnType<typeof createModuleRegistry> {
+  return createModuleRegistry([
+    module('scaffold-app', [], ['app.scaffold']),
+    module('data-model', ['app.scaffold'], ['data.schema']),
+  ]);
+}
+
+describe('compileExecutionNodes (U6)', () => {
+  const runRequest = parseRunRequest(
+    'Build an AI services marketplace for customers and providers with proposals.',
+  );
+
+  function plan() {
+    return compileExecutionNodes({
+      runRequest,
+      tickets: EXEC_TICKETS,
+      modules: execRegistry(),
+      workspaceDir: '/ws/run-1',
+    });
+  }
+
+  it('maps every projected ticket onto a node with workspace, risk, and deps', () => {
+    const { nodes } = plan();
+    expect(nodes.map((node) => node.id)).toEqual(['scaffold', 'data-model', 'review-acceptance']);
+    for (const node of nodes) {
+      expect(node.workspaceDir).toBe('/ws/run-1');
+    }
+    expect(nodes[1].dependsOn).toEqual(['scaffold']);
+    expect(nodes[1].riskTier).toBe('medium');
+    expect(nodes[2].riskTier).toBe('low'); // default when the projection has none
+  });
+
+  it('pre-settles tickets the ledger already recorded as completed', () => {
+    expect(plan().completed).toEqual(['scaffold']);
+  });
+
+  it('resolves required inputs from the producing ticket declared outputs', () => {
+    const { nodes } = plan();
+    const dataModel = nodes.find((node) => node.id === 'data-model');
+    const prior = dataModel?.compileInput.priorArtifacts ?? {};
+    expect(Object.keys(prior)).toEqual(['app.scaffold']);
+    expect(prior['app.scaffold'].summary).toContain('"scaffold"');
+    expect(prior['app.scaffold'].kind).toBe('code');
+    // The compiled context therefore has no missing inputs.
+    expect(compileContext(dataModel!.compileInput).complete).toBe(true);
+  });
+
+  it('derives write scopes from expected-output keys so shared outputs conflict', () => {
+    const { nodes } = plan();
+    expect(nodes.find((node) => node.id === 'data-model')?.writeScope).toEqual([
+      'outputs/data.schema',
+    ]);
+    // Fallback tickets scope their own generic output (distinct per ticket).
+    expect(nodes.find((node) => node.id === 'review-acceptance')?.writeScope).toEqual([
+      'outputs/ticket.review-acceptance.output',
+    ]);
+  });
+
+  it('uses the fallback module contract for tickets without a registered module', () => {
+    const { nodes } = plan();
+    const fallbackNode = nodes.find((node) => node.id === 'review-acceptance');
+    expect(fallbackNode?.moduleId).toBe('ticket/review-acceptance');
+    expect(fallbackNode?.expectedOutputs).toEqual(['ticket.review-acceptance.output']);
+
+    const contract = fallbackModuleContract('review-acceptance', 'Implement review');
+    expect(contract.allowedTools).toEqual(['fs.read', 'fs.write', 'shell.exec']);
+    expect(contract.requiredInputs).toEqual([]);
+  });
+
+  it('is deterministic for identical inputs', () => {
+    expect(plan()).toEqual(plan());
   });
 });

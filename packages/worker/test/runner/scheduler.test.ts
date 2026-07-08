@@ -273,6 +273,92 @@ describe('scheduler: DAG ordering', () => {
   });
 });
 
+describe('scheduler: resume + pause (U6)', () => {
+  it('pre-settled completed tickets never re-run and satisfy their dependents', async () => {
+    const store = createInMemoryEventStore();
+    const adapter = createGatedAdapter({ capacity: 10 });
+    const a = makeNode('a', { writeScope: ['src/a.ts'] });
+    const b = makeNode('b', { dependsOn: ['a'], writeScope: ['src/b.ts'] });
+    const c = makeNode('c', { dependsOn: ['b'], writeScope: ['src/c.ts'] });
+
+    const run = runScheduler({
+      runId: 'run-resume',
+      tickets: [a, b, c],
+      adapter,
+      store,
+      config: { requestedCap: 5 },
+      // a and b completed on a previous attempt; only c may execute.
+      completed: ['a', 'b', 'not-in-dag'],
+    });
+
+    await adapter.whenStarted(1);
+    expect(adapter.started).toEqual(['c']);
+    adapter.releaseAll();
+    const result = await run;
+
+    expect([...result.completed].sort()).toEqual(['a', 'b', 'c']);
+    expect(result.unfinished).toEqual([]);
+    expect(result.yielded).toBe(false);
+
+    // No worker events were emitted for the pre-settled tickets.
+    const events = await store.readRun('run-resume');
+    const startedTickets = events
+      .filter((event) => event.type === 'worker.started')
+      .map((event) => event.ticketId);
+    expect(startedTickets).toEqual(['c']);
+  });
+
+  it('yields immediately when shouldContinue is false before any start', async () => {
+    const store = createInMemoryEventStore();
+    const adapter = createGatedAdapter({ capacity: 10 });
+
+    const result = await runScheduler({
+      runId: 'run-paused-start',
+      tickets: makeIndependentNodes(3),
+      adapter,
+      store,
+      config: { requestedCap: 5 },
+      shouldContinue: () => false,
+    });
+
+    expect(result.yielded).toBe(true);
+    expect(result.completed).toEqual([]);
+    expect(result.unfinished).toHaveLength(3);
+    expect(adapter.started).toHaveLength(0);
+    expect((await store.readRun('run-paused-start')).some((e) => e.type === 'worker.started')).toBe(
+      false,
+    );
+  });
+
+  it('pause mid-flight lets in-flight work settle, starts nothing new, and yields', async () => {
+    const store = createInMemoryEventStore();
+    const adapter = createGatedAdapter({ capacity: 10 });
+    const a = makeNode('a', { writeScope: ['src/a.ts'] });
+    const b = makeNode('b', { dependsOn: ['a'], writeScope: ['src/b.ts'] });
+    let paused = false;
+
+    const run = runScheduler({
+      runId: 'run-pause-mid',
+      tickets: [a, b],
+      adapter,
+      store,
+      config: { requestedCap: 5 },
+      shouldContinue: () => !paused,
+    });
+
+    await adapter.whenStarted(1);
+    expect(adapter.started).toEqual(['a']);
+    paused = true; // pause BEFORE a settles: b must never start
+    adapter.release('a');
+    const result = await run;
+
+    expect(result.yielded).toBe(true);
+    expect(result.completed).toEqual(['a']); // in-flight work settled safely
+    expect(result.unfinished).toEqual(['b']);
+    expect(adapter.started).toEqual(['a']);
+  });
+});
+
 describe('computeEffectiveCapacity', () => {
   const base = {
     readyTickets: 10,

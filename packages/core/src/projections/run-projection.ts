@@ -388,7 +388,10 @@ export function projectRun(raw: readonly unknown[], runId?: string): RunProjecti
         }
         break;
       case 'queue.enqueued':
-        if (event.payload.jobKind === 'run-execution') {
+        if (event.payload.jobKind === 'run-execution' && executionFold !== 'paused') {
+          // A requeue of safely-yielded work while the run is PAUSED is resume
+          // bookkeeping, not an un-pause: the operator's pause holds until an
+          // explicit `execution.resumed` (U6 pause-yield-requeue path).
           executionFold = 'queued';
           executionReason = event.payload.reason;
         }
@@ -414,8 +417,11 @@ export function projectRun(raw: readonly unknown[], runId?: string): RunProjecti
               executionReason = event.payload.reason ?? executionReason;
               break;
             case 'requeued':
-              executionFold = 'queued';
-              executionReason = event.payload.reason;
+              // See `queue.enqueued`: a requeue never overrides a live pause.
+              if (executionFold !== 'paused') {
+                executionFold = 'queued';
+                executionReason = event.payload.reason;
+              }
               break;
             default:
               break;

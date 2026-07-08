@@ -21,11 +21,12 @@
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { createFileSystemEventStore } from '@software-factory/core';
+import { createDefaultAdapterCatalog, createFileSystemEventStore } from '@software-factory/core';
 import { createApp } from './app';
 import type { RunningServer } from './app';
 import { createExecutionDaemon } from './execution/daemon';
 import type { ExecutionDaemon } from './execution/daemon';
+import { createSchedulerTicketExecutor } from './execution/ticket-executor';
 import { createRuntimeOperatorTokenProvider, resolveRuntimeConfig } from './runtime';
 
 export interface StandaloneOptions {
@@ -70,7 +71,14 @@ export async function startStandaloneServer(
 
   // One daemon per process: bootstrapped BEFORE the listener so the initial
   // reconcile pass (resume safe queued work, abandon stale leases) runs first.
-  const daemon = createExecutionDaemon({ store, config: runtime.execution });
+  // The adapter catalog is shared by the executor and the preflight readiness
+  // check so both resolve the same adapter set (U6).
+  const adapterCatalog = createDefaultAdapterCatalog();
+  const daemon = createExecutionDaemon({
+    store,
+    config: runtime.execution,
+    executor: createSchedulerTicketExecutor({ runtime, adapters: adapterCatalog }),
+  });
   await daemon.start();
 
   // No CSRF token here: the CLI is a non-browser caller authenticated by the
@@ -79,6 +87,7 @@ export async function startStandaloneServer(
     store,
     operatorToken: provider,
     execution: daemon,
+    adapterCatalog,
     config: { allowedOrigins: runtime.allowedOrigins, runtime, allowSameHostOrigin: true },
   });
 

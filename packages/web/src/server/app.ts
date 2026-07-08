@@ -20,11 +20,13 @@ import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import {
   checkCommand,
+  createDefaultAdapterCatalog,
   createEventReader,
   createEventWriter,
   verifyOperatorToken,
 } from '@software-factory/core';
 import type {
+  AdapterCatalog,
   AppendableEvent,
   CommandGuardRequest,
   CommandRejectionReason,
@@ -160,6 +162,13 @@ export interface AppDeps {
    * then fails closed rather than skipping the rehearsal.
    */
   readonly preflight?: PreflightRunner | null;
+  /**
+   * Adapter catalog for the preflight adapter readiness check (U6). Defaults
+   * to the real default catalog (Codex/Claude CLIs + hosted API stub); tests
+   * inject fakes. Pass `null` to run without a catalog — adapter readiness is
+   * then enforced fail-closed at execution time by the scheduler setup probe.
+   */
+  readonly adapterCatalog?: AdapterCatalog | null;
 }
 
 /* ----------------------------------------------------------------------------
@@ -503,11 +512,20 @@ export function createApp(deps: AppDeps): App {
   // stays with the server entry points. Omitted/null -> execution disabled.
   const executionDaemon: ExecutionDaemon | null = deps.execution ?? null;
 
+  // Adapter catalog (U6): `undefined` -> the real default catalog; `null` ->
+  // no catalog (readiness enforced fail-closed at execution time instead).
+  const adapterCatalog: AdapterCatalog | null =
+    deps.adapterCatalog === undefined ? createDefaultAdapterCatalog() : deps.adapterCatalog;
+
   // `undefined` -> default runtime preflight; `null` -> preflight disabled
   // (start fails closed rather than skipping the rehearsal).
   const preflight: PreflightRunner | null =
     deps.preflight === undefined
-      ? createRuntimePreflight({ runtime: config.runtime, clock })
+      ? createRuntimePreflight({
+          runtime: config.runtime,
+          clock,
+          adapters: adapterCatalog ?? undefined,
+        })
       : deps.preflight;
 
   async function runPreflightForRun(runId: string): Promise<PreflightRunResult | null> {

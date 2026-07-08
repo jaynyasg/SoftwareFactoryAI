@@ -30,12 +30,13 @@
 import { randomBytes } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { createFileSystemEventStore } from '@software-factory/core';
-import type { EventStore, OperatorTokenProvider } from '@software-factory/core';
+import { createDefaultAdapterCatalog, createFileSystemEventStore } from '@software-factory/core';
+import type { AdapterCatalog, EventStore, OperatorTokenProvider } from '@software-factory/core';
 import { createApp } from './app';
 import type { App } from './app';
 import { createExecutionDaemon } from './execution/daemon';
 import type { ExecutionDaemon } from './execution/daemon';
+import { createSchedulerTicketExecutor } from './execution/ticket-executor';
 import { createRuntimeOperatorTokenProvider, resolveRuntimeConfig } from './runtime';
 import type { LocalSession } from '../lib/session';
 
@@ -48,6 +49,7 @@ interface FactorySingletons {
   provider?: OperatorTokenProvider;
   app?: App;
   daemon?: ExecutionDaemon;
+  adapterCatalog?: AdapterCatalog;
 }
 
 const globalRef = globalThis as typeof globalThis & { __softwareFactory__?: FactorySingletons };
@@ -82,12 +84,23 @@ export function getStore(): EventStore {
  * queued work, abandon stale leases) and the interval loop; SIGTERM/SIGINT
  * stop it gracefully so in-flight work yields and requeues.
  */
+/** The process-wide adapter catalog shared by preflight and the executor. */
+function getAdapterCatalog(): AdapterCatalog {
+  singletons.adapterCatalog ??= createDefaultAdapterCatalog();
+  return singletons.adapterCatalog;
+}
+
 export function getExecutionDaemon(): ExecutionDaemon {
   if (singletons.daemon === undefined) {
     const runtime = resolveRuntimeConfig();
     const daemon = createExecutionDaemon({
       store: getStore(),
       config: runtime.execution,
+      // U6: the real scheduler-backed executor (ticket DAG -> workers).
+      executor: createSchedulerTicketExecutor({
+        runtime,
+        adapters: getAdapterCatalog(),
+      }),
     });
     singletons.daemon = daemon;
     daemon.start().catch((error: unknown) => {
@@ -113,6 +126,7 @@ export function getApp(): App {
     store: getStore(),
     operatorToken: operatorTokenProvider(),
     execution: getExecutionDaemon(),
+    adapterCatalog: getAdapterCatalog(),
     config: {
       allowedOrigins: runtime.allowedOrigins,
       csrfToken: csrfToken(),

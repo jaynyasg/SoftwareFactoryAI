@@ -86,6 +86,8 @@ export * from './adapters/codex-cli-adapter';
 export * from './adapters/claude-code-cli-adapter';
 // Hosted/server-side execution stub behind the same contract.
 export * from './adapters/api-adapter';
+// Adapter catalog + run-settings/setup-detection selection (full-factory U6).
+export * from './adapters/adapter-catalog';
 
 /* U9 — Provenance bundle + artifact confidence */
 

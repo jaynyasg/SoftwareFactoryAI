@@ -11,11 +11,14 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
+  AdapterError,
+  createAdapterCatalog,
   createInMemoryEventStore,
   createInMemoryOperatorTokenStore,
   createOperatorTokenProvider,
   projectRun,
   type EventStore,
+  type ExecutionAdapter,
   type RunProjection,
 } from '@software-factory/core';
 import {
@@ -61,6 +64,19 @@ function noopTimers() {
   };
 }
 
+/** A deterministic, always-ready fake adapter for the preflight catalog. */
+function readyFakeAdapter(id = 'fake-ready'): ExecutionAdapter {
+  return {
+    id,
+    family: 'codex',
+    detectSetup: () =>
+      Promise.resolve({ available: true, authenticated: true, capacity: 4 }),
+    execute: () =>
+      Promise.resolve({ ok: false as const, error: AdapterError.unavailable('not used') }),
+    reportCapacity: () => 4,
+  };
+}
+
 interface MakeExecAppResult {
   readonly app: App;
   readonly store: EventStore;
@@ -99,6 +115,9 @@ function makeExecApp(
     execution: daemon,
     preflight: options.preflight,
     researcher: options.researcher,
+    // Deterministic ready catalog: these route tests exercise queue/daemon
+    // semantics, not real CLI setup probing (covered by execution-worker tests).
+    adapterCatalog: createAdapterCatalog([readyFakeAdapter()]),
   });
   return { app, store, daemon };
 }
