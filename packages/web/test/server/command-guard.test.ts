@@ -214,6 +214,13 @@ describe('command guard over mutating routes', () => {
             maxSources: 12,
             maxDurationMs: 120_000,
           },
+          workspace: {
+            localBoundaryRoot: '/var/data/workspaces',
+            approvedFolders: [],
+            checkoutRoot: '/var/data/.factory/workspaces',
+            checkoutCredentialsPresent: false,
+            dirtyStatePolicy: 'allow_dirty',
+          },
         },
       },
       planner: null,

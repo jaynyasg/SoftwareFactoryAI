@@ -5,8 +5,13 @@
  *
  * Cloud/local boundary handling (KTD5): in cloud mode a laptop-local folder is
  * NOT readable — instead of pretending, an inline "unavailable" adapter reports
- * not-configured so the runner records a setup requirement + gap. The same
- * honest shape covers GitHub repositories until U4 materializes checkouts.
+ * not-configured so the runner records a setup requirement + gap.
+ *
+ * Workspace materialization (full-factory U4): when the run's workspace has
+ * been materialized (`workspace.checkout_completed` / `workspace.local_bound`
+ * on the ledger), repo/folder research scans the REAL checkout/bound path —
+ * contained inside it, traversal rejected. An un-materialized GitHub repo
+ * keeps the honest "materialize first" unavailable shape.
  *
  * Fail-closed defaults: no web-search provider is bundled in U2, so hosted
  * search research reports setup-required instead of fabricating results; the
@@ -21,6 +26,7 @@ import {
   createPrdAdapter,
   createRepoScanAdapter,
   createWebSearchAdapter,
+  projectWorkspace,
   runResearch,
 } from '@software-factory/worker';
 import type {
@@ -114,7 +120,15 @@ export function createRuntimeResearcher(options: RuntimeResearcherOptions = {}):
 
     const adapters: ResearchSourceAdapter[] = [];
 
+    // Materialized workspace state (U4): a completed checkout / bound folder
+    // lets research scan the REAL workspace instead of reporting unavailable.
+    const workspaceState = projectWorkspace(events, runId);
+    const materialized =
+      workspaceState.status === 'ready' ? workspaceState.workspace : undefined;
+
     // Local folder: readable only in local mode, and only as its own boundary.
+    // A U4-bound folder scans the resolved bound path (boundary-checked at
+    // bind time); an unbound folder keeps the pre-U4 direct-scan behavior.
     if (payload.localFolder !== undefined && payload.localFolder.length > 0) {
       if (mode === 'cloud') {
         adapters.push(
@@ -128,23 +142,34 @@ export function createRuntimeResearcher(options: RuntimeResearcherOptions = {}):
       } else {
         adapters.push(
           createRepoScanAdapter({
-            workspaceRoot: payload.localFolder,
+            workspaceRoot:
+              materialized?.kind === 'local_folder' ? materialized.path : payload.localFolder,
             kind: 'local_folder',
           }),
         );
       }
     }
 
-    // GitHub repos need workspace materialization (U4) before they can be read.
+    // GitHub repos: a materialized checkout (U4) is scanned for real evidence;
+    // otherwise the repo honestly needs workspace materialization first.
     if (payload.githubRepo !== undefined && payload.githubRepo.length > 0) {
-      adapters.push(
-        createUnavailableSourceAdapter(
-          'github-repo',
-          'repo_scan',
-          `GitHub repository "${payload.githubRepo}" is not materialized as a workspace on this instance yet; repository checkout happens during workspace materialization.`,
-          'Materialize the repository workspace',
-        ),
-      );
+      if (materialized?.kind === 'repo_checkout') {
+        adapters.push(
+          createRepoScanAdapter({
+            workspaceRoot: materialized.checkoutPath,
+            kind: 'repo_scan',
+          }),
+        );
+      } else {
+        adapters.push(
+          createUnavailableSourceAdapter(
+            'github-repo',
+            'repo_scan',
+            `GitHub repository "${payload.githubRepo}" is not materialized as a workspace on this instance yet; repository checkout happens during workspace materialization (POST /api/runs/:id/workspace).`,
+            'Materialize the repository workspace',
+          ),
+        );
+      }
     }
 
     // PRD text / reference metadata.

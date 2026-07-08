@@ -40,13 +40,22 @@ import { setupRoutes } from './routes/setup';
 import { researchRoutes } from './research/research-routes';
 import { createRuntimeResearcher } from './research/runtime-researcher';
 import type { ResearchTriggerInput, RunResearcher } from './research/runtime-researcher';
+import { createRuntimeWorkspaceMaterializer } from './workspace/runtime-materializer';
+import type {
+  RunWorkspaceMaterializer,
+  WorkspaceTriggerInput,
+} from './workspace/runtime-materializer';
 import { createGenomePlanner } from './planner';
 import type { RunPlanInput, RunPlanner } from './planner';
 import type { RuntimeConfig } from './runtime';
-import type { ResearchRunResult } from '@software-factory/worker';
+import type { ResearchRunResult, WorkspaceMaterializationResult } from '@software-factory/worker';
 
 export type { RunPlanInput, RunPlanner } from './planner';
 export type { ResearchTriggerInput, RunResearcher } from './research/runtime-researcher';
+export type {
+  RunWorkspaceMaterializer,
+  WorkspaceTriggerInput,
+} from './workspace/runtime-materializer';
 
 /* ----------------------------------------------------------------------------
  * Transport types
@@ -120,6 +129,14 @@ export interface AppDeps {
    * research trigger entirely.
    */
   readonly researcher?: RunResearcher | null;
+  /**
+   * Workspace materializer invoked by the workspace trigger route to bind a
+   * local folder or check out a repository for a run (emitting `workspace.*`
+   * events into the same store). Defaults to the runtime materializer built
+   * from the runtime config (`createRuntimeWorkspaceMaterializer`). Pass `null`
+   * to disable the workspace trigger entirely.
+   */
+  readonly materializer?: RunWorkspaceMaterializer | null;
 }
 
 /* ----------------------------------------------------------------------------
@@ -176,6 +193,18 @@ export interface RouteContext {
    * run that can never satisfy its requested mode.
    */
   readonly researchEnabled: boolean;
+  /**
+   * Run one workspace materialization pass for a run (full-factory U4).
+   * Resolves `null` when materialization is disabled. Source/setup/checkout
+   * problems are recorded as ledger states by the materializer itself and
+   * never thrown into the request path.
+   */
+  materializeWorkspace(
+    runId: string,
+    input: WorkspaceTriggerInput,
+  ): Promise<WorkspaceMaterializationResult | null>;
+  /** Whether a workspace materializer is wired on this instance. */
+  readonly workspaceEnabled: boolean;
 }
 
 export type RouteHandler = (ctx: RouteContext) => Promise<ApiResponse>;
@@ -416,6 +445,25 @@ export function createApp(deps: AppDeps): App {
     }
   }
 
+  // `undefined` -> default runtime materializer; `null` -> workspace disabled.
+  const materializer: RunWorkspaceMaterializer | null =
+    deps.materializer === undefined
+      ? createRuntimeWorkspaceMaterializer({ runtime: config.runtime, clock })
+      : deps.materializer;
+
+  async function materializeWorkspaceForRun(
+    runId: string,
+    input: WorkspaceTriggerInput,
+  ): Promise<WorkspaceMaterializationResult | null> {
+    if (materializer === null) {
+      return null;
+    }
+    // The materializer records its own failure modes on the ledger and never
+    // throws for source/setup/checkout problems; an unexpected (store-level)
+    // error propagates to the route's 500 handler and stays observable there.
+    return materializer(store, runId, input);
+  }
+
   const routes: RouteDef[] = [
     ...runRoutes(),
     ...eventRoutes(),
@@ -494,6 +542,8 @@ export function createApp(deps: AppDeps): App {
       planRun,
       runResearch: runResearchForRun,
       researchEnabled: researcher !== null,
+      materializeWorkspace: materializeWorkspaceForRun,
+      workspaceEnabled: materializer !== null,
     };
   }
 

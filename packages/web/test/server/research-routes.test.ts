@@ -424,6 +424,13 @@ describe('createRuntimeResearcher (default wiring)', () => {
         maxSources: 12,
         maxDurationMs: 120_000,
       },
+      workspace: {
+        localBoundaryRoot: tmpdir(),
+        approvedFolders: [],
+        checkoutRoot: join(tmpdir(), 'sf-checkouts'),
+        checkoutCredentialsPresent: false,
+        dirtyStatePolicy: 'allow_dirty',
+      },
     };
   }
 

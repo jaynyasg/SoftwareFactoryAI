@@ -40,6 +40,17 @@ export * from './research/web-adapters';
 // The bounded research runner: policy -> setup -> budget -> events -> brief.
 export * from './research/research-runner';
 
+/* Full-factory U4 — Workspace and repository materialization */
+
+// Local-boundary policy: approved working boundary + operator folders (pure).
+export * from './workspace/workspace-policy';
+// Replayable workspace projection + build-contract evidence mapping.
+export * from './workspace/workspace-projection';
+// The materializer: local bind / repo checkout / explicit unavailability.
+export * from './workspace/workspace-materializer';
+// Repository checkout client (credential-safe, sanitized evidence).
+export * from './git/git-checkout';
+
 /* U6 — Sandbox, dependency policy, quality gates, local preview */
 
 // Sandbox contract + policy enforcement + Docker/local-fallback selection.

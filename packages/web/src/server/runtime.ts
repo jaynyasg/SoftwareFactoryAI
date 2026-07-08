@@ -42,6 +42,27 @@ export interface ResearchRuntimeConfig {
   readonly maxDurationMs: number;
 }
 
+/**
+ * Workspace materialization runtime configuration (full-factory U4).
+ *
+ * Source checkout credentials are a SEPARATE setup surface from deploy and
+ * research credentials (hardening E5). Only credential PRESENCE is resolved
+ * into config — `SF_GIT_CHECKOUT_TOKEN` stays in the environment and is read
+ * exclusively by the checkout client at exec time, never recorded as evidence.
+ */
+export interface WorkspaceRuntimeConfig {
+  /** Approved working boundary for local-folder workspaces (local mode). */
+  readonly localBoundaryRoot: string;
+  /** Explicitly approved operator folders (each admits itself + subtree). */
+  readonly approvedFolders: readonly string[];
+  /** Root directory repository checkouts are materialized under. */
+  readonly checkoutRoot: string;
+  /** Whether source checkout credentials are PRESENT (never the value). */
+  readonly checkoutCredentialsPresent: boolean;
+  /** Recorded dirty-state policy for bound local folders. */
+  readonly dirtyStatePolicy: 'allow_dirty' | 'reject_dirty';
+}
+
 export interface RuntimeConfig {
   readonly mode: FactoryRuntimeMode;
   readonly host: string;
@@ -52,6 +73,7 @@ export interface RuntimeConfig {
   readonly operatorTokenSource: OperatorTokenSource;
   readonly csrfToken?: string;
   readonly research: ResearchRuntimeConfig;
+  readonly workspace: WorkspaceRuntimeConfig;
 }
 
 interface RuntimeEnv {
@@ -73,6 +95,11 @@ interface RuntimeEnv {
   readonly SF_RESEARCH_SEARCH_API_KEY?: string;
   readonly SF_RESEARCH_MAX_SOURCES?: string;
   readonly SF_RESEARCH_MAX_DURATION_MS?: string;
+  readonly SF_WORKSPACE_BOUNDARY?: string;
+  readonly SF_WORKSPACE_APPROVED_FOLDERS?: string;
+  readonly SF_WORKSPACE_CHECKOUT_ROOT?: string;
+  readonly SF_WORKSPACE_DIRTY_POLICY?: string;
+  readonly SF_GIT_CHECKOUT_TOKEN?: string;
 }
 
 function clean(value: string | undefined): string | undefined {
@@ -145,6 +172,28 @@ export function resolveResearchRuntimeConfig(
   };
 }
 
+/**
+ * Resolve the workspace materialization config from the environment. Reads only
+ * the PRESENCE of `SF_GIT_CHECKOUT_TOKEN` — never its value (hardening E5).
+ * Defaults: the approved local boundary is the workspace root that owns the
+ * factory dir, and checkouts land under `<factoryDir>/workspaces`.
+ */
+export function resolveWorkspaceRuntimeConfig(
+  env: RuntimeEnv = process.env as RuntimeEnv,
+  factoryDir: string = resolveFactoryDir(env),
+): WorkspaceRuntimeConfig {
+  return {
+    localBoundaryRoot: clean(env.SF_WORKSPACE_BOUNDARY) ?? dirname(factoryDir),
+    approvedFolders: splitCsv(env.SF_WORKSPACE_APPROVED_FOLDERS),
+    checkoutRoot: clean(env.SF_WORKSPACE_CHECKOUT_ROOT) ?? join(factoryDir, 'workspaces'),
+    checkoutCredentialsPresent: clean(env.SF_GIT_CHECKOUT_TOKEN) !== undefined,
+    dirtyStatePolicy:
+      clean(env.SF_WORKSPACE_DIRTY_POLICY)?.toLowerCase() === 'reject'
+        ? 'reject_dirty'
+        : 'allow_dirty',
+  };
+}
+
 /** Resolve the shared ledger/operator-token directory. */
 export function resolveFactoryDir(
   env: RuntimeEnv = process.env as RuntimeEnv,
@@ -177,17 +226,19 @@ export function resolveRuntimeConfig(
     ...new Set([...localOrigins, ...cloudOrigins, ...splitCsv(env.SF_ALLOWED_ORIGINS)]),
   ];
   const operatorTokenSource = clean(env.SF_OPERATOR_TOKEN) !== undefined ? 'env' : 'file';
+  const factoryDir = resolveFactoryDir(env, cwd);
 
   return {
     mode,
     host,
     port,
-    factoryDir: resolveFactoryDir(env, cwd),
+    factoryDir,
     allowedOrigins,
     publicBaseUrl,
     operatorTokenSource,
     csrfToken: clean(env.SF_CSRF_TOKEN),
     research: resolveResearchRuntimeConfig(env),
+    workspace: resolveWorkspaceRuntimeConfig(env, factoryDir),
   };
 }
 

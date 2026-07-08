@@ -5,8 +5,9 @@
  * "Failure-shaped" means every event family in the taxonomy that represents a
  * fault, a degraded state, a paused/blocked condition, a retry, or a rejected
  * action — i.e. every `*.failed`, `*.error`, `*.rejected`, `*.block`,
- * `*_invalid`, `*.cancelled`, `*.dead_lettered`, `*.retry`, `*.fallback`, and
- * `*.setup_required` event. The set is pinned in `FAILURE_EVENT_TYPES` (with a
+ * `*_invalid`, `*.cancelled`, `*.dead_lettered`, `*.retry`, `*.fallback`,
+ * `*.setup_required`, and `*.unavailable` event. The set is pinned in
+ * `FAILURE_EVENT_TYPES` (with a
  * compile-time `satisfies readonly FactoryEventType[]` guarantee) and the
  * registry is typed `Record<FailureEventType, ...>` so TypeScript refuses to
  * compile if any pinned class is left unmapped.
@@ -36,6 +37,8 @@ export const FAILURE_EVENT_TYPES = [
   'run.failed',
   'run.cancelled',
   'research.failed',
+  'workspace.checkout_failed',
+  'workspace.unavailable',
   'ticket.dead_lettered',
   'worker.retry',
   'worker.failed',
@@ -112,6 +115,24 @@ const ENTRY_SPECS: readonly EntrySpec[] = [
     retryable: true,
     rescueAction:
       'The research stage failed before its brief completed. Partial findings, assumptions, and gaps stay replayable on the ledger — inspect the research.failed reason (provider/setup/budget), fix the cause, then re-run research. Planning-only mode remains available without it.',
+  },
+  {
+    type: 'workspace.checkout_failed',
+    title: 'Workspace checkout failed',
+    severity: 'error',
+    blocking: true,
+    retryable: true,
+    rescueAction:
+      'Repository checkout for the run workspace failed. Read the sanitized workspace.checkout_failed reason (auth, missing repo/branch, or network), fix the source checkout credentials or repo/branch, then retry materialization (POST /api/runs/:id/workspace). See workspace-materialization.md.',
+  },
+  {
+    type: 'workspace.unavailable',
+    title: 'Workspace unavailable',
+    severity: 'warn',
+    blocking: true,
+    retryable: false,
+    rescueAction:
+      'The requested source cannot back a workspace on this runtime (cloud runs never read laptop paths; local folders must resolve inside the approved boundary or an explicitly approved operator folder). Follow the recorded requiredAction — provide a GitHub repository, upload PRD content, or choose an approved folder — then retry materialization. See workspace-materialization.md.',
   },
   {
     type: 'ticket.dead_lettered',

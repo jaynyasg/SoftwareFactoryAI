@@ -48,7 +48,8 @@ export type ActorKind =
   | 'gate'
   | 'deploy'
   | 'genome'
-  | 'researcher';
+  | 'researcher'
+  | 'workspace';
 
 /** Who/what produced the event. */
 export interface EventActor {
@@ -322,6 +323,76 @@ export interface ContractGeneratedPayload {
   readonly influencingFindingIds: readonly string[];
 }
 
+// workspace (materialization, full-factory U4)
+/**
+ * Which source input a workspace materialization refers to. `none` covers runs
+ * that supplied no source workspace at all (prompt/PRD-only runs receive a
+ * fresh generated workspace when execution starts — U5/U6).
+ */
+export type WorkspaceSourceKind = 'local_folder' | 'github_repo' | 'none';
+
+/**
+ * The recorded dirty-state policy for a materialized workspace:
+ *  - `allow_dirty`     — execution may proceed on a folder with uncommitted or
+ *    untracked changes (the operator explicitly chose the folder),
+ *  - `reject_dirty`    — execution must refuse a dirty workspace,
+ *  - `clean_checkout`  — the workspace is a fresh repository checkout and is
+ *    clean by construction.
+ * U4 records the policy as evidence; enforcement at execution time is U5/U6.
+ */
+export type DirtyStatePolicy = 'allow_dirty' | 'reject_dirty' | 'clean_checkout';
+
+/** Which local rule admitted an operator-supplied folder. */
+export type WorkspaceLocalBoundary = 'working_boundary' | 'operator_folder';
+
+export interface WorkspaceLocalBoundPayload {
+  /** Resolved absolute path bound as the run workspace. */
+  readonly path: string;
+  /** The operator-supplied path exactly as requested. */
+  readonly requestedPath: string;
+  /** Which rule admitted the folder (approved boundary vs explicit folder). */
+  readonly boundary: WorkspaceLocalBoundary;
+  /** The approving boundary root the path resolved inside. */
+  readonly boundaryRoot: string;
+  readonly dirtyStatePolicy: DirtyStatePolicy;
+}
+export interface WorkspaceCheckoutStartedPayload {
+  /** Repository reference, e.g. `owner/repo`. NEVER a credentialed URL. */
+  readonly repo: string;
+  readonly requestedBranch?: string;
+  /** Where the checkout is being materialized. */
+  readonly checkoutPath: string;
+  /** 1-based materialization attempt (retries increment it). */
+  readonly attempt: number;
+}
+export interface WorkspaceRefResolvedPayload {
+  readonly repo: string;
+  readonly branch: string;
+  readonly commit: string;
+}
+export interface WorkspaceCheckoutCompletedPayload {
+  readonly repo: string;
+  readonly branch: string;
+  readonly commit: string;
+  readonly checkoutPath: string;
+  readonly dirtyStatePolicy: DirtyStatePolicy;
+}
+export interface WorkspaceCheckoutFailedPayload {
+  /** Sanitized failure reason — credential values must never appear here. */
+  readonly reason: string;
+  readonly repo?: string;
+  /** The materialization attempt that failed. */
+  readonly attempt?: number;
+}
+export interface WorkspaceUnavailablePayload {
+  /** Why the requested source cannot back a workspace on this runtime. */
+  readonly reason: string;
+  /** Which source input is unavailable. */
+  readonly source: WorkspaceSourceKind;
+  /** What the operator must change before a retry can succeed. */
+  readonly requiredAction?: string;
+}
+
 // ticket
 export interface TicketCreatedPayload {
   readonly title: string;
@@ -512,6 +583,12 @@ export interface EventPayloadMap {
   'knowledge.entry_retired': KnowledgeEntryRetiredPayload;
   'supervisor.decision': SupervisorDecisionPayload;
   'contract.generated': ContractGeneratedPayload;
+  'workspace.local_bound': WorkspaceLocalBoundPayload;
+  'workspace.checkout_started': WorkspaceCheckoutStartedPayload;
+  'workspace.ref_resolved': WorkspaceRefResolvedPayload;
+  'workspace.checkout_completed': WorkspaceCheckoutCompletedPayload;
+  'workspace.checkout_failed': WorkspaceCheckoutFailedPayload;
+  'workspace.unavailable': WorkspaceUnavailablePayload;
   'ticket.created': TicketCreatedPayload;
   'ticket.queued': EmptyPayload;
   'ticket.state_changed': TicketStateChangedPayload;
@@ -626,6 +703,12 @@ export const EVENT_TYPES = [
   'knowledge.entry_retired',
   'supervisor.decision',
   'contract.generated',
+  'workspace.local_bound',
+  'workspace.checkout_started',
+  'workspace.ref_resolved',
+  'workspace.checkout_completed',
+  'workspace.checkout_failed',
+  'workspace.unavailable',
   'ticket.created',
   'ticket.queued',
   'ticket.state_changed',

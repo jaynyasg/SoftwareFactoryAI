@@ -39,7 +39,8 @@ const REQUIRED_FAILURE_FAMILIES: readonly FailureEventType[] = [
 const VALID_SEVERITIES: readonly EventSeverity[] = ['info', 'success', 'warn', 'error', 'critical'];
 
 /** Substrings that mark a failure-shaped event type in the taxonomy. */
-const FAILURE_NAME_RE = /(fail|error|reject|block|invalid|cancel|dead_letter|retry|fallback|setup_required)/;
+const FAILURE_NAME_RE =
+  /(fail|error|reject|block|invalid|cancel|dead_letter|retry|fallback|setup_required|unavailable)/;
 
 const runbook = readFileSync(
   new URL('../../../../docs/runbooks/failure-taxonomy.md', import.meta.url),
@@ -131,6 +132,18 @@ describe('failure registry — entry shape + invariants', () => {
       expect(FAILURE_REGISTRY[type].retryable, `${type} should be retryable`).toBe(true);
       expect(FAILURE_REGISTRY[type].blocking).toBe(true);
     }
+    // Workspace materialization: checkout failures are retryable after a fix;
+    // an unavailable workspace needs a setup/source change first (like setup_required).
+    expect(FAILURE_REGISTRY['workspace.checkout_failed']).toMatchObject({
+      severity: 'error',
+      blocking: true,
+      retryable: true,
+    });
+    expect(FAILURE_REGISTRY['workspace.unavailable']).toMatchObject({
+      severity: 'warn',
+      blocking: true,
+      retryable: false,
+    });
     // worker.retry is a transient, non-blocking, retryable signal.
     expect(FAILURE_REGISTRY['worker.retry']).toMatchObject({
       blocking: false,

@@ -41,6 +41,19 @@ export function contractDigest(text: string): string {
   return hash.toString(16).padStart(16, '0');
 }
 
+/**
+ * Materialization evidence a caller may feed into the contract (full-factory
+ * U4): when a workspace has actually been bound/checked out, the contract's
+ * `workspace` + `writeBoundaries` reflect that evidence instead of the
+ * "pending materialization" description derived from the run payload alone.
+ */
+export interface WorkspaceContractEvidence {
+  /** Human-facing workspace description (repo, branch, commit, path…). */
+  readonly workspace: string;
+  /** Where workers are allowed to write, per the materialized workspace. */
+  readonly writeBoundaries: readonly string[];
+}
+
 function describeWorkspace(run: RunProjection): { workspace: string; boundaries: string[] } {
   if (run.localFolder !== undefined && run.localFolder.length > 0) {
     return {
@@ -135,6 +148,7 @@ export function deriveBuildContract(
   run: RunProjection,
   tickets: TicketProjection,
   research: ResearchProjection,
+  workspaceEvidence?: WorkspaceContractEvidence,
 ): BuildContract {
   const mode: RunMode = run.mode ?? 'plan-only';
   const ticketViews = tickets.tickets;
@@ -142,7 +156,11 @@ export function deriveBuildContract(
   const hasTriage = ticketIds.has('triage');
   const title = run.title ?? 'Untitled run';
 
-  const { workspace, boundaries } = describeWorkspace(run);
+  // Materialization evidence (U4) supersedes the payload-derived description.
+  const { workspace, boundaries } =
+    workspaceEvidence !== undefined
+      ? { workspace: workspaceEvidence.workspace, boundaries: [...workspaceEvidence.writeBoundaries] }
+      : describeWorkspace(run);
   const risks = elevatedRisks(ticketViews);
   for (const gap of research.gaps) {
     if (gap.blocking && !gap.resolved) {

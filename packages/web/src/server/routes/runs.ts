@@ -7,6 +7,14 @@
  *                             the supervisor plan, and a build contract.
  *   GET  /api/runs            (read-only) — list projected runs.
  *   POST /api/runs/:id/cancel (mutating, guarded) — append `run.cancelled`.
+ *   POST /api/runs/:id/workspace (mutating, guarded) — materialize (or retry
+ *                             materializing) the run workspace (full-factory
+ *                             U4). Separate from execution so setup failures
+ *                             can be inspected and retried; retries converge
+ *                             instead of duplicating evidence. On success the
+ *                             build contract (when one exists) is re-derived
+ *                             with the materialization evidence.
+ *   GET  /api/runs/:id/workspace (read-only) — the projected workspace state.
  *
  * Run modes (full-factory U3):
  *   - `plan-only` (DEFAULT)        — identical to the V1 flow: create + plan.
@@ -42,6 +50,7 @@ import type {
   RunMode,
   RunProjection,
 } from '@software-factory/core';
+import { projectWorkspace, workspaceContractEvidence } from '@software-factory/worker';
 import type { ApiResponse, RouteContext, RouteDef } from '../app';
 import { asRecord, num, reviewMode, str } from './parse';
 
@@ -326,10 +335,88 @@ async function cancelRun(ctx: RouteContext): Promise<ApiResponse> {
   return { status: 200, body: { runId, run } };
 }
 
+/**
+ * Trigger (or retry) workspace materialization for a run (full-factory U4).
+ * The materializer converges on retry: an already-ready workspace is reused,
+ * unchanged-unavailable evidence dedups, and new checkout attempts increment
+ * an explicit attempt counter. After a successful materialization the build
+ * contract (when one exists) is re-derived with the workspace evidence —
+ * `emitBuildContract` is digest-idempotent, so it appends only on change.
+ */
+async function materializeWorkspaceRoute(ctx: RouteContext): Promise<ApiResponse> {
+  const runId = ctx.params.id;
+  const body = asRecord(ctx.request.body);
+  const events = await ctx.reader.readRun(runId);
+  const current = projectRun(events, runId);
+
+  const denial = await ctx.guardMutation({
+    subject: { kind: 'run', id: runId, version: num(body.expectedVersion) },
+    currentVersion: current.lastSequence,
+    command: 'workspace.materialize',
+  });
+  if (denial !== null) {
+    return denial;
+  }
+
+  if (current.ledger.length === 0) {
+    return { status: 404, body: { error: 'not_found', message: `Run ${runId} does not exist.` } };
+  }
+
+  const result = await ctx.materializeWorkspace(runId, { branch: str(body.branch) });
+  if (result === null) {
+    return {
+      status: 503,
+      body: {
+        error: 'workspace_disabled',
+        message: 'Workspace materialization is not enabled on this server instance.',
+      },
+    };
+  }
+
+  // Reflect materialization evidence in the build contract (U3 -> U4 seam).
+  // Only runs that already carry a contract are refreshed; plan-only ledgers
+  // stay byte-identical to their V1 shape.
+  if (result.ok && current.buildContract !== undefined) {
+    const refreshed = await ctx.reader.readRun(runId);
+    const plannedRun = projectRun(refreshed, runId);
+    if (plannedRun.status === 'planned') {
+      const contract = deriveBuildContract(
+        plannedRun,
+        projectTickets(refreshed, runId),
+        projectResearch(refreshed, runId),
+        workspaceContractEvidence(projectWorkspace(refreshed, runId)),
+      );
+      await emitBuildContract(ctx.writer, runId, contract);
+    }
+  }
+
+  const finalEvents = await ctx.reader.readRun(runId);
+  return {
+    status: result.ok && result.converged ? 200 : 201,
+    body: {
+      runId,
+      result,
+      workspace: projectWorkspace(finalEvents, runId),
+      run: projectRun(finalEvents, runId),
+    },
+  };
+}
+
+async function getWorkspace(ctx: RouteContext): Promise<ApiResponse> {
+  const runId = ctx.params.id;
+  const events = await ctx.reader.readRun(runId);
+  if (events.length === 0) {
+    return { status: 404, body: { error: 'not_found', message: `Run ${runId} does not exist.` } };
+  }
+  return { status: 200, body: { runId, workspace: projectWorkspace(events, runId) } };
+}
+
 export function runRoutes(): RouteDef[] {
   return [
     { method: 'POST', pattern: '/api/runs', handler: createRun },
     { method: 'GET', pattern: '/api/runs', handler: listRunsHandler },
     { method: 'POST', pattern: '/api/runs/:id/cancel', handler: cancelRun },
+    { method: 'POST', pattern: '/api/runs/:id/workspace', handler: materializeWorkspaceRoute },
+    { method: 'GET', pattern: '/api/runs/:id/workspace', handler: getWorkspace },
   ];
 }

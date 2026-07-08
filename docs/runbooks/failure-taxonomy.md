@@ -9,8 +9,8 @@ asserts that this file has a `### <event.type>` heading for **every** registry
 entry and **no** failure headings that are not in the registry — so the registry
 and this taxonomy cannot drift. The registry is also proven exhaustive over the
 event taxonomy: every event type whose name contains `fail`, `error`, `reject`,
-`block`, `invalid`, `cancel`, `dead_letter`, `retry`, `fallback`, or
-`setup_required` must have an entry.
+`block`, `invalid`, `cancel`, `dead_letter`, `retry`, `fallback`,
+`setup_required`, or `unavailable` must have an entry.
 
 ## How to read each class
 
@@ -30,6 +30,8 @@ event taxonomy: every event type whose name contains `fail`, `error`, `reject`,
 | `run.failed`                | error    | yes      | yes       |
 | `run.cancelled`             | warn     | yes      | yes       |
 | `research.failed`           | error    | yes      | yes       |
+| `workspace.checkout_failed` | error    | yes      | yes       |
+| `workspace.unavailable`     | warn     | yes      | no        |
 | `ticket.dead_lettered`      | error    | yes      | no        |
 | `worker.retry`              | warn     | no       | yes       |
 | `worker.failed`             | error    | yes      | yes       |
@@ -113,6 +115,40 @@ unresolved gaps recorded before the failure stay replayable on the ledger —
 inspect the `research.failed` reason, fix the cause, then re-run research. A
 later `research.brief_completed` resolves this failure. Planning-only mode
 remains available without a completed brief.
+
+## Workspace materialization failures
+
+See [workspace-materialization.md](./workspace-materialization.md) for the full
+materialization flow, boundary rules, and the checkout-credential surface.
+
+### workspace.checkout_failed
+
+**Workspace checkout failed** · error · blocking · retryable.
+
+Repository checkout for the run workspace failed (auth, missing repo/branch, or
+network). The recorded reason is **sanitized** — credential values never appear
+in evidence. Fix the source checkout credentials (`SF_GIT_CHECKOUT_TOKEN`, a
+surface separate from deploy and research credentials) or the repo/branch, then
+retry materialization via `POST /api/runs/:id/workspace`. Retries increment the
+recorded attempt; prior evidence is never duplicated.
+
+### workspace.unavailable
+
+**Workspace unavailable** · warn · blocking · not retryable.
+
+The requested source cannot back a workspace on this runtime:
+
+- **cloud runs never read laptop paths** (KTD5) — a local-only folder is
+  recorded as unavailable, not silently "read",
+- **local folders must resolve inside the approved working boundary** or an
+  explicitly approved operator folder — traversal/outside-boundary paths are
+  rejected with a paired `security.block` event, and
+- a run with **no source input** has nothing to materialize (prompt/PRD-only
+  runs get a fresh generated workspace when execution starts).
+
+Follow the recorded `requiredAction` — provide a GitHub repository, upload PRD
+content, or choose an approved folder — then retry materialization. A blind
+retry without a setup change converges on the same recorded state.
 
 ## Adapter failures
 
