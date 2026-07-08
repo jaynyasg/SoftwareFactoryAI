@@ -35,6 +35,15 @@ export * from './projections/ticket-projection';
 export * from './projections/artifact-projection';
 export * from './projections/operator-projection';
 
+/* Full-factory U1 — Research stage + lightweight knowledge index */
+
+// Per-run research view: status, sources, findings, assumptions, gaps, brief.
+export * from './research/research-projection';
+// Reusable knowledge-index contract + pure query (freshness/retention/redaction).
+export * from './knowledge/knowledge-index';
+// Cross-run knowledge-index projection from `knowledge.*` ledger events.
+export * from './knowledge/knowledge-projection';
+
 /* U3 — Security: operator token, command guard, review policy */
 
 // Loopback operator token/session: generation, constant-time verify, provider.

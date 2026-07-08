@@ -77,7 +77,11 @@ export interface RunDiagnosticsOptions {
   readonly runId?: string;
 }
 
-const FAILED_DEP_STATES = new Set<TicketState | 'unknown'>(['failed', 'dead_lettered', 'cancelled']);
+const FAILED_DEP_STATES = new Set<TicketState | 'unknown'>([
+  'failed',
+  'dead_lettered',
+  'cancelled',
+]);
 const ACTIVE_TICKET_STATES = new Set<TicketState | 'unknown'>(['running', 'retrying']);
 const REMAINING_TICKET_STATES = new Set<TicketState | 'unknown'>([
   'created',
@@ -135,6 +139,9 @@ function isResolved(failure: FactoryEvent, later: readonly FactoryEvent[]): bool
       return later.some((event) => event.type === 'sandbox.started');
     case 'preview.failed':
       return later.some((event) => event.type === 'preview.ready');
+    case 'research.failed':
+      // A later completed brief means a research re-run succeeded.
+      return later.some((event) => event.type === 'research.brief_completed');
     case 'deploy.setup_required':
     case 'deploy.config_invalid':
     case 'deploy.provider_failed':

@@ -35,6 +35,7 @@ import type { EventSeverity, FactoryEventType } from '../events/event-types';
 export const FAILURE_EVENT_TYPES = [
   'run.failed',
   'run.cancelled',
+  'research.failed',
   'ticket.dead_lettered',
   'worker.retry',
   'worker.failed',
@@ -102,6 +103,15 @@ const ENTRY_SPECS: readonly EntrySpec[] = [
     retryable: true,
     rescueAction:
       'The run was cancelled by an operator or supervisor. If cancellation was unintended, re-create the run; in-flight workers/adapters were asked to stop.',
+  },
+  {
+    type: 'research.failed',
+    title: 'Research failed',
+    severity: 'error',
+    blocking: true,
+    retryable: true,
+    rescueAction:
+      'The research stage failed before its brief completed. Partial findings, assumptions, and gaps stay replayable on the ledger — inspect the research.failed reason (provider/setup/budget), fix the cause, then re-run research. Planning-only mode remains available without it.',
   },
   {
     type: 'ticket.dead_lettered',

@@ -48,7 +48,17 @@ export interface OperatorProjection {
 
 function alertMessage(event: FactoryEvent): string {
   const payload = event.payload as Record<string, unknown>;
-  for (const key of ['reason', 'message', 'rationale', 'action', 'summary'] as const) {
+  // Research payloads surface their detail via statement/question/objective.
+  for (const key of [
+    'reason',
+    'message',
+    'rationale',
+    'action',
+    'summary',
+    'statement',
+    'question',
+    'objective',
+  ] as const) {
     const value = payload[key];
     if (typeof value === 'string' && value.length > 0) {
       return value;

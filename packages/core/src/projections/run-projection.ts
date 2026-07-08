@@ -150,7 +150,18 @@ export interface LedgerRow {
 
 function extractDetail(event: FactoryEvent): string | undefined {
   const payload = event.payload as Record<string, unknown>;
-  for (const key of ['reason', 'message', 'rationale', 'summary', 'action'] as const) {
+  // `statement`/`question`/`objective` carry the human-facing detail for
+  // research events; they exist on no other payloads, so this stays additive.
+  for (const key of [
+    'reason',
+    'message',
+    'rationale',
+    'summary',
+    'action',
+    'statement',
+    'question',
+    'objective',
+  ] as const) {
     const value = payload[key];
     if (typeof value === 'string' && value.length > 0) {
       return value;

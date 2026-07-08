@@ -47,7 +47,8 @@ export type ActorKind =
   | 'sandbox'
   | 'gate'
   | 'deploy'
-  | 'genome';
+  | 'genome'
+  | 'researcher';
 
 /** Who/what produced the event. */
 export interface EventActor {
@@ -112,6 +113,134 @@ export interface RunFailedPayload {
   readonly reason: string;
 }
 export interface RunCancelledPayload {
+  readonly reason?: string;
+}
+
+// research
+/**
+ * The class of source a research event refers to. Source-agnostic by design:
+ * later providers can plug in web search, documentation fetch, repo scans,
+ * uploaded PRDs, or model-generated synthesis behind the same event shapes.
+ * `other` keeps the family open to future provider classes.
+ */
+export type ResearchSourceKind =
+  | 'web_search'
+  | 'documentation'
+  | 'repo_scan'
+  | 'local_folder'
+  | 'uploaded_prd'
+  | 'model_synthesis'
+  | 'other';
+
+/**
+ * How a recorded finding is grounded. Assumptions and unresolved gaps are their
+ * own event families (`research.assumption_recorded` / `research.gap_recorded`),
+ * so findings only distinguish source-verified facts from model inference.
+ */
+export type ResearchFindingClassification = 'verified_fact' | 'inference';
+
+/** Bounds requested for a research pass (enforced by the U2 research runner). */
+export interface ResearchBudget {
+  readonly maxSources?: number;
+  readonly maxDurationMs?: number;
+}
+
+export interface ResearchRequestedPayload {
+  readonly objective: string;
+  readonly requestedSources?: readonly ResearchSourceKind[];
+  readonly budget?: ResearchBudget;
+}
+export interface ResearchSourceFoundPayload {
+  readonly sourceId: string;
+  readonly kind: ResearchSourceKind;
+  readonly title?: string;
+  /** Source-agnostic locator: URL, repo path, doc ref, or upload reference. */
+  readonly locator?: string;
+  readonly summary?: string;
+}
+export interface ResearchSourceReadPayload {
+  readonly sourceId: string;
+  readonly summary?: string;
+  /** Content digest of what was read, for provenance/staleness checks. */
+  readonly contentDigest?: string;
+}
+export interface ResearchFindingRecordedPayload {
+  readonly findingId: string;
+  readonly statement: string;
+  readonly classification: ResearchFindingClassification;
+  /** Producer confidence in the finding, 0..1. */
+  readonly confidence?: number;
+  /** Sources (by `sourceId`) backing this finding. */
+  readonly sourceIds?: readonly string[];
+  /** A previously recorded gap this finding answers, if any. */
+  readonly resolvesGapId?: string;
+}
+export interface ResearchAssumptionRecordedPayload {
+  readonly assumptionId: string;
+  readonly statement: string;
+  readonly reason?: string;
+  readonly sourceIds?: readonly string[];
+}
+export interface ResearchGapRecordedPayload {
+  readonly gapId: string;
+  /** The open question that could not be answered from available sources. */
+  readonly question: string;
+  readonly impact?: string;
+  /** Whether the gap should block execution-capable run modes. */
+  readonly blocking?: boolean;
+}
+export interface ResearchBriefCompletedPayload {
+  readonly summary: string;
+  /** Reference to the full enriched-brief artifact, when one is produced. */
+  readonly briefRef?: string;
+}
+export interface ResearchFailedPayload {
+  readonly reason: string;
+}
+
+// knowledge (lightweight reusable knowledge index)
+/** What a reusable knowledge entry captures. */
+export type KnowledgeEntryKind =
+  | 'source'
+  | 'finding'
+  | 'repo_fact'
+  | 'gate_lesson'
+  | 'run_reference';
+
+/**
+ * Redaction/privacy class for a knowledge entry. `sensitive` entries are
+ * excluded from normal knowledge queries unless a caller explicitly opts in;
+ * redaction (via `knowledge.entry_redacted`) excludes an entry unconditionally.
+ */
+export type KnowledgeSensitivity = 'public' | 'internal' | 'sensitive';
+
+export interface KnowledgeEntryRecordedPayload {
+  readonly entryId: string;
+  readonly kind: KnowledgeEntryKind;
+  readonly title: string;
+  readonly body: string;
+  /** Producer confidence in the entry, 0..1. Required so reuse is never blind. */
+  readonly confidence: number;
+  /** Privacy class. Required so sensitive context is never silently reused. */
+  readonly sensitivity: KnowledgeSensitivity;
+  readonly tags?: readonly string[];
+  /** Source-agnostic locator for `source` entries (URL, path, ref). */
+  readonly locator?: string;
+  /** The run whose work produced this entry (defaults to the envelope run). */
+  readonly sourceRunId?: string;
+  /** Ledger events (by `eventId`) evidencing this entry. */
+  readonly sourceEventIds?: readonly string[];
+  /** Epoch ms after which the entry is stale and must not be silently reused. */
+  readonly freshUntil?: number;
+  /** Epoch ms after which retention expires and queries must not return it. */
+  readonly retainUntil?: number;
+}
+export interface KnowledgeEntryRedactedPayload {
+  readonly entryId: string;
+  readonly reason: string;
+}
+export interface KnowledgeEntryRetiredPayload {
+  readonly entryId: string;
   readonly reason?: string;
 }
 
@@ -299,6 +428,17 @@ export interface EventPayloadMap {
   'run.completed': RunCompletedPayload;
   'run.failed': RunFailedPayload;
   'run.cancelled': RunCancelledPayload;
+  'research.requested': ResearchRequestedPayload;
+  'research.source_found': ResearchSourceFoundPayload;
+  'research.source_read': ResearchSourceReadPayload;
+  'research.finding_recorded': ResearchFindingRecordedPayload;
+  'research.assumption_recorded': ResearchAssumptionRecordedPayload;
+  'research.gap_recorded': ResearchGapRecordedPayload;
+  'research.brief_completed': ResearchBriefCompletedPayload;
+  'research.failed': ResearchFailedPayload;
+  'knowledge.entry_recorded': KnowledgeEntryRecordedPayload;
+  'knowledge.entry_redacted': KnowledgeEntryRedactedPayload;
+  'knowledge.entry_retired': KnowledgeEntryRetiredPayload;
   'supervisor.decision': SupervisorDecisionPayload;
   'ticket.created': TicketCreatedPayload;
   'ticket.queued': EmptyPayload;
@@ -401,6 +541,17 @@ export const EVENT_TYPES = [
   'run.completed',
   'run.failed',
   'run.cancelled',
+  'research.requested',
+  'research.source_found',
+  'research.source_read',
+  'research.finding_recorded',
+  'research.assumption_recorded',
+  'research.gap_recorded',
+  'research.brief_completed',
+  'research.failed',
+  'knowledge.entry_recorded',
+  'knowledge.entry_redacted',
+  'knowledge.entry_retired',
   'supervisor.decision',
   'ticket.created',
   'ticket.queued',

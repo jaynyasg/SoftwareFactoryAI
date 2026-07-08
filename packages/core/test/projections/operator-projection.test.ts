@@ -115,6 +115,46 @@ describe('projectOperator', () => {
     );
   });
 
+  it('surfaces research alerts with their statement/question detail', async () => {
+    const store = createInMemoryEventStore(deterministic());
+    await buildOperatorRun(store);
+    await append(
+      store,
+      {
+        runId: RUN,
+        type: 'research.gap_recorded',
+        actor: { kind: 'researcher', id: 'res-1' },
+        subject: { kind: 'research', id: RUN },
+        severity: 'warn',
+        payload: { gapId: 'g-1', question: 'missing search credentials', blocking: true },
+      },
+      {
+        runId: RUN,
+        type: 'research.failed',
+        actor: { kind: 'researcher', id: 'res-1' },
+        subject: { kind: 'research', id: RUN },
+        severity: 'error',
+        payload: { reason: 'provider timeout' },
+      },
+    );
+
+    const projection = projectOperator(await store.readAll());
+    expect(projection.alerts).toContainEqual(
+      expect.objectContaining({
+        type: 'research.gap_recorded',
+        severity: 'warn',
+        message: 'missing search credentials',
+      }),
+    );
+    expect(projection.alerts).toContainEqual(
+      expect.objectContaining({
+        type: 'research.failed',
+        severity: 'error',
+        message: 'provider timeout',
+      }),
+    );
+  });
+
   it('surfaces projection gaps as diagnostics', async () => {
     const store = createInMemoryEventStore(deterministic());
     await buildOperatorRun(store);

@@ -25,28 +25,29 @@ event taxonomy: every event type whose name contains `fail`, `error`, `reject`,
 
 ## Summary
 
-| Event | Severity | Blocking | Retryable |
-| --- | --- | --- | --- |
-| `run.failed` | error | yes | yes |
-| `run.cancelled` | warn | yes | yes |
-| `ticket.dead_lettered` | error | yes | no |
-| `worker.retry` | warn | no | yes |
-| `worker.failed` | error | yes | yes |
-| `worker.cancelled` | warn | no | yes |
-| `adapter.setup_required` | warn | yes | no |
-| `adapter.auth_failed` | error | yes | no |
-| `adapter.error` | error | yes | yes |
-| `sandbox.fallback` | warn | no | no |
-| `sandbox.error` | error | yes | yes |
-| `gate.failed` | error | yes | yes |
-| `preview.failed` | error | yes | yes |
-| `deploy.setup_required` | warn | yes | no |
-| `deploy.config_invalid` | error | yes | yes |
-| `deploy.provider_failed` | error | yes | yes |
-| `deploy.migration_failed` | error | yes | yes |
-| `deploy.health_failed` | error | yes | yes |
-| `security.block` | critical | yes | no |
-| `security.command_rejected` | critical | yes | no |
+| Event                       | Severity | Blocking | Retryable |
+| --------------------------- | -------- | -------- | --------- |
+| `run.failed`                | error    | yes      | yes       |
+| `run.cancelled`             | warn     | yes      | yes       |
+| `research.failed`           | error    | yes      | yes       |
+| `ticket.dead_lettered`      | error    | yes      | no        |
+| `worker.retry`              | warn     | no       | yes       |
+| `worker.failed`             | error    | yes      | yes       |
+| `worker.cancelled`          | warn     | no       | yes       |
+| `adapter.setup_required`    | warn     | yes      | no        |
+| `adapter.auth_failed`       | error    | yes      | no        |
+| `adapter.error`             | error    | yes      | yes       |
+| `sandbox.fallback`          | warn     | no       | no        |
+| `sandbox.error`             | error    | yes      | yes       |
+| `gate.failed`               | error    | yes      | yes       |
+| `preview.failed`            | error    | yes      | yes       |
+| `deploy.setup_required`     | warn     | yes      | no        |
+| `deploy.config_invalid`     | error    | yes      | yes       |
+| `deploy.provider_failed`    | error    | yes      | yes       |
+| `deploy.migration_failed`   | error    | yes      | yes       |
+| `deploy.health_failed`      | error    | yes      | yes       |
+| `security.block`            | critical | yes      | no        |
+| `security.command_rejected` | critical | yes      | no        |
 
 ## Run + ticket lifecycle failures
 
@@ -99,6 +100,19 @@ the ticket.
 A worker was cancelled (the run was cancelled, or a superseded attempt was
 stopped). Projections stay consistent; re-run the ticket if the cancellation was
 unintended.
+
+## Research failures
+
+### research.failed
+
+**Research failed** · error · blocking · retryable.
+
+The research stage failed before its brief completed (provider timeout, missing
+credentials, or budget exhaustion). Partial findings, assumptions, and
+unresolved gaps recorded before the failure stay replayable on the ledger —
+inspect the `research.failed` reason, fix the cause, then re-run research. A
+later `research.brief_completed` resolves this failure. Planning-only mode
+remains available without a completed brief.
 
 ## Adapter failures
 
