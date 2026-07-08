@@ -35,13 +35,10 @@
 import {
   DEFAULT_RUN_MODE,
   RUN_MODES,
-  deriveBuildContract,
-  emitBuildContract,
   isRealRun,
   isRunMode,
   projectResearch,
   projectRun,
-  projectTickets,
   researchPlanContext,
 } from '@software-factory/core';
 import type {
@@ -53,10 +50,11 @@ import type {
   RunMode,
   RunProjection,
 } from '@software-factory/core';
-import { projectWorkspace, workspaceContractEvidence } from '@software-factory/worker';
+import { projectWorkspace } from '@software-factory/worker';
 import type { ApiResponse, RouteContext, RouteDef } from '../app';
 import { asRecord, num, reviewMode, str } from './parse';
 import { requestExecutionStart } from './execution';
+import { guardRunCommand, notFound, refreshBuildContract } from './shared';
 
 function callerFamily(value: unknown): CallerFamily | undefined {
   return value === 'claude' || value === 'codex' || value === 'api' ? value : undefined;
@@ -248,47 +246,37 @@ async function createRun(ctx: RouteContext): Promise<ApiResponse> {
   // it appends a new event only when the underlying research or plan changed.
   // Plan-only runs stay byte-identical to the V1 ledger shape (no contract).
   if (effectiveWantsResearch) {
-    const events = await ctx.reader.readRun(runId);
-    const plannedRun = projectRun(events, runId);
-    if (plannedRun.status === 'planned') {
-      const contract = deriveBuildContract(
-        plannedRun,
-        projectTickets(events, runId),
-        projectResearch(events, runId),
-      );
-      await emitBuildContract(ctx.writer, runId, contract);
-
-      if (effectiveMode === 'research-plan-and-start') {
-        if (ctx.executionDaemon === null) {
-          // Execution controls are disabled on THIS instance. Record an
-          // explicit, idempotent "execution deferred" decision so the pending
-          // state is on the ledger — never a fake `run.started`.
-          await ctx.writer.append({
-            runId,
-            type: 'supervisor.decision',
-            actor: { kind: 'supervisor', id: 'supervisor' },
-            subject: { kind: 'run', id: runId },
-            severity: 'warn',
-            idempotencyKey: `${runId}:supervisor.decision:defer-execution`,
-            payload: {
-              decision: 'defer-execution',
-              rationale:
-                'Start was requested (mode research-plan-and-start), but execution controls are ' +
-                'not available on this instance. The start request is recorded on the run; ' +
-                'execution stays pending until an execution daemon acts on it.',
-              confidence: 1,
-            },
-          });
-        } else {
-          // U5: consume the recorded start request — preflight, then enqueue.
-          // Idempotent on re-create: an already-active job is returned, not
-          // re-enqueued; a failed preflight records blocked state plus
-          // interventions instead of partial worker execution.
-          await requestExecutionStart(ctx, runId, {
-            command: 'start',
-            reason: 'run mode research-plan-and-start',
-          });
-        }
+    const planned = await refreshBuildContract(ctx, runId);
+    if (planned && effectiveMode === 'research-plan-and-start') {
+      if (ctx.executionDaemon === null) {
+        // Execution controls are disabled on THIS instance. Record an
+        // explicit, idempotent "execution deferred" decision so the pending
+        // state is on the ledger — never a fake `run.started`.
+        await ctx.writer.append({
+          runId,
+          type: 'supervisor.decision',
+          actor: { kind: 'supervisor', id: 'supervisor' },
+          subject: { kind: 'run', id: runId },
+          severity: 'warn',
+          idempotencyKey: `${runId}:supervisor.decision:defer-execution`,
+          payload: {
+            decision: 'defer-execution',
+            rationale:
+              'Start was requested (mode research-plan-and-start), but execution controls are ' +
+              'not available on this instance. The start request is recorded on the run; ' +
+              'execution stays pending until an execution daemon acts on it.',
+            confidence: 1,
+          },
+        });
+      } else {
+        // U5: consume the recorded start request — preflight, then enqueue.
+        // Idempotent on re-create: an already-active job is returned, not
+        // re-enqueued; a failed preflight records blocked state plus
+        // interventions instead of partial worker execution.
+        await requestExecutionStart(ctx, runId, {
+          command: 'start',
+          reason: 'run mode research-plan-and-start',
+        });
       }
     }
   }
@@ -331,20 +319,11 @@ async function listRunsHandler(ctx: RouteContext): Promise<ApiResponse> {
 async function cancelRun(ctx: RouteContext): Promise<ApiResponse> {
   const runId = ctx.params.id;
   const body = asRecord(ctx.request.body);
-  const current = projectRun(await ctx.reader.readRun(runId), runId);
-
-  const denial = await ctx.guardMutation({
-    subject: { kind: 'run', id: runId, version: num(body.expectedVersion) },
-    currentVersion: current.lastSequence,
-    command: 'run.cancel',
-  });
-  if (denial !== null) {
-    return denial;
+  const guarded = await guardRunCommand(ctx, runId, 'run.cancel');
+  if (guarded.response !== null) {
+    return guarded.response;
   }
-
-  if (current.ledger.length === 0) {
-    return { status: 404, body: { error: 'not_found', message: `Run ${runId} does not exist.` } };
-  }
+  const current = guarded.run;
 
   await ctx.writer.append({
     runId,
@@ -374,21 +353,11 @@ async function cancelRun(ctx: RouteContext): Promise<ApiResponse> {
 async function materializeWorkspaceRoute(ctx: RouteContext): Promise<ApiResponse> {
   const runId = ctx.params.id;
   const body = asRecord(ctx.request.body);
-  const events = await ctx.reader.readRun(runId);
-  const current = projectRun(events, runId);
-
-  const denial = await ctx.guardMutation({
-    subject: { kind: 'run', id: runId, version: num(body.expectedVersion) },
-    currentVersion: current.lastSequence,
-    command: 'workspace.materialize',
-  });
-  if (denial !== null) {
-    return denial;
+  const guarded = await guardRunCommand(ctx, runId, 'workspace.materialize');
+  if (guarded.response !== null) {
+    return guarded.response;
   }
-
-  if (current.ledger.length === 0) {
-    return { status: 404, body: { error: 'not_found', message: `Run ${runId} does not exist.` } };
-  }
+  const current = guarded.run;
 
   const result = await ctx.materializeWorkspace(runId, { branch: str(body.branch) });
   if (result === null) {
@@ -405,17 +374,7 @@ async function materializeWorkspaceRoute(ctx: RouteContext): Promise<ApiResponse
   // Only runs that already carry a contract are refreshed; plan-only ledgers
   // stay byte-identical to their V1 shape.
   if (result.ok && current.buildContract !== undefined) {
-    const refreshed = await ctx.reader.readRun(runId);
-    const plannedRun = projectRun(refreshed, runId);
-    if (plannedRun.status === 'planned') {
-      const contract = deriveBuildContract(
-        plannedRun,
-        projectTickets(refreshed, runId),
-        projectResearch(refreshed, runId),
-        workspaceContractEvidence(projectWorkspace(refreshed, runId)),
-      );
-      await emitBuildContract(ctx.writer, runId, contract);
-    }
+    await refreshBuildContract(ctx, runId, { workspaceEvidence: true });
   }
 
   const finalEvents = await ctx.reader.readRun(runId);
@@ -434,7 +393,7 @@ async function getWorkspace(ctx: RouteContext): Promise<ApiResponse> {
   const runId = ctx.params.id;
   const events = await ctx.reader.readRun(runId);
   if (events.length === 0) {
-    return { status: 404, body: { error: 'not_found', message: `Run ${runId} does not exist.` } };
+    return notFound(runId);
   }
   return { status: 200, body: { runId, workspace: projectWorkspace(events, runId) } };
 }

@@ -32,6 +32,7 @@ import {
 } from '../../src/server/app';
 import { createRuntimeWorkspaceMaterializer } from '../../src/server/workspace/runtime-materializer';
 import type { RuntimeConfig } from '../../src/server/runtime';
+import { testRuntimeConfig } from '../_helpers/runtime';
 
 const TOKEN = 'test-operator-token';
 const CSRF = 'test-csrf-token';
@@ -64,34 +65,12 @@ function deterministic(): { idGenerator: () => string; clock: () => number } {
 }
 
 function runtimeConfig(mode: 'local' | 'cloud'): RuntimeConfig {
-  return {
+  return testRuntimeConfig({
     mode,
-    host: '127.0.0.1',
-    port: 3000,
     factoryDir: join(tmpRoot, '.factory'),
     allowedOrigins: [ORIGIN],
-    operatorTokenSource: 'file',
-    research: {
-      allowNetwork: false,
-      documentationUrls: [],
-      searchCredentialsPresent: false,
-      maxSources: 12,
-      maxDurationMs: 120_000,
-    },
-    workspace: {
-      localBoundaryRoot: boundaryDir,
-      approvedFolders: [],
-      checkoutRoot,
-      checkoutCredentialsPresent: false,
-      dirtyStatePolicy: 'allow_dirty',
-    },
-    execution: {
-      leaseMs: 60_000,
-      heartbeatMs: 15_000,
-      reconcileIntervalMs: 30_000,
-      maxAttempts: 3,
-    },
-  };
+    workspace: { localBoundaryRoot: boundaryDir, checkoutRoot },
+  });
 }
 
 /** A fixture checkout client: materializes real files into the destination. */

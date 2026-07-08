@@ -10,6 +10,7 @@ import {
   type OperatorTokenProvider,
 } from '@software-factory/core';
 import { createApp, type ApiRequest, type ApiResponse, type App } from '../../src/server/app';
+import { testRuntimeConfig } from '../_helpers/runtime';
 
 const TOKEN = 'test-operator-token';
 const CSRF = 'test-csrf-token';
@@ -200,34 +201,17 @@ describe('command guard over mutating routes', () => {
         allowedOrigins: [],
         allowSameHostOrigin: true,
         csrfToken: CSRF,
-        runtime: {
+        runtime: testRuntimeConfig({
           mode: 'cloud',
           host: '0.0.0.0',
           port: 10000,
           factoryDir: '/var/data/.factory',
-          allowedOrigins: [],
           operatorTokenSource: 'env',
-          research: {
-            allowNetwork: false,
-            documentationUrls: [],
-            searchCredentialsPresent: false,
-            maxSources: 12,
-            maxDurationMs: 120_000,
-          },
           workspace: {
             localBoundaryRoot: '/var/data/workspaces',
-            approvedFolders: [],
             checkoutRoot: '/var/data/.factory/workspaces',
-            checkoutCredentialsPresent: false,
-            dirtyStatePolicy: 'allow_dirty',
           },
-          execution: {
-            leaseMs: 60_000,
-            heartbeatMs: 15_000,
-            reconcileIntervalMs: 30_000,
-            maxAttempts: 3,
-          },
-        },
+        }),
       },
       planner: null,
     });

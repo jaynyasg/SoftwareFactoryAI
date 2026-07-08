@@ -19,6 +19,7 @@ import type {
   GitCheckoutClient,
   WorkspaceMaterializationResult,
 } from '@software-factory/worker';
+import { runCreatedPayload } from '../run-created';
 import { resolveWorkspaceRuntimeConfig } from '../runtime';
 import type { RuntimeConfig } from '../runtime';
 
@@ -47,10 +48,6 @@ export interface RuntimeMaterializerOptions {
   readonly git?: GitCheckoutClient;
 }
 
-function isRunCreatedPayload(value: unknown): value is RunCreatedPayload {
-  return typeof value === 'object' && value !== null;
-}
-
 /**
  * Build the default runtime materializer. Reads the run's `run.created`
  * payload for source context and runs one materialization pass; every outcome
@@ -70,10 +67,7 @@ export function createRuntimeWorkspaceMaterializer(
     });
 
   return async (store, runId, input) => {
-    const events = await store.readRun(runId);
-    const created = events.find((event) => event.type === 'run.created');
-    const payload: RunCreatedPayload =
-      created !== undefined && isRunCreatedPayload(created.payload) ? created.payload : {};
+    const payload: RunCreatedPayload = runCreatedPayload(await store.readRun(runId));
 
     return materializeWorkspace(
       {

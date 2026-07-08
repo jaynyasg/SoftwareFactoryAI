@@ -173,23 +173,30 @@ function findWorkspaceFactoryDir(start: string): string {
 const DEFAULT_RESEARCH_MAX_SOURCES = 12;
 const DEFAULT_RESEARCH_MAX_DURATION_MS = 120_000;
 
-const DEFAULT_EXEC_LEASE_MS = 60_000;
-const DEFAULT_EXEC_HEARTBEAT_MS = 15_000;
-const DEFAULT_EXEC_RECONCILE_INTERVAL_MS = 30_000;
-const DEFAULT_EXEC_MAX_ATTEMPTS = 3;
+/**
+ * Static execution queue/daemon defaults — the single source of truth for the
+ * lease/heartbeat/reconcile/retry-budget numbers (the daemon and ticket
+ * executor reuse it rather than re-declaring the values).
+ */
+export const DEFAULT_EXECUTION_RUNTIME_CONFIG: ExecutionRuntimeConfig = {
+  leaseMs: 60_000,
+  heartbeatMs: 15_000,
+  reconcileIntervalMs: 30_000,
+  maxAttempts: 3,
+};
 
 /** Resolve the execution queue/daemon config from the environment. */
 export function resolveExecutionRuntimeConfig(
   env: RuntimeEnv = process.env as RuntimeEnv,
 ): ExecutionRuntimeConfig {
   return {
-    leaseMs: parsePort(env.SF_EXEC_LEASE_MS, DEFAULT_EXEC_LEASE_MS),
-    heartbeatMs: parsePort(env.SF_EXEC_HEARTBEAT_MS, DEFAULT_EXEC_HEARTBEAT_MS),
+    leaseMs: parsePort(env.SF_EXEC_LEASE_MS, DEFAULT_EXECUTION_RUNTIME_CONFIG.leaseMs),
+    heartbeatMs: parsePort(env.SF_EXEC_HEARTBEAT_MS, DEFAULT_EXECUTION_RUNTIME_CONFIG.heartbeatMs),
     reconcileIntervalMs: parsePort(
       env.SF_EXEC_RECONCILE_INTERVAL_MS,
-      DEFAULT_EXEC_RECONCILE_INTERVAL_MS,
+      DEFAULT_EXECUTION_RUNTIME_CONFIG.reconcileIntervalMs,
     ),
-    maxAttempts: parsePort(env.SF_EXEC_MAX_ATTEMPTS, DEFAULT_EXEC_MAX_ATTEMPTS),
+    maxAttempts: parsePort(env.SF_EXEC_MAX_ATTEMPTS, DEFAULT_EXECUTION_RUNTIME_CONFIG.maxAttempts),
   };
 }
 

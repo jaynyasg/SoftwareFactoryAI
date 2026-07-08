@@ -61,14 +61,14 @@ import type {
   TicketExecutor,
 } from './daemon';
 import { resolveGenomeDir } from '../planner';
-import { resolveWorkspaceRuntimeConfig } from '../runtime';
+import { DEFAULT_EXECUTION_RUNTIME_CONFIG, resolveWorkspaceRuntimeConfig } from '../runtime';
 import type { RuntimeConfig } from '../runtime';
 
 /** Default worker cap when the run recorded no `requestedWorkerCap`. */
 export const DEFAULT_EXECUTION_WORKER_CAP = 4;
 
 /** Default queue-lease heartbeat cadence while the scheduler is running (ms). */
-const DEFAULT_HEARTBEAT_INTERVAL_MS = 15_000;
+const DEFAULT_HEARTBEAT_INTERVAL_MS = DEFAULT_EXECUTION_RUNTIME_CONFIG.heartbeatMs;
 
 export interface SchedulerTicketExecutorOptions {
   /** Runtime config (workspace checkout root, execution heartbeat cadence). */

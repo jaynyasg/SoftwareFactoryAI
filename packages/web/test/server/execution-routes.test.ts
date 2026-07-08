@@ -31,7 +31,6 @@ import {
 import {
   createExecutionDaemon,
   type ExecutionDaemon,
-  type TicketExecutionContext,
   type TicketExecutionResult,
   type TicketExecutor,
 } from '../../src/server/execution/daemon';
@@ -429,7 +428,7 @@ describe('retry command', () => {
     await app.handle(req('POST', `/api/runs/${runId}/start`, authedHeaders(), {}));
     await daemon.tick();
 
-    let run = projectRun(await store.readRun(runId), runId);
+    const run = projectRun(await store.readRun(runId), runId);
     expect(run.executionState).toBe('failed');
     expect(run.executionReason).toContain('attempt 1 exploded');
 

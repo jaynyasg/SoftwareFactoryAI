@@ -22,17 +22,11 @@
  * and are idempotent: duplicate starts return the existing queue state instead
  * of double-enqueueing (queue appends are keyed per job+attempt).
  */
-import {
-  deriveBuildContract,
-  emitBuildContract,
-  projectResearch,
-  projectRun,
-  projectTickets,
-} from '@software-factory/core';
+import { INTERVENTION_KINDS, projectRun } from '@software-factory/core';
 import type { EventSeverity, InterventionKind, RunProjection } from '@software-factory/core';
-import { projectWorkspace, workspaceContractEvidence } from '@software-factory/worker';
 import type { ApiResponse, RouteContext, RouteDef } from '../app';
 import { asRecord, num, str } from './parse';
+import { guardRunCommand, notFound, refreshBuildContract } from './shared';
 import {
   enqueueJob,
   executionJobId,
@@ -49,10 +43,6 @@ import {
 import type { InterventionView } from '../execution/interventions';
 import type { PreflightRunResult } from '../execution/preflight';
 import { projectPreflight } from '../execution/preflight';
-
-function notFound(runId: string): ApiResponse {
-  return { status: 404, body: { error: 'not_found', message: `Run ${runId} does not exist.` } };
-}
 
 const EXECUTION_DISABLED: ApiResponse = {
   status: 503,
@@ -136,15 +126,7 @@ export async function requestExecutionStart(
   // Build contract before execution (X3): derive from current projections and
   // emit digest-idempotently, so the recorded contract always reflects the
   // plan/research/workspace state execution would run against.
-  if (run.status === 'planned') {
-    const contract = deriveBuildContract(
-      run,
-      projectTickets(events, runId),
-      projectResearch(events, runId),
-      workspaceContractEvidence(projectWorkspace(events, runId)),
-    );
-    await emitBuildContract(ctx.writer, runId, contract);
-  }
+  await refreshBuildContract(ctx, runId, { workspaceEvidence: true });
 
   // Dry-run rehearsal (X2): REQUIRED before a normal start enqueues execution.
   const preflight = await ctx.runPreflight(runId);
@@ -291,35 +273,6 @@ async function startOutcomeResponse(
 /* ----------------------------------------------------------------------------
  * Route handlers
  * ------------------------------------------------------------------------- */
-
-interface GuardedRunContext {
-  readonly response: ApiResponse | null;
-  readonly run: RunProjection;
-}
-
-/** Guard + existence check shared by every run-scoped execution command. */
-async function guardRunCommand(
-  ctx: RouteContext,
-  runId: string,
-  command: string,
-): Promise<GuardedRunContext> {
-  const body = asRecord(ctx.request.body);
-  const events = await ctx.reader.readRun(runId);
-  const run = projectRun(events, runId);
-
-  const denial = await ctx.guardMutation({
-    subject: { kind: 'run', id: runId, version: num(body.expectedVersion) },
-    currentVersion: run.lastSequence,
-    command,
-  });
-  if (denial !== null) {
-    return { response: denial, run };
-  }
-  if (run.ledger.length === 0) {
-    return { response: notFound(runId), run };
-  }
-  return { response: null, run };
-}
 
 async function startRun(ctx: RouteContext): Promise<ApiResponse> {
   const runId = ctx.params.id;
@@ -481,19 +434,8 @@ async function getExecution(ctx: RouteContext): Promise<ApiResponse> {
   };
 }
 
-const INTERVENTION_KIND_VALUES: readonly InterventionKind[] = [
-  'approval',
-  'missing_credentials',
-  'source_choice',
-  'unsafe_path',
-  'adapter_setup',
-  'deploy_setup',
-  'retry_choice',
-  'policy_block',
-];
-
 function interventionKind(value: string | undefined): InterventionKind | undefined {
-  return (INTERVENTION_KIND_VALUES as readonly string[]).includes(value ?? '')
+  return (INTERVENTION_KINDS as readonly string[]).includes(value ?? '')
     ? (value as InterventionKind)
     : undefined;
 }

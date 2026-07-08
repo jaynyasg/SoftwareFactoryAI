@@ -36,6 +36,7 @@ import type {
   ResearchSourceAdapter,
   WebSearchProvider,
 } from '@software-factory/worker';
+import { runCreatedPayload } from '../run-created';
 import { resolveResearchRuntimeConfig } from '../runtime';
 import type { RuntimeConfig } from '../runtime';
 
@@ -91,10 +92,6 @@ function createUnavailableSourceAdapter(
   };
 }
 
-function isRunCreatedPayload(value: unknown): value is RunCreatedPayload {
-  return typeof value === 'object' && value !== null;
-}
-
 /**
  * Build the default runtime researcher. Reads the run's `run.created` payload
  * for source context, assembles adapters, seeds prior cross-run knowledge, and
@@ -107,9 +104,7 @@ export function createRuntimeResearcher(options: RuntimeResearcherOptions = {}):
 
   return async (store, runId, input) => {
     const events = await store.readRun(runId);
-    const created = events.find((event) => event.type === 'run.created');
-    const payload: RunCreatedPayload =
-      created !== undefined && isRunCreatedPayload(created.payload) ? created.payload : {};
+    const payload: RunCreatedPayload = runCreatedPayload(events);
 
     const objective =
       input.objective ??

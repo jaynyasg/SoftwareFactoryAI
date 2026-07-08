@@ -30,6 +30,7 @@ import {
 } from '../../src/server/app';
 import { createRuntimeResearcher } from '../../src/server/research/runtime-researcher';
 import type { RuntimeConfig } from '../../src/server/runtime';
+import { testRuntimeConfig } from '../_helpers/runtime';
 
 const TOKEN = 'test-operator-token';
 const CSRF = 'test-csrf-token';
@@ -410,34 +411,15 @@ describe('createRuntimeResearcher (default wiring)', () => {
   });
 
   function runtimeConfig(mode: 'local' | 'cloud', allowNetwork = false): RuntimeConfig {
-    return {
+    return testRuntimeConfig({
       mode,
-      host: '127.0.0.1',
-      port: 3000,
-      factoryDir: '.factory',
       allowedOrigins: [ORIGIN],
-      operatorTokenSource: 'file',
-      research: {
-        allowNetwork,
-        documentationUrls: [],
-        searchCredentialsPresent: false,
-        maxSources: 12,
-        maxDurationMs: 120_000,
-      },
+      research: { allowNetwork },
       workspace: {
         localBoundaryRoot: tmpdir(),
-        approvedFolders: [],
         checkoutRoot: join(tmpdir(), 'sf-checkouts'),
-        checkoutCredentialsPresent: false,
-        dirtyStatePolicy: 'allow_dirty',
       },
-      execution: {
-        leaseMs: 60_000,
-        heartbeatMs: 15_000,
-        reconcileIntervalMs: 30_000,
-        maxAttempts: 3,
-      },
-    };
+    });
   }
 
   it('reads local PRD + folder sources and records web search as a policy gap when network is off', async () => {

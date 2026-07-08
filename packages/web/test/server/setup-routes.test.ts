@@ -15,6 +15,7 @@ import {
 import { createApp, type ApiResponse, type App } from '../../src/server/app';
 import { resolveRuntimeConfig } from '../../src/server/runtime';
 import type { RuntimeConfig } from '../../src/server/runtime';
+import { testRuntimeConfig } from '../_helpers/runtime';
 
 const TOKEN = 'test-operator-token';
 
@@ -22,35 +23,16 @@ function runtimeConfig(
   mode: 'local' | 'cloud',
   workspace?: Partial<RuntimeConfig['workspace']>,
 ): RuntimeConfig {
-  return {
+  return testRuntimeConfig({
     mode,
-    host: '127.0.0.1',
-    port: 3000,
     factoryDir: 'C:\\repo\\.factory',
-    allowedOrigins: [],
-    operatorTokenSource: 'file',
-    research: {
-      allowNetwork: false,
-      documentationUrls: [],
-      searchCredentialsPresent: false,
-      maxSources: 12,
-      maxDurationMs: 120_000,
-    },
     workspace: {
       localBoundaryRoot: 'C:\\repo',
       approvedFolders: ['D:\\projects\\approved'],
       checkoutRoot: 'C:\\repo\\.factory\\workspaces',
-      checkoutCredentialsPresent: false,
-      dirtyStatePolicy: 'allow_dirty',
       ...workspace,
     },
-    execution: {
-      leaseMs: 60_000,
-      heartbeatMs: 15_000,
-      reconcileIntervalMs: 30_000,
-      maxAttempts: 3,
-    },
-  };
+  });
 }
 
 function makeApp(runtime?: RuntimeConfig): App {

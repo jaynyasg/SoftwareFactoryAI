@@ -35,6 +35,7 @@ import {
 } from './queue';
 import type { QueueJobView } from './queue';
 import { raiseIntervention } from './interventions';
+import { DEFAULT_EXECUTION_RUNTIME_CONFIG } from '../runtime';
 import type { ExecutionRuntimeConfig } from '../runtime';
 
 /* ----------------------------------------------------------------------------
@@ -124,12 +125,8 @@ const defaultTimers: DaemonTimers = {
   },
 };
 
-export const DEFAULT_EXECUTION_QUEUE_CONFIG: ExecutionRuntimeConfig = {
-  leaseMs: 60_000,
-  heartbeatMs: 15_000,
-  reconcileIntervalMs: 30_000,
-  maxAttempts: 3,
-};
+export const DEFAULT_EXECUTION_QUEUE_CONFIG: ExecutionRuntimeConfig =
+  DEFAULT_EXECUTION_RUNTIME_CONFIG;
 
 export interface ExecutionDaemonOptions {
   readonly store: EventStore;

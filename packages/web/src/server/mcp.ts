@@ -5,7 +5,7 @@
  * their own cloud. This bridge exposes the factory's existing API as MCP tools
  * while keeping the ledger, planner, and command guard in one place.
  */
-import { verifyOperatorToken } from '@software-factory/core';
+import { INTERVENTION_KINDS, verifyOperatorToken } from '@software-factory/core';
 import type { ApiRequest, ApiResponse, App } from './app';
 import type { LocalSession } from '../lib/session';
 
@@ -199,19 +199,7 @@ const TOOLS: readonly McpTool[] = [
       type: 'object',
       properties: {
         runId: { type: 'string' },
-        kind: {
-          type: 'string',
-          enum: [
-            'approval',
-            'missing_credentials',
-            'source_choice',
-            'unsafe_path',
-            'adapter_setup',
-            'deploy_setup',
-            'retry_choice',
-            'policy_block',
-          ],
-        },
+        kind: { type: 'string', enum: [...INTERVENTION_KINDS] },
         severity: { type: 'string', enum: ['info', 'success', 'warn', 'error', 'critical'] },
         blockingStage: { type: 'string' },
         open: { type: 'boolean' },

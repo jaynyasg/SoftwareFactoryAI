@@ -14,19 +14,11 @@
  * The research trigger is the surface U3 wires into run creation; run-mode
  * changes themselves are out of U2 scope.
  */
-import {
-  projectKnowledgeIndex,
-  projectResearch,
-  projectRun,
-  queryKnowledge,
-} from '@software-factory/core';
+import { projectKnowledgeIndex, projectResearch, queryKnowledge } from '@software-factory/core';
 import type { KnowledgeEntryKind, KnowledgeQuery } from '@software-factory/core';
 import type { ApiResponse, RouteContext, RouteDef } from '../app';
 import { asRecord, num, str } from '../routes/parse';
-
-function notFound(runId: string): ApiResponse {
-  return { status: 404, body: { error: 'not_found', message: `Run ${runId} does not exist.` } };
-}
+import { guardRunCommand, notFound } from '../routes/shared';
 
 const KNOWLEDGE_KINDS: readonly KnowledgeEntryKind[] = [
   'source',
@@ -67,24 +59,13 @@ function flag(value: string | undefined): boolean {
 async function triggerResearch(ctx: RouteContext): Promise<ApiResponse> {
   const runId = ctx.params.id;
   const body = asRecord(ctx.request.body);
-  const events = await ctx.reader.readRun(runId);
-  const current = projectRun(events, runId);
-
-  const denial = await ctx.guardMutation({
-    subject: { kind: 'run', id: runId, version: num(body.expectedVersion) },
-    currentVersion: current.lastSequence,
-    command: 'research.request',
-  });
-  if (denial !== null) {
-    return denial;
-  }
-
-  if (current.ledger.length === 0) {
-    return notFound(runId);
+  const guarded = await guardRunCommand(ctx, runId, 'research.request');
+  if (guarded.response !== null) {
+    return guarded.response;
   }
 
   // Idempotent trigger: an already-researched run is returned, not re-run.
-  const existing = projectResearch(events, runId);
+  const existing = projectResearch(guarded.events, runId);
   if (existing.status !== 'none' && body.force !== true) {
     return {
       status: 200,
