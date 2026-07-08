@@ -19,6 +19,29 @@ import type { OperatorTokenProvider } from '@software-factory/core';
 export type FactoryRuntimeMode = 'local' | 'cloud';
 export type OperatorTokenSource = 'file' | 'env';
 
+/**
+ * Research-stage runtime configuration (full-factory U2).
+ *
+ * Research provider credentials are a SEPARATE setup surface from source
+ * checkout and deploy credentials (hardening E5). Only credential PRESENCE is
+ * resolved into config — the values stay in the environment and are read
+ * exclusively by the provider implementation, never recorded as evidence.
+ */
+export interface ResearchRuntimeConfig {
+  /** Whether network-backed research source classes are allowed (default off). */
+  readonly allowNetwork: boolean;
+  /** Operator-configured documentation URLs research may fetch. */
+  readonly documentationUrls: readonly string[];
+  /** Configured external web-search provider id, when any. */
+  readonly searchProviderId?: string;
+  /** Whether web-search provider credentials are PRESENT (never the value). */
+  readonly searchCredentialsPresent: boolean;
+  /** Default max sources per research pass. */
+  readonly maxSources: number;
+  /** Default max elapsed ms per research pass. */
+  readonly maxDurationMs: number;
+}
+
 export interface RuntimeConfig {
   readonly mode: FactoryRuntimeMode;
   readonly host: string;
@@ -28,6 +51,7 @@ export interface RuntimeConfig {
   readonly publicBaseUrl?: string;
   readonly operatorTokenSource: OperatorTokenSource;
   readonly csrfToken?: string;
+  readonly research: ResearchRuntimeConfig;
 }
 
 interface RuntimeEnv {
@@ -43,6 +67,12 @@ interface RuntimeEnv {
   readonly RENDER_EXTERNAL_URL?: string;
   readonly SF_OPERATOR_TOKEN?: string;
   readonly SF_CSRF_TOKEN?: string;
+  readonly SF_RESEARCH_ALLOW_NETWORK?: string;
+  readonly SF_RESEARCH_DOC_URLS?: string;
+  readonly SF_RESEARCH_SEARCH_PROVIDER?: string;
+  readonly SF_RESEARCH_SEARCH_API_KEY?: string;
+  readonly SF_RESEARCH_MAX_SOURCES?: string;
+  readonly SF_RESEARCH_MAX_DURATION_MS?: string;
 }
 
 function clean(value: string | undefined): string | undefined {
@@ -90,6 +120,31 @@ function findWorkspaceFactoryDir(start: string): string {
   return join(start, '.factory');
 }
 
+const DEFAULT_RESEARCH_MAX_SOURCES = 12;
+const DEFAULT_RESEARCH_MAX_DURATION_MS = 120_000;
+
+function parseBool(value: string | undefined): boolean {
+  const cleaned = clean(value)?.toLowerCase();
+  return cleaned === '1' || cleaned === 'true' || cleaned === 'yes';
+}
+
+/**
+ * Resolve the research runtime config from the environment. Reads only the
+ * PRESENCE of `SF_RESEARCH_SEARCH_API_KEY` — never its value (hardening E5).
+ */
+export function resolveResearchRuntimeConfig(
+  env: RuntimeEnv = process.env as RuntimeEnv,
+): ResearchRuntimeConfig {
+  return {
+    allowNetwork: parseBool(env.SF_RESEARCH_ALLOW_NETWORK),
+    documentationUrls: splitCsv(env.SF_RESEARCH_DOC_URLS),
+    searchProviderId: clean(env.SF_RESEARCH_SEARCH_PROVIDER),
+    searchCredentialsPresent: clean(env.SF_RESEARCH_SEARCH_API_KEY) !== undefined,
+    maxSources: parsePort(env.SF_RESEARCH_MAX_SOURCES, DEFAULT_RESEARCH_MAX_SOURCES),
+    maxDurationMs: parsePort(env.SF_RESEARCH_MAX_DURATION_MS, DEFAULT_RESEARCH_MAX_DURATION_MS),
+  };
+}
+
 /** Resolve the shared ledger/operator-token directory. */
 export function resolveFactoryDir(
   env: RuntimeEnv = process.env as RuntimeEnv,
@@ -132,6 +187,7 @@ export function resolveRuntimeConfig(
     publicBaseUrl,
     operatorTokenSource,
     csrfToken: clean(env.SF_CSRF_TOKEN),
+    research: resolveResearchRuntimeConfig(env),
   };
 }
 

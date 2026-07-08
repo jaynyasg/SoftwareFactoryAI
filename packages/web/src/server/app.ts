@@ -37,11 +37,16 @@ import { runRoutes } from './routes/runs';
 import { eventRoutes } from './routes/events';
 import { reviewRoutes } from './routes/review';
 import { setupRoutes } from './routes/setup';
+import { researchRoutes } from './research/research-routes';
+import { createRuntimeResearcher } from './research/runtime-researcher';
+import type { ResearchTriggerInput, RunResearcher } from './research/runtime-researcher';
 import { createGenomePlanner } from './planner';
 import type { RunPlanInput, RunPlanner } from './planner';
 import type { RuntimeConfig } from './runtime';
+import type { ResearchRunResult } from '@software-factory/worker';
 
 export type { RunPlanInput, RunPlanner } from './planner';
+export type { ResearchTriggerInput, RunResearcher } from './research/runtime-researcher';
 
 /* ----------------------------------------------------------------------------
  * Transport types
@@ -107,6 +112,14 @@ export interface AppDeps {
   readonly planner?: RunPlanner | null;
   /** Genome directory for the default planner. Defaults to `resolveGenomeDir()`. */
   readonly genomeDir?: string;
+  /**
+   * Researcher invoked by the research trigger route to run one bounded,
+   * source-backed research pass (emitting `research.*` / `knowledge.*` events
+   * into the same store). Defaults to the runtime researcher built from the
+   * runtime config (`createRuntimeResearcher`). Pass `null` to disable the
+   * research trigger entirely.
+   */
+  readonly researcher?: RunResearcher | null;
 }
 
 /* ----------------------------------------------------------------------------
@@ -149,6 +162,14 @@ export interface RouteContext {
    * because `run.created` is already durable.
    */
   planRun(runId: string, input: RunPlanInput): Promise<void>;
+  /**
+   * Run one bounded research pass for a run. Resolves `null` when research is
+   * disabled. Runner-level problems (budget, providers, credentials) are
+   * recorded as ledger gaps/setup events by the runner itself; an unexpected
+   * researcher error is appended as `research.failed` rather than thrown into
+   * the request path.
+   */
+  runResearch(runId: string, input: ResearchTriggerInput): Promise<ResearchRunResult | null>;
 }
 
 export type RouteHandler = (ctx: RouteContext) => Promise<ApiResponse>;
@@ -345,11 +366,56 @@ export function createApp(deps: AppDeps): App {
     }
   }
 
+  // `undefined` -> default runtime researcher; `null` -> research disabled.
+  const researcher: RunResearcher | null =
+    deps.researcher === undefined
+      ? createRuntimeResearcher({ runtime: config.runtime, clock })
+      : deps.researcher;
+
+  async function runResearchForRun(
+    runId: string,
+    input: ResearchTriggerInput,
+  ): Promise<ResearchRunResult | null> {
+    if (researcher === null) {
+      return null;
+    }
+    try {
+      return await researcher(store, runId, input);
+    } catch (error) {
+      // The runner records its own failures on the ledger; this catch covers
+      // researcher-construction/store errors that escaped it. Keep the failure
+      // observable on the ledger AND the server log, then report it.
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[software-factory] research failed for ${runId}: ${message}`);
+      await writer.append({
+        runId,
+        type: 'research.failed',
+        actor: { kind: 'researcher', id: 'research-runner' },
+        subject: { kind: 'research', id: runId },
+        severity: 'error',
+        payload: { reason: `research runner error: ${message}` },
+      });
+      return {
+        status: 'failed',
+        failureReason: message,
+        sourcesFound: 0,
+        sourcesRead: 0,
+        findingCount: 0,
+        assumptionCount: 0,
+        gapCount: 0,
+        seededKnowledgeCount: 0,
+        recordedKnowledgeEntryIds: [],
+        budgetStops: [],
+      };
+    }
+  }
+
   const routes: RouteDef[] = [
     ...runRoutes(),
     ...eventRoutes(),
     ...reviewRoutes(),
     ...setupRoutes(),
+    ...researchRoutes(),
   ];
 
   async function guardMutation(
@@ -420,6 +486,7 @@ export function createApp(deps: AppDeps): App {
       config,
       guardMutation: (input) => guardMutation(request, input),
       planRun,
+      runResearch: runResearchForRun,
     };
   }
 

@@ -29,4 +29,36 @@ describe('resolveRuntimeConfig', () => {
     expect(config.allowedOrigins).toContain('https://factory.example.com');
     expect(config.operatorTokenSource).toBe('env');
   });
+
+  it('defaults research config to fail-closed (no network, no providers)', () => {
+    const config = resolveRuntimeConfig({}, 'C:\\repo');
+    expect(config.research.allowNetwork).toBe(false);
+    expect(config.research.documentationUrls).toEqual([]);
+    expect(config.research.searchProviderId).toBeUndefined();
+    expect(config.research.searchCredentialsPresent).toBe(false);
+    expect(config.research.maxSources).toBe(12);
+    expect(config.research.maxDurationMs).toBe(120_000);
+  });
+
+  it('resolves research config from env, reporting credential PRESENCE only', () => {
+    const config = resolveRuntimeConfig(
+      {
+        SF_RESEARCH_ALLOW_NETWORK: 'true',
+        SF_RESEARCH_DOC_URLS: 'https://docs.a.com, https://docs.b.com',
+        SF_RESEARCH_SEARCH_PROVIDER: 'example-search',
+        SF_RESEARCH_SEARCH_API_KEY: 'super-secret-value',
+        SF_RESEARCH_MAX_SOURCES: '5',
+        SF_RESEARCH_MAX_DURATION_MS: '30000',
+      },
+      'C:\\repo',
+    );
+    expect(config.research.allowNetwork).toBe(true);
+    expect(config.research.documentationUrls).toEqual(['https://docs.a.com', 'https://docs.b.com']);
+    expect(config.research.searchProviderId).toBe('example-search');
+    expect(config.research.searchCredentialsPresent).toBe(true);
+    expect(config.research.maxSources).toBe(5);
+    expect(config.research.maxDurationMs).toBe(30_000);
+    // E5: the credential VALUE never appears in resolved config.
+    expect(JSON.stringify(config)).not.toContain('super-secret-value');
+  });
 });

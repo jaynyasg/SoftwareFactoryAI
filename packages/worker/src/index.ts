@@ -23,6 +23,23 @@ export * from './runner/worker-runner';
 // Adaptive scheduler: ready tickets -> concurrent workers up to capacity.
 export * from './runner/scheduler';
 
+/* Full-factory U2 — Bounded research engine + source policy */
+
+// Source-adapter contract: setup probe, discovery, reads, finding drafts.
+export * from './research/research-contract';
+// Source policy: allowed classes, network gating, credentials, redaction (E5).
+export * from './research/source-policy';
+// Budgets: effort/source-count/elapsed-time/source-class bounds.
+export * from './research/research-budget';
+// Repo/local folder scan adapter (workspace-contained, traversal rejected).
+export * from './research/repo-scan-adapter';
+// Uploaded-PRD text + PRD-reference-metadata adapter.
+export * from './research/prd-adapter';
+// Documentation-URL adapter + external web-search provider hook.
+export * from './research/web-adapters';
+// The bounded research runner: policy -> setup -> budget -> events -> brief.
+export * from './research/research-runner';
+
 /* U6 — Sandbox, dependency policy, quality gates, local preview */
 
 // Sandbox contract + policy enforcement + Docker/local-fallback selection.

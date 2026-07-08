@@ -207,6 +207,13 @@ describe('command guard over mutating routes', () => {
           factoryDir: '/var/data/.factory',
           allowedOrigins: [],
           operatorTokenSource: 'env',
+          research: {
+            allowNetwork: false,
+            documentationUrls: [],
+            searchCredentialsPresent: false,
+            maxSources: 12,
+            maxDurationMs: 120_000,
+          },
         },
       },
       planner: null,
