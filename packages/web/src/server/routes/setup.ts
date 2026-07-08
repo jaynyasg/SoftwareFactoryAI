@@ -3,10 +3,12 @@
  *
  *   GET /api/setup — feeds the UI setup checklist.
  *
- * Reports whether a local operator token exists and returns conservative
- * placeholders for sandbox/adapter/deploy readiness. Real sandbox/adapter
- * detection lands in U5/U6 and deploy config in U9; until then these are
- * intentionally "unknown"/"required" so the checklist shows work remaining.
+ * Reports whether a local operator token exists, conservative placeholders
+ * for sandbox/adapter readiness (real detection is exercised at start/exec
+ * time), and REAL deploy readiness (full-factory U8): the deploy runtime
+ * config (Render key presence, service id, hosted URL, git destination) is
+ * inspected and the missing pieces are named. Missing deploy setup never
+ * blocks local execution — the deploy stage pauses with setup-required (R30).
  *
  * The `workspace` section (full-factory U4) reports the materialization rules
  * for this runtime: in local mode, which boundary local folders must resolve
@@ -15,9 +17,35 @@
  * separate setup surface from deploy and research credentials (E5) — only
  * their PRESENCE is reported, never a value.
  */
-import { resolveWorkspaceRuntimeConfig } from '../runtime';
-import type { WorkspaceRuntimeConfig } from '../runtime';
+import { resolveDeployRuntimeConfig, resolveWorkspaceRuntimeConfig } from '../runtime';
+import type { DeployRuntimeConfig, WorkspaceRuntimeConfig } from '../runtime';
 import type { ApiResponse, RouteContext, RouteDef } from '../app';
+
+/**
+ * Real deploy readiness from the deploy runtime config (U8). Reports only
+ * presence/ids — never credential values (E5).
+ */
+function deploySetup(deploy: DeployRuntimeConfig): { status: 'ready' | 'required'; missing: string[] } {
+  const missing: string[] = [];
+  if (!deploy.renderApiKeyPresent) {
+    missing.push('Render API key (RENDER_API_KEY or SF_RENDER_API_KEY)');
+  }
+  if (deploy.renderServiceId === undefined) {
+    missing.push('Render service id (SF_RENDER_SERVICE_ID)');
+  }
+  if (deploy.hostedUrl === undefined) {
+    missing.push('hosted health URL (SF_RENDER_HOSTED_URL)');
+  }
+  const hasDestination =
+    (deploy.githubOwner !== undefined && deploy.githubRepo !== undefined) ||
+    deploy.allowTemporaryRepo;
+  if (!hasDestination) {
+    missing.push(
+      'git destination (SF_DEPLOY_GITHUB_OWNER + SF_DEPLOY_GITHUB_REPO, or SF_DEPLOY_ALLOW_TEMP_REPO)',
+    );
+  }
+  return { status: missing.length === 0 ? 'ready' : 'required', missing };
+}
 
 function workspaceSetup(mode: 'local' | 'cloud', workspace: WorkspaceRuntimeConfig): unknown {
   const common = {
@@ -61,7 +89,7 @@ async function getSetup(ctx: RouteContext): Promise<ApiResponse> {
       operatorToken: { present: session !== null },
       sandbox: { status: 'unknown' },
       adapters: { status: 'unknown', detected: [] as readonly string[] },
-      deploy: { status: 'required' },
+      deploy: deploySetup(runtime?.deploy ?? resolveDeployRuntimeConfig()),
       workspace: {
         root: process.cwd(),
         materialization: workspaceSetup(mode, workspaceConfig),

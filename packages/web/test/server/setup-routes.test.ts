@@ -133,6 +133,36 @@ describe('GET /api/setup — workspace materialization surface', () => {
   });
 });
 
+describe('GET /api/setup — deploy readiness (full-factory U8)', () => {
+  it('reports ready when the deploy runtime config is complete (presence only, no values)', async () => {
+    const secret = 'rnd_SetupRouteRenderKey123';
+    const runtime = resolveRuntimeConfig(
+      {
+        SF_RENDER_API_KEY: secret,
+        SF_RENDER_SERVICE_ID: 'srv-42',
+        SF_RENDER_HOSTED_URL: 'https://app.onrender.com',
+        SF_DEPLOY_GITHUB_OWNER: 'octo',
+        SF_DEPLOY_GITHUB_REPO: 'app',
+      },
+      'C:\\repo',
+    );
+    expect(runtime.deploy.renderApiKeyPresent).toBe(true);
+    expect(JSON.stringify(runtime)).not.toContain(secret);
+
+    const body = await getSetup(makeApp(runtime));
+    expect(body.deploy).toEqual({ status: 'ready', missing: [] });
+    expect(JSON.stringify(body)).not.toContain(secret);
+  });
+
+  it('names the missing deploy setup without blocking anything locally', async () => {
+    const body = await getSetup(makeApp(runtimeConfig('local')));
+    const deploy = body.deploy as { status: string; missing: string[] };
+    expect(deploy.status).toBe('required');
+    expect(deploy.missing.join(' ')).toMatch(/Render API key/);
+    expect(deploy.missing.join(' ')).toMatch(/git destination/);
+  });
+});
+
 describe('resolveRuntimeConfig — workspace section', () => {
   it('defaults the boundary to the workspace root and checkouts under the factory dir', () => {
     // Forward slashes keep the dirname expectation identical on win32 + posix.

@@ -18,6 +18,7 @@ import type {
   BlockedStageView,
   DeployView,
   GateOutcomeRow,
+  PackageView,
   PreviewView,
   RepairSummaryRow,
   ReviewItem,
@@ -33,6 +34,8 @@ export interface RunAggregate {
   readonly preview: PreviewView;
   /** Deploy lifecycle (hosted url present only after `deploy.hosted_ready`). */
   readonly deploy: DeployView;
+  /** Package + handoff state (repo, handoff, provenance, confidence) (U8). */
+  readonly packageView: PackageView;
   /** Risk-tiered review requests folded with their decisions. */
   readonly reviews: readonly ReviewItem[];
   /** Latest gate outcomes per (ticket, gate) with evidence (U7). */

@@ -3,7 +3,7 @@
 How the Software Factory promotes a generated app to a hosted Render deployment
 after local completion. Hosting is **local-first**: a deploy is only attempted
 once local gates, preview health, packaging, provenance, and review policy are
-satisfied (plan unit U9, requirements R9–R11, R13, R14).
+satisfied (full-factory U8, requirements R26–R30).
 
 To deploy the factory control room itself to the cloud, use
 `docs/runbooks/cloud-deployment.md` and the root `render.yaml`.
@@ -12,13 +12,41 @@ To deploy the factory control room itself to the cloud, use
 
 ```
 local gates pass -> preview healthy -> package repo + provenance -> review satisfied
-  -> resolve Git destination -> generate + validate render.yaml
+  -> resolve Git destination -> push packaged repo -> generate + validate render.yaml
   -> trigger Render deploy -> poll status -> hosted health check -> hosted URL
 ```
 
 The hosted URL is shown **only** after the provider reports the deploy live
 **and** a hosted health check passes (`deploy.hosted_ready`). Every earlier phase
 emits its own ledger event and never a URL.
+
+## Run-lifecycle wiring (full-factory U8)
+
+Since U8 the flow above runs automatically inside the execution daemon's **run
+completion stage**: after every planned ticket completes and the post-run gate
+stage passes, the executor packages the workspace (`package.created`,
+`artifact.created`, `artifact.confidence_computed`), then — when a `deploy`
+ticket is planned — runs the deploy completion, and only then emits
+`run.completed`.
+
+Key behaviors:
+
+- **Missing deploy setup pauses the deploy, never the run.** The run completes
+  locally, `deploy.setup_required` is recorded, and a `deploy_setup`
+  intervention with the concrete action is raised. The package and provenance
+  are preserved.
+- **Provider/migration/health failures are retryable deploy state.** The run
+  still completes locally; a `retry_choice` intervention on the `deploy` stage
+  points at the recorded evidence.
+- **Retry re-enters the completion stage idempotently.** `POST
+  /api/runs/:id/retry` (allowed for locally-complete runs) re-runs the
+  executor: packaging is skipped (the existing `package.created`
+  short-circuits — no duplicate git commits or events) and the deploy is
+  re-attempted. `run.completed` stays idempotent on `<runId>:run.completed`.
+- **Preflight reports deploy readiness honestly.** The `deploy` preflight check
+  inspects the real deploy runtime config and states either concrete readiness
+  or exactly which setup is missing — it never blocks local execution on
+  deploy setup (R30).
 
 ## 1. GitHub setup (configured first)
 
@@ -114,6 +142,27 @@ deployer turns the first into `deploy.config_invalid`.
 | `AI_BRIEF_PROVIDER` | Render (optional)      | Selects a live AI brief provider; unset uses the deterministic fallback. |
 | `AI_BRIEF_API_KEY`  | Render (optional)      | API key for the live brief provider.                                     |
 | `NODE_ENV`          | Render                 | `production`.                                                            |
+
+### Factory deploy runtime config (U8)
+
+The completion stage and the preflight deploy check read these from the
+factory operator environment. Only credential **presence** enters config and
+evidence — never values (hardening E5).
+
+| Variable                    | Purpose                                                                     |
+| --------------------------- | ---------------------------------------------------------------------------- |
+| `SF_RENDER_API_KEY`         | Render API key (alias; `RENDER_API_KEY` also works).                        |
+| `SF_RENDER_SERVICE_ID`      | The target Render web service id (`srv-…`).                                 |
+| `SF_RENDER_HOSTED_URL`      | The hosted URL post-deploy health checks probe (required for hosted-ready). |
+| `SF_DEPLOY_GITHUB_OWNER`    | User-provided GitHub destination owner for the packaged repo.               |
+| `SF_DEPLOY_GITHUB_REPO`     | User-provided GitHub destination repo.                                      |
+| `SF_DEPLOY_ALLOW_TEMP_REPO` | `true` permits the factory-owned temporary repo fallback.                   |
+| `SF_PREVIEW_COMMAND`        | Optional local preview command for the packaged app (e.g. `pnpm dev`).      |
+| `SF_PREVIEW_URL`            | Local preview URL the health probe hits (with `SF_PREVIEW_COMMAND`).        |
+
+Without a preview command the preview stays honestly un-attempted: it lowers
+artifact confidence and holds the deploy `previewHealthy` precondition (deploy
+pauses with setup-required), but never fails the local run.
 
 Host secrets are never passed into sandboxed generated-app commands; only the
 explicit deploy env is sent to Render.

@@ -39,10 +39,14 @@
  *      failed (retryable, with per-ticket reasons) / blocked (with an
  *      intervention classification) / yielded (pause or shutdown -> requeue).
  *
- * U8 PACKAGING SEAM: packaging, provenance, preview health, and deploy
- * triggering hook in AFTER the post-run gate stage passes — i.e. exactly where
- * `emitRunCompleted` is called below. U8 inserts its orchestration between
- * "post-run gates passed" and the `run.completed` emission.
+ * U8 COMPLETION STAGE: packaging, provenance, preview health, and deploy
+ * triggering run AFTER the post-run gate stage passes and BEFORE
+ * `run.completed` is emitted (see `completion-stage.ts`). Packaging is
+ * idempotent per run (replay/retry never re-packages); deploy pauses and
+ * failures record retryable deploy state + interventions WITHOUT failing the
+ * locally-successful run (R30); the hosted URL appears only after provider
+ * success and hosted health pass (R29). Only a packaging error fails the
+ * attempt (retryable).
  */
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -82,6 +86,7 @@ import type {
   WorkspaceProjection,
 } from '@software-factory/worker';
 import type { ExecutorGateStages } from './gate-stages';
+import type { ExecutorCompletionStage } from './completion-stage';
 import type {
   TicketExecutionContext,
   TicketExecutionResult,
@@ -126,6 +131,14 @@ export interface SchedulerTicketExecutorOptions {
    * pre-U7 behavior); gate-rerun jobs then block honestly.
    */
   readonly gateStages?: ExecutorGateStages;
+  /**
+   * Run completion stage (U8). When wired (the server entry points pass
+   * `createRuntimeCompletionStage`), preview/package/provenance/deploy run
+   * after the post-run gate stage passes and before `run.completed` is
+   * emitted. Omitted = no completion stage (deterministic unit tests and
+   * pre-U8 behavior).
+   */
+  readonly completionStage?: ExecutorCompletionStage;
 }
 
 function blocked(
@@ -226,6 +239,7 @@ export function createSchedulerTicketExecutor(
 ): TicketExecutor {
   const catalog = options.adapters ?? createDefaultAdapterCatalog();
   const gateStages = options.gateStages;
+  const completionStage = options.completionStage;
   const workspaceConfig = options.runtime?.workspace ?? resolveWorkspaceRuntimeConfig();
   const freshWorkspaceRoot = options.freshWorkspaceRoot ?? workspaceConfig.checkoutRoot;
   const ensureWorkspaceDir = options.ensureWorkspaceDir ?? defaultEnsureDir;
@@ -408,6 +422,37 @@ export function createSchedulerTicketExecutor(
       );
     };
 
+    /**
+     * Run the U8 completion stage (preview -> package/provenance -> deploy)
+     * after post-run gates pass and before `run.completed`. Resolves the
+     * summary notes on success; otherwise the failed/yielded executor result.
+     * A missing stage is a no-op (pre-U8 behavior; unit tests without wiring).
+     */
+    const runCompletionStage = async (): Promise<
+      { readonly notes: readonly string[] } | TicketExecutionResult
+    > => {
+      if (completionStage === undefined) {
+        return { notes: [] };
+      }
+      const completion = await completionStage.run({
+        runId: ctx.runId,
+        workspaceDir,
+        store: heartbeatingStore,
+        signal: ctx.signal,
+      });
+      if (completion.status === 'ok') {
+        return { notes: completion.notes };
+      }
+      if (completion.status === 'yielded') {
+        return { status: 'yielded', reason: completion.reason };
+      }
+      return { status: 'failed', reason: completion.reason };
+    };
+
+    /** Join the run summary with the completion-stage notes. */
+    const withNotes = (summary: string, notes: readonly string[]): string =>
+      notes.length > 0 ? `${summary} ${notes.join(' ')}` : summary;
+
     /* ------------------------------------------------------------------
      * Gate re-run jobs (U7): re-run the post-run gate stage for REAL.
      * ---------------------------------------------------------------- */
@@ -429,7 +474,16 @@ export function createSchedulerTicketExecutor(
       const after = projectTickets(await ctx.store.readRun(ctx.runId), ctx.runId);
       const allDone = after.tickets.every((ticket) => ticket.state === 'completed');
       if (allDone) {
-        const summary = `Post-run gates passed on re-run; all ${after.tickets.length} ticket(s) complete.`;
+        // U8: gates finally passed — the completion stage (package/provenance/
+        // deploy) still runs before run.completed, idempotently.
+        const completion = await runCompletionStage();
+        if (!('notes' in completion)) {
+          return completion;
+        }
+        const summary = withNotes(
+          `Post-run gates passed on re-run; all ${after.tickets.length} ticket(s) complete.`,
+          completion.notes,
+        );
         await emitRunCompleted(summary);
         return { status: 'completed', summary };
       }
@@ -478,12 +532,21 @@ export function createSchedulerTicketExecutor(
 
     if (plan.completed.length === plan.nodes.length) {
       // Every ticket already completed on a previous attempt; the run still
-      // only counts as complete once the post-run gate stage passes.
+      // only counts as complete once the post-run gate stage passes. The U8
+      // completion stage then resumes idempotently: a run that already
+      // packaged skips packaging and re-attempts only the pending deploy.
       const stageResult = await runPostRunStage();
       if (stageResult !== null) {
         return stageResult;
       }
-      const summary = `All ${plan.nodes.length} ticket(s) were already completed on a previous attempt.`;
+      const completion = await runCompletionStage();
+      if (!('notes' in completion)) {
+        return completion;
+      }
+      const summary = withNotes(
+        `All ${plan.nodes.length} ticket(s) were already completed on a previous attempt.`,
+        completion.notes,
+      );
       await emitRunCompleted(summary);
       return { status: 'completed', summary };
     }
@@ -641,9 +704,17 @@ export function createSchedulerTicketExecutor(
     if (stageResult !== null) {
       return stageResult;
     }
-    // U8 PACKAGING SEAM: package/provenance/preview/deploy orchestration hooks
-    // in HERE — after post-run gates pass and before run.completed is emitted.
-    const summary = `${result.completed.length}/${plan.nodes.length} ticket(s) completed via adapter "${adapter.id}".`;
+    // U8: preview/package/provenance/deploy run here — after post-run gates
+    // pass and before run.completed is emitted. Deploy pauses/failures add
+    // notes + interventions without failing the locally-successful run.
+    const completion = await runCompletionStage();
+    if (!('notes' in completion)) {
+      return completion;
+    }
+    const summary = withNotes(
+      `${result.completed.length}/${plan.nodes.length} ticket(s) completed via adapter "${adapter.id}".`,
+      completion.notes,
+    );
     await emitRunCompleted(summary);
     return { status: 'completed', summary };
   };

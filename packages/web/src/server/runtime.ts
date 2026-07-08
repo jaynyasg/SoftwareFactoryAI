@@ -81,6 +81,34 @@ export interface ExecutionRuntimeConfig {
   readonly maxAttempts: number;
 }
 
+/**
+ * Deploy/handoff runtime configuration (full-factory U8).
+ *
+ * Deploy credentials are a SEPARATE setup surface from source checkout and
+ * research credentials (hardening E5). Only credential PRESENCE is resolved
+ * into config — `RENDER_API_KEY`/`SF_RENDER_API_KEY` stays in the environment
+ * and is read exclusively by the Render client at deploy time, never recorded
+ * as evidence. Missing deploy setup NEVER blocks local execution: the deploy
+ * stage pauses with `deploy.setup_required` instead (R30).
+ */
+export interface DeployRuntimeConfig {
+  /** Whether a Render API key is PRESENT (never the value). */
+  readonly renderApiKeyPresent: boolean;
+  /** The target Render service id (`srv-…`), when configured. */
+  readonly renderServiceId?: string;
+  /** The hosted URL post-deploy health checks probe, when configured. */
+  readonly hostedUrl?: string;
+  /** User-provided GitHub destination for the packaged repo. */
+  readonly githubOwner?: string;
+  readonly githubRepo?: string;
+  /** Whether a factory-owned temporary repo may back the deploy. */
+  readonly allowTemporaryRepo: boolean;
+  /** Local preview command for the packaged app (e.g. `pnpm dev`), when set. */
+  readonly previewCommand?: string;
+  /** Local preview URL health is probed at, when a preview command is set. */
+  readonly previewUrl?: string;
+}
+
 export interface RuntimeConfig {
   readonly mode: FactoryRuntimeMode;
   readonly host: string;
@@ -93,6 +121,7 @@ export interface RuntimeConfig {
   readonly research: ResearchRuntimeConfig;
   readonly workspace: WorkspaceRuntimeConfig;
   readonly execution: ExecutionRuntimeConfig;
+  readonly deploy: DeployRuntimeConfig;
 }
 
 interface RuntimeEnv {
@@ -123,6 +152,15 @@ interface RuntimeEnv {
   readonly SF_EXEC_HEARTBEAT_MS?: string;
   readonly SF_EXEC_RECONCILE_INTERVAL_MS?: string;
   readonly SF_EXEC_MAX_ATTEMPTS?: string;
+  readonly RENDER_API_KEY?: string;
+  readonly SF_RENDER_API_KEY?: string;
+  readonly SF_RENDER_SERVICE_ID?: string;
+  readonly SF_RENDER_HOSTED_URL?: string;
+  readonly SF_DEPLOY_GITHUB_OWNER?: string;
+  readonly SF_DEPLOY_GITHUB_REPO?: string;
+  readonly SF_DEPLOY_ALLOW_TEMP_REPO?: string;
+  readonly SF_PREVIEW_COMMAND?: string;
+  readonly SF_PREVIEW_URL?: string;
 }
 
 function clean(value: string | undefined): string | undefined {
@@ -244,6 +282,26 @@ export function resolveWorkspaceRuntimeConfig(
   };
 }
 
+/**
+ * Resolve the deploy/handoff runtime config from the environment. Reads only
+ * the PRESENCE of the Render API key — never its value (hardening E5).
+ */
+export function resolveDeployRuntimeConfig(
+  env: RuntimeEnv = process.env as RuntimeEnv,
+): DeployRuntimeConfig {
+  return {
+    renderApiKeyPresent:
+      clean(env.SF_RENDER_API_KEY) !== undefined || clean(env.RENDER_API_KEY) !== undefined,
+    renderServiceId: clean(env.SF_RENDER_SERVICE_ID),
+    hostedUrl: clean(env.SF_RENDER_HOSTED_URL),
+    githubOwner: clean(env.SF_DEPLOY_GITHUB_OWNER),
+    githubRepo: clean(env.SF_DEPLOY_GITHUB_REPO),
+    allowTemporaryRepo: parseBool(env.SF_DEPLOY_ALLOW_TEMP_REPO),
+    previewCommand: clean(env.SF_PREVIEW_COMMAND),
+    previewUrl: clean(env.SF_PREVIEW_URL),
+  };
+}
+
 /** Resolve the shared ledger/operator-token directory. */
 export function resolveFactoryDir(
   env: RuntimeEnv = process.env as RuntimeEnv,
@@ -290,6 +348,7 @@ export function resolveRuntimeConfig(
     research: resolveResearchRuntimeConfig(env),
     workspace: resolveWorkspaceRuntimeConfig(env, factoryDir),
     execution: resolveExecutionRuntimeConfig(env),
+    deploy: resolveDeployRuntimeConfig(env),
   };
 }
 

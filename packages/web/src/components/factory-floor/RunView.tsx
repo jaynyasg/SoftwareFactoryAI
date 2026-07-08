@@ -19,6 +19,7 @@ import { WorkerBoard } from './WorkerBoard';
 import { TicketCard } from './TicketCard';
 import { TraceLedger } from './TraceLedger';
 import { ReviewStudio } from './ReviewStudio';
+import { PackageHandoff } from './PackageHandoff';
 import { DeployStatus } from './DeployStatus';
 import { ArtifactDrawer } from './ArtifactDrawer';
 import { Mono, SeverityBadge } from './primitives';
@@ -53,7 +54,7 @@ export function RunView({
   readonly reconnecting: boolean;
   readonly refresh: () => void;
 }) {
-  const { run, tickets, artifacts, operator, deploy, reviews } = snapshot;
+  const { run, tickets, artifacts, operator, deploy, packageView, reviews } = snapshot;
   const runId = run.runId ?? 'unknown';
   const reducedTrust = operator.sandboxFallback;
   const [selected, setSelected] = useState<string | null>(null);
@@ -190,6 +191,7 @@ export function RunView({
             reducedTrust={reducedTrust}
             onReload={refresh}
           />
+          <PackageHandoff pkg={packageView} />
           <DeployStatus deploy={deploy} />
           {!isSmall ? (
             <ArtifactDrawer

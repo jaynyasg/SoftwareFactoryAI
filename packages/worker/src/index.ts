@@ -94,3 +94,12 @@ export * from './deploy/render/render-config';
 export * from './deploy/render/render-client';
 // Render deploy orchestrator: preconditions -> trigger -> health -> hosted URL.
 export * from './deploy/render/render-deployer';
+
+/* Full-factory U8 — Run completion: provenance, packaging, deploy wiring */
+
+// Derive the provenance bundle + artifact confidence from replayed run state.
+export * from './provenance/run-provenance';
+// Idempotent completed-run packaging (provenance + handoff + repo + events).
+export * from './package/run-packaging';
+// Ledger-derived deploy preconditions + destination/push/deploy completion.
+export * from './deploy/render/deploy-completion';

@@ -20,6 +20,7 @@ export interface TestRuntimeConfigOverrides {
   readonly research?: Partial<RuntimeConfig['research']>;
   readonly workspace?: Partial<RuntimeConfig['workspace']>;
   readonly execution?: Partial<RuntimeConfig['execution']>;
+  readonly deploy?: Partial<RuntimeConfig['deploy']>;
 }
 
 /** Build a fully-populated RuntimeConfig with test-friendly defaults. */
@@ -55,6 +56,11 @@ export function testRuntimeConfig(overrides: TestRuntimeConfigOverrides = {}): R
       reconcileIntervalMs: 30_000,
       maxAttempts: 3,
       ...overrides.execution,
+    },
+    deploy: {
+      renderApiKeyPresent: false,
+      allowTemporaryRepo: false,
+      ...overrides.deploy,
     },
   };
 }

@@ -36,6 +36,7 @@ import { createApp } from './app';
 import type { App } from './app';
 import { createExecutionDaemon } from './execution/daemon';
 import type { ExecutionDaemon } from './execution/daemon';
+import { createRuntimeCompletionStage } from './execution/completion-stage';
 import { createRuntimeGateStages } from './execution/gate-stages';
 import { createSchedulerTicketExecutor } from './execution/ticket-executor';
 import { createRuntimeOperatorTokenProvider, resolveRuntimeConfig } from './runtime';
@@ -100,10 +101,13 @@ export function getExecutionDaemon(): ExecutionDaemon {
       // U6: the real scheduler-backed executor (ticket DAG -> workers).
       // U7: gate stages wired for real — post-ticket gates + repair loop and
       // the post-run gate stage that must pass before run.completed.
+      // U8: completion stage wired for real — preview, package/provenance,
+      // and Render deploy run after post-run gates pass, before run.completed.
       executor: createSchedulerTicketExecutor({
         runtime,
         adapters: getAdapterCatalog(),
         gateStages: createRuntimeGateStages({ runtime }),
+        completionStage: createRuntimeCompletionStage({ runtime }),
       }),
     });
     singletons.daemon = daemon;

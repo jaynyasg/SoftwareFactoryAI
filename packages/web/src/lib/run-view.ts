@@ -145,6 +145,59 @@ export function deriveDeploy(events: readonly FactoryEvent[]): DeployView {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Package + handoff derivation (read event payloads; server-side) (U8)       */
+/* -------------------------------------------------------------------------- */
+
+export interface PackageView {
+  readonly status: 'none' | 'packaged';
+  /** Packaged repo path — from `package.created`. */
+  readonly repoPath?: string;
+  /** Repo-relative handoff document reference (e.g. `HANDOFF.md`). */
+  readonly handoffRef?: string;
+  /** Repo-relative provenance bundle reference (e.g. `PROVENANCE.json`). */
+  readonly provenanceRef?: string;
+  /** The packaging commit hash, when recorded. */
+  readonly commit?: string;
+  /** Human handoff summary from the packaging event. */
+  readonly summary?: string;
+  /** The packaged artifact id, when recorded. */
+  readonly artifactId?: string;
+  /** Blended artifact confidence for the packaged artifact, when computed. */
+  readonly confidence?: number;
+}
+
+/** Fold `package.created` + artifact confidence into the package view. Pure. */
+export function derivePackage(events: readonly FactoryEvent[]): PackageView {
+  let view: PackageView = { status: 'none' };
+  let packagedArtifactId: string | undefined;
+  const confidenceByArtifact = new Map<string, number>();
+  for (const event of events) {
+    if (event.type === 'package.created') {
+      packagedArtifactId = event.payload.artifactId ?? packagedArtifactId;
+      view = {
+        status: 'packaged',
+        repoPath: event.payload.repoPath,
+        handoffRef: event.payload.handoffRef,
+        provenanceRef: event.payload.provenanceRef,
+        commit: event.payload.commit,
+        summary: event.payload.summary,
+        artifactId: event.payload.artifactId,
+      };
+    } else if (event.type === 'artifact.confidence_computed') {
+      confidenceByArtifact.set(event.payload.artifactId, event.payload.confidence);
+    }
+  }
+  if (view.status === 'packaged') {
+    const confidence =
+      packagedArtifactId !== undefined ? confidenceByArtifact.get(packagedArtifactId) : undefined;
+    if (confidence !== undefined) {
+      view = { ...view, confidence };
+    }
+  }
+  return view;
+}
+
+/* -------------------------------------------------------------------------- */
 /* Review derivation (match review.requested -> review.decided)                */
 /* -------------------------------------------------------------------------- */
 

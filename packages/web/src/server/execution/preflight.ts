@@ -12,9 +12,11 @@
  * probes are injectable so tests (and later units) can harden or override
  * them; defaults fail closed where state is verifiable today. The adapter
  * readiness check is REAL (U6) when an adapter catalog is wired (run-settings
- * selection + setup detection), and the gate-readiness check is REAL (U7):
- * every contract gate expectation must map to a known gate implementation.
- * Deploy checks are U8 and still pass with an explicit deferral note.
+ * selection + setup detection), the gate-readiness check is REAL (U7): every
+ * contract gate expectation must map to a known gate implementation, and the
+ * deploy-readiness check is REAL (U8): it inspects the actual deploy runtime
+ * config and states whether the deploy stage will proceed or pause with
+ * setup-required — without ever blocking LOCAL execution on deploy setup (R30).
  */
 import {
   PREFLIGHT_CHECKS,
@@ -38,7 +40,7 @@ import { projectWorkspace } from '@software-factory/worker';
 import type { WorkspaceProjection } from '@software-factory/worker';
 import { raiseIntervention } from './interventions';
 import { isKnownGateExpectation } from './gate-stages';
-import { resolveWorkspaceRuntimeConfig } from '../runtime';
+import { resolveDeployRuntimeConfig, resolveWorkspaceRuntimeConfig } from '../runtime';
 import type { RuntimeConfig, WorkspaceRuntimeConfig } from '../runtime';
 
 /** One check outcome inside a preflight pass. */
@@ -104,8 +106,15 @@ function fail(
 
 function probeDag(ctx: PreflightProbeContext): PreflightCheckOutcome {
   // `running` is accepted so an operator RETRY of a started-then-failed
-  // execution can re-rehearse against the same planned DAG.
-  if (ctx.run.status !== 'planned' && ctx.run.status !== 'running') {
+  // execution can re-rehearse against the same planned DAG. `completed` is
+  // accepted so a RETRY of a locally-complete run can re-attempt a paused or
+  // failed deploy (U8/R30) — the start command already rejects completed runs
+  // before preflight (`not_planned`), so this only admits retries.
+  if (
+    ctx.run.status !== 'planned' &&
+    ctx.run.status !== 'running' &&
+    ctx.run.status !== 'completed'
+  ) {
     return fail(
       'dag',
       `Run status is "${ctx.run.status}", not "planned".`,
@@ -288,13 +297,47 @@ function probeGates(ctx: PreflightProbeContext): PreflightCheckOutcome {
   );
 }
 
+/**
+ * Real deploy-readiness check (U8): inspect the ACTUAL deploy runtime config
+ * (Render API key presence, service id, hosted health URL, git destination)
+ * for runs that plan a deploy ticket. Missing deploy setup NEVER blocks local
+ * execution (R30) — the check passes with an explicit statement that the
+ * deploy stage will pause with `deploy.setup_required` until setup completes,
+ * so the operator knows the hosted step's fate BEFORE starting the run.
+ */
 function probeDeploy(ctx: PreflightProbeContext): PreflightCheckOutcome {
   const hasDeployTicket = ctx.tickets.tickets.some((ticket) => ticket.ticketId === 'deploy');
+  if (!hasDeployTicket) {
+    return pass('deploy', 'No deploy ticket planned.');
+  }
+  const deploy = ctx.runtime?.deploy ?? resolveDeployRuntimeConfig();
+  const missing: string[] = [];
+  if (!deploy.renderApiKeyPresent) {
+    missing.push('Render API key (RENDER_API_KEY or SF_RENDER_API_KEY)');
+  }
+  if (deploy.renderServiceId === undefined) {
+    missing.push('Render service id (SF_RENDER_SERVICE_ID)');
+  }
+  if (deploy.hostedUrl === undefined) {
+    missing.push('hosted health URL (SF_RENDER_HOSTED_URL)');
+  }
+  const hasDestination =
+    (deploy.githubOwner !== undefined && deploy.githubRepo !== undefined) ||
+    deploy.allowTemporaryRepo;
+  if (!hasDestination) {
+    missing.push(
+      'git destination (SF_DEPLOY_GITHUB_OWNER + SF_DEPLOY_GITHUB_REPO, or SF_DEPLOY_ALLOW_TEMP_REPO)',
+    );
+  }
+  if (missing.length === 0) {
+    return pass(
+      'deploy',
+      `Deploy is ready: Render is configured (service ${deploy.renderServiceId}), the hosted health URL is set, and a git destination is resolved. The hosted URL is projected only after provider success and hosted health pass.`,
+    );
+  }
   return pass(
     'deploy',
-    hasDeployTicket
-      ? 'A deploy ticket is planned; Render prerequisites are verified before deploy runs (U8) and never block local execution.'
-      : 'No deploy ticket planned.',
+    `Deploy setup is incomplete — missing: ${missing.join('; ')}. Local execution proceeds; the deploy stage will pause with deploy.setup_required (retryable) and the local package/provenance are preserved.`,
   );
 }
 

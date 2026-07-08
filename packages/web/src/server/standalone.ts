@@ -26,6 +26,7 @@ import { createApp } from './app';
 import type { RunningServer } from './app';
 import { createExecutionDaemon } from './execution/daemon';
 import type { ExecutionDaemon } from './execution/daemon';
+import { createRuntimeCompletionStage } from './execution/completion-stage';
 import { createRuntimeGateStages } from './execution/gate-stages';
 import { createSchedulerTicketExecutor } from './execution/ticket-executor';
 import { createRuntimeOperatorTokenProvider, resolveRuntimeConfig } from './runtime';
@@ -79,10 +80,12 @@ export async function startStandaloneServer(
     store,
     config: runtime.execution,
     // U7: gate stages wired for real (post-ticket repair loop + post-run gate).
+    // U8: completion stage wired for real (preview, package/provenance, deploy).
     executor: createSchedulerTicketExecutor({
       runtime,
       adapters: adapterCatalog,
       gateStages: createRuntimeGateStages({ runtime }),
+      completionStage: createRuntimeCompletionStage({ runtime }),
     }),
   });
   await daemon.start();

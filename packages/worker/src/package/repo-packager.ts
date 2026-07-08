@@ -61,6 +61,11 @@ export interface RepoPackagerParams {
   /** Disable GPG signing for this unattended, throwaway commit (default true). */
   readonly disableGpgSign?: boolean;
   readonly summary?: string;
+  /**
+   * Idempotency key for the `package.created` append (U8): replays and
+   * duplicate packaging attempts dedupe to ONE ledger event.
+   */
+  readonly idempotencyKey?: string;
   readonly signal?: AbortSignal;
   readonly clock?: () => number;
 }
@@ -189,6 +194,7 @@ export async function packageRepo(
     subject: { kind: 'artifact', id: params.artifactId },
     severity: 'success',
     timestamp: params.clock?.(),
+    idempotencyKey: params.idempotencyKey,
     evidence: [
       { label: 'repo', ref: params.repoDir, note: `commit ${commit}` },
       { label: 'provenance', ref: 'PROVENANCE.json' },
@@ -198,6 +204,9 @@ export async function packageRepo(
       handoffRef: 'HANDOFF.md',
       summary:
         params.summary ?? `Packaged ${params.artifactId} as a git repo at commit ${commit}.`,
+      artifactId: params.artifactId,
+      commit,
+      provenanceRef: 'PROVENANCE.json',
     },
   } as AppendableEvent);
 

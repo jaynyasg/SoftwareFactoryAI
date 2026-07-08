@@ -16,12 +16,15 @@
  * `createSchedulerTicketExecutor` runs WITHOUT gates unless a config is given,
  * so no test ever spawns a real lint/typecheck/test subprocess.
  *
- * U8 PACKAGING SEAM: packaging, provenance, preview serving, and deploy
- * triggering hook in AFTER the post-run gate stage passes — i.e. immediately
- * before the executor emits `run.completed` (see `ticket-executor.ts`). The
- * `local preview health check` expectation is therefore recognized here (so
- * preflight readiness passes) but produces no gate yet: it needs the preview
- * server U8 starts, and U8 wires `createPreviewHealthGate` against it.
+ * U8 COMPLETION STAGE: packaging, provenance, preview serving, and deploy
+ * triggering run AFTER the post-run gate stage passes — immediately before the
+ * executor emits `run.completed` (see `completion-stage.ts`). The
+ * `local preview health check` expectation is recognized here (so preflight
+ * readiness passes) but deliberately produces no post-run COMMAND gate: the
+ * health check needs the preview server the completion stage owns, so the
+ * completion stage runs it (`startPreview` + health probe, recording
+ * `preview.*` events). Preview health feeds artifact confidence and the deploy
+ * preconditions rather than blocking local run completion.
  */
 import { createNodeCommandRunner } from '@software-factory/core';
 import type { RunProjection } from '@software-factory/core';
@@ -76,7 +79,8 @@ const EXPECTATION_GATES: Readonly<Record<string, (() => Gate) | null>> = {
   typecheck: () => createTypecheckGate(),
   'unit and smoke tests': () => createTestGate(),
   'secret scan': () => createSecretScanGate(),
-  // U8 seam: needs the preview server packaging starts; see module doc.
+  // Handled by the U8 completion stage (it owns the preview server); see the
+  // module doc above.
   'local preview health check': null,
 };
 

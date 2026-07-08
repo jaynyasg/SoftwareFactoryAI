@@ -45,6 +45,28 @@ export interface ArtifactOutput {
   readonly confidence?: number;
 }
 
+/** Deploy lifecycle states derivable from `deploy.*` events (U8). */
+export type DeployOutputStatus =
+  | 'idle'
+  | 'setup_required'
+  | 'config_invalid'
+  | 'provider_failed'
+  | 'migration_failed'
+  | 'health_pending'
+  | 'health_failed'
+  | 'hosted_ready';
+
+/** The projected deploy state (R29/R30): URL only on `hosted_ready`. */
+export interface DeployOutput {
+  readonly status: DeployOutputStatus;
+  /** Hosted URL — present ONLY after `deploy.hosted_ready` (health passed). */
+  readonly url?: string;
+  readonly reason?: string;
+  readonly action?: string;
+  /** Whether the current deploy state can be retried (all non-ready states). */
+  readonly retryable: boolean;
+}
+
 /** The stable artifact contract `run`/`status` return (and `--json` prints). */
 export interface RunOutputs {
   readonly runId: string;
@@ -62,6 +84,12 @@ export interface RunOutputs {
   readonly repoPath?: string;
   /** Handoff markdown reference — from `package.created`. */
   readonly handoffRef?: string;
+  /** Provenance bundle reference — from `package.created` (U8). */
+  readonly provenanceRef?: string;
+  /** Human handoff summary — from `package.created` / `run.completed` (U8). */
+  readonly handoffSummary?: string;
+  /** Projected deploy state (U8): url only after hosted health passes. */
+  readonly deploy: DeployOutput;
   readonly tests: TestsSummary;
   readonly artifacts: readonly ArtifactOutput[];
   /** Absolute URL of the read-only event log. */
@@ -74,12 +102,18 @@ interface DerivedLifecycle {
   hostedUrl?: string;
   repoPath?: string;
   handoffRef?: string;
+  provenanceRef?: string;
+  handoffSummary?: string;
+  deploy: DeployOutput;
   gates: GateOutput[];
 }
 
 /** Fold preview/deploy/package/gate events that core projections do not cover. */
 function deriveLifecycle(events: readonly FactoryEvent[]): DerivedLifecycle {
-  const derived: DerivedLifecycle = { gates: [] };
+  const derived: DerivedLifecycle = {
+    gates: [],
+    deploy: { status: 'idle', retryable: false },
+  };
   let repoFromArtifact: string | undefined;
 
   for (const event of events) {
@@ -90,12 +124,36 @@ function deriveLifecycle(events: readonly FactoryEvent[]): DerivedLifecycle {
       case 'preview.failed':
         derived.previewUrl = undefined;
         break;
+      case 'deploy.setup_required':
+        derived.deploy = { status: 'setup_required', action: event.payload.action, retryable: true };
+        break;
+      case 'deploy.config_invalid':
+        derived.deploy = { status: 'config_invalid', reason: event.payload.reason, retryable: true };
+        break;
+      case 'deploy.provider_failed':
+        derived.deploy = { status: 'provider_failed', reason: event.payload.reason, retryable: true };
+        break;
+      case 'deploy.migration_failed':
+        derived.deploy = { status: 'migration_failed', reason: event.payload.reason, retryable: true };
+        break;
+      case 'deploy.health_pending':
+        derived.deploy = { status: 'health_pending', retryable: true };
+        break;
+      case 'deploy.health_failed':
+        derived.deploy = { status: 'health_failed', reason: event.payload.reason, retryable: true };
+        break;
       case 'deploy.hosted_ready':
         derived.hostedUrl = event.payload.url;
+        derived.deploy = { status: 'hosted_ready', url: event.payload.url, retryable: false };
         break;
       case 'package.created':
         derived.repoPath = event.payload.repoPath ?? derived.repoPath;
         derived.handoffRef = event.payload.handoffRef ?? derived.handoffRef;
+        derived.provenanceRef = event.payload.provenanceRef ?? derived.provenanceRef;
+        derived.handoffSummary = event.payload.summary ?? derived.handoffSummary;
+        break;
+      case 'run.completed':
+        derived.handoffSummary ??= event.payload.summary;
         break;
       case 'artifact.created':
         if (event.payload.kind === 'repo' && event.payload.path !== undefined) {
@@ -156,6 +214,9 @@ export function buildRunOutputs(
     hostedUrl: lifecycle.hostedUrl,
     repoPath: lifecycle.repoPath,
     handoffRef: lifecycle.handoffRef,
+    provenanceRef: lifecycle.provenanceRef,
+    handoffSummary: lifecycle.handoffSummary,
+    deploy: lifecycle.deploy,
     tests: summarizeGates(lifecycle.gates),
     artifacts: artifacts.map((artifact) => ({
       artifactId: artifact.artifactId,

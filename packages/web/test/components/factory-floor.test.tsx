@@ -20,6 +20,7 @@ import { buildMarketplaceRunEvents } from '../../../../tests/fixtures/marketplac
 import {
   deriveDeploy,
   deriveGateOutcomes,
+  derivePackage,
   derivePreview,
   deriveRepairSummaries,
   deriveReviews,
@@ -32,6 +33,7 @@ import { TicketCard } from '../../src/components/factory-floor/TicketCard';
 import { TraceLedger } from '../../src/components/factory-floor/TraceLedger';
 import { ArtifactConfidence } from '../../src/components/factory-floor/ArtifactConfidence';
 import { DeployStatus } from '../../src/components/factory-floor/DeployStatus';
+import { PackageHandoff } from '../../src/components/factory-floor/PackageHandoff';
 import { SetupChecklist } from '../../src/components/factory-floor/SetupChecklist';
 import { RunControl } from '../../src/components/factory-floor/RunControl';
 import { RunView } from '../../src/components/factory-floor/RunView';
@@ -59,6 +61,7 @@ function buildAggregate(runId = 'run-test'): { aggregate: RunAggregate } {
     operator: projectOperator(events, runId),
     preview: derivePreview(events),
     deploy: deriveDeploy(events),
+    packageView: derivePackage(events),
     reviews: deriveReviews(events),
     gates: deriveGateOutcomes(events),
     repairs: deriveRepairSummaries(events),
@@ -159,6 +162,40 @@ describe('DeployStatus', () => {
     expect(screen.getByTestId('deploy-phase')).toHaveTextContent('Setup required');
     expect(screen.queryByTestId('hosted-url')).toBeNull();
     expect(screen.getByText(/Connect a GitHub destination/)).toBeInTheDocument();
+  });
+});
+
+describe('PackageHandoff', () => {
+  it('shows an honest not-packaged state before package.created exists', () => {
+    const { aggregate } = buildAggregate(); // fixture has no package.created
+    render(<PackageHandoff pkg={aggregate.packageView} />);
+
+    expect(screen.getByTestId('package-status')).toHaveTextContent('Not packaged');
+    expect(screen.getByText(/appear after all tickets and post-run gates/)).toBeInTheDocument();
+  });
+
+  it('shows repo, handoff, provenance, and confidence once packaged', () => {
+    render(
+      <PackageHandoff
+        pkg={{
+          status: 'packaged',
+          repoPath: 'C:\\factory\\workspaces\\run-1',
+          handoffRef: 'HANDOFF.md',
+          provenanceRef: 'PROVENANCE.json',
+          commit: '0123456789abcdef',
+          summary: 'Packaged app as a git repo at commit 0123456.',
+          artifactId: 'app',
+          confidence: 0.87,
+        }}
+      />,
+    );
+
+    expect(screen.getByTestId('package-status')).toHaveTextContent('Packaged');
+    expect(screen.getByText('HANDOFF.md')).toBeInTheDocument();
+    expect(screen.getByText('PROVENANCE.json')).toBeInTheDocument();
+    expect(screen.getByTestId('package-confidence')).toHaveTextContent('87%');
+    // The local-first contract stays visible: package survives deploy pauses.
+    expect(screen.getByText(/preserved even when the hosted deploy pauses/)).toBeInTheDocument();
   });
 });
 

@@ -718,6 +718,12 @@ export interface PackageCreatedPayload {
   readonly repoPath?: string;
   readonly handoffRef?: string;
   readonly summary?: string;
+  /** The packaged artifact id (U8; absent on older ledgers). */
+  readonly artifactId?: string;
+  /** The packaging commit hash (U8; absent on older ledgers). */
+  readonly commit?: string;
+  /** Repo-relative provenance bundle reference (U8; absent on older ledgers). */
+  readonly provenanceRef?: string;
 }
 
 // deploy

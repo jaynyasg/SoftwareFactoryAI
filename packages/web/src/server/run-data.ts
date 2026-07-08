@@ -28,6 +28,7 @@ import { filterInterventions, projectInterventions } from './execution/intervent
 import {
   deriveDeploy,
   deriveGateOutcomes,
+  derivePackage,
   derivePreview,
   deriveRepairSummaries,
   deriveReviews,
@@ -69,6 +70,7 @@ export async function loadRunAggregate(
   const operator = projectOperator(events, runId);
   const preview = derivePreview(events);
   const deploy = deriveDeploy(events);
+  const packageView = derivePackage(events);
   const reviews = deriveReviews(events);
   const gates = deriveGateOutcomes(events);
   const repairs = deriveRepairSummaries(events);
@@ -94,6 +96,7 @@ export async function loadRunAggregate(
     operator,
     preview,
     deploy,
+    packageView,
     reviews,
     gates,
     repairs,

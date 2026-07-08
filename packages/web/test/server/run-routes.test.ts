@@ -298,13 +298,16 @@ describe('POST /api/runs/:id/cancel', () => {
 });
 
 describe('GET /api/setup (read-only)', () => {
-  it('reports operator-token presence and conservative placeholders', async () => {
+  it('reports operator-token presence and real deploy readiness (U8)', async () => {
     const { app } = makeApp();
     const res = await app.handle(req('GET', '/api/setup', {}));
     expect(res.status).toBe(200);
     const body = record(res);
     expect(body.operatorToken).toEqual({ present: true });
-    expect(body.deploy).toEqual({ status: 'required' });
+    // No deploy runtime config injected here: the U8 readiness check reports
+    // required and NAMES the missing setup instead of a bare placeholder.
+    expect(body.deploy).toMatchObject({ status: 'required' });
+    expect(Array.isArray((body.deploy as { missing: unknown }).missing)).toBe(true);
   });
 });
 

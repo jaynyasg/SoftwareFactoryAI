@@ -74,6 +74,20 @@ export function formatRunOutputs(outputs: RunOutputs): string {
   lines.push(`  hosted url:    ${outputs.hostedUrl ?? '(pending)'}`);
   lines.push(`  repo path:     ${outputs.repoPath ?? '(pending)'}`);
   lines.push(`  handoff:       ${outputs.handoffRef ?? '(pending)'}`);
+  if (outputs.provenanceRef !== undefined) {
+    lines.push(`  provenance:    ${outputs.provenanceRef}`);
+  }
+  if (outputs.deploy.status !== 'idle') {
+    const deployDetail = outputs.deploy.action ?? outputs.deploy.reason;
+    lines.push(
+      `  deploy:        ${outputs.deploy.status}${outputs.deploy.retryable ? ' (retryable)' : ''}${
+        deployDetail !== undefined ? ` — ${deployDetail}` : ''
+      }`,
+    );
+  }
+  if (outputs.handoffSummary !== undefined) {
+    lines.push(`  summary:       ${outputs.handoffSummary}`);
+  }
   lines.push(`  tests:         ${outputs.tests.summary}`);
   if (outputs.artifacts.length > 0) {
     lines.push('  artifacts:');
