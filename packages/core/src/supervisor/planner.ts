@@ -1,11 +1,14 @@
 /**
  * Deterministic supervisor planner.
  *
- * `planRun(request, registry)` is PURE: identical inputs yield an identical plan
- * (no clocks, randomness, or I/O). For the recognized AI Services Marketplace
- * intent it emits the fixed V1 ticket pipeline as a dependency DAG; for unknown
- * or underspecified requests it refuses to guess a build and instead produces a
- * human-review triage ticket plus a low-confidence decision.
+ * `planRun(request, registry, research?)` is PURE: identical inputs yield an
+ * identical plan (no clocks, randomness, or I/O). For the recognized AI
+ * Services Marketplace intent it emits the fixed V1 ticket pipeline as a
+ * dependency DAG; for unknown or underspecified requests it refuses to guess a
+ * build and instead produces a human-review triage ticket plus a low-confidence
+ * decision. When an enriched research brief is supplied (full-factory U3), the
+ * plan records a research-backed `incorporate-research` decision plus the
+ * finding ids that influenced the DAG.
  *
  * `emitPlan(sink, runId, plan)` is the ONLY side-effecting path: it appends the
  * plan to the ledger as `run.planned` + one `supervisor.decision` per decision +
@@ -17,6 +20,7 @@ import type { RiskSignals } from './risk-tier';
 import type { RunIntent, RunRequest } from './run-request';
 import type { ModuleRiskHint } from '../genome/module-contract';
 import type { ModuleRegistry } from '../genome/module-registry';
+import type { ResearchProjection } from '../research/research-projection';
 import type { AppendableEvent, EventActor, FactoryEvent, RiskTier } from '../events/event-types';
 import type { AppendResult } from '../events/event-store';
 
@@ -61,6 +65,57 @@ export interface RunPlan {
   readonly intent: RunIntent;
   readonly tickets: readonly PlannedTicket[];
   readonly decisions: readonly SupervisorDecision[];
+  /**
+   * Research findings (by `findingId`) that influenced this plan, present only
+   * when the plan was produced from an enriched research brief with findings.
+   */
+  readonly influencingFindingIds?: readonly string[];
+}
+
+/* ----------------------------------------------------------------------------
+ * Enriched research brief -> planner context (full-factory U3)
+ * ------------------------------------------------------------------------- */
+
+/** One research finding distilled for planning. */
+export interface PlannerResearchFinding {
+  readonly findingId: string;
+  readonly statement: string;
+  readonly confidence?: number;
+}
+
+/** One unresolved research gap distilled for planning. */
+export interface PlannerResearchGap {
+  readonly gapId: string;
+  readonly question: string;
+  readonly blocking: boolean;
+}
+
+/**
+ * The distilled enriched-brief the planner consumes. Pure data — derive it from
+ * a `ResearchProjection` via `researchPlanContext` so planning stays replayable
+ * from the ledger.
+ */
+export interface PlannerResearchContext {
+  readonly briefSummary?: string;
+  readonly findings: readonly PlannerResearchFinding[];
+  readonly assumptionCount: number;
+  readonly unresolvedGaps: readonly PlannerResearchGap[];
+}
+
+/** Distill a projected research view into the planner's research context. */
+export function researchPlanContext(research: ResearchProjection): PlannerResearchContext {
+  return {
+    briefSummary: research.briefSummary,
+    findings: research.findings.map((finding) => ({
+      findingId: finding.findingId,
+      statement: finding.statement,
+      confidence: finding.confidence,
+    })),
+    assumptionCount: research.assumptions.length,
+    unresolvedGaps: research.gaps
+      .filter((gap) => !gap.resolved)
+      .map((gap) => ({ gapId: gap.gapId, question: gap.question, blocking: gap.blocking })),
+  };
 }
 
 /** Anything that can append events (an `EventStore` or `EventWriter`). */
@@ -292,15 +347,60 @@ function planTriage(request: RunRequest): RunPlan {
 }
 
 /**
+ * Build the research-backed supervisor decision for a plan (pure). Only called
+ * when at least one finding exists, so the rationale always names findings.
+ */
+function researchDecision(research: PlannerResearchContext): SupervisorDecision {
+  const findingIds = research.findings.map((finding) => finding.findingId);
+  const blockingGaps = research.unresolvedGaps.filter((gap) => gap.blocking);
+  const gapSuffix =
+    research.unresolvedGaps.length > 0
+      ? ` ${research.unresolvedGaps.length} unresolved gap(s)${
+          blockingGaps.length > 0 ? ` (${blockingGaps.length} blocking execution)` : ''
+        }.`
+      : '';
+  const briefSuffix =
+    research.briefSummary !== undefined && research.briefSummary.length > 0
+      ? ` Brief: ${research.briefSummary}`
+      : '';
+  return {
+    decision: 'incorporate-research',
+    rationale:
+      `Enriched research brief informed this plan: ${research.findings.length} finding(s) ` +
+      `[${findingIds.join(', ')}], ${research.assumptionCount} assumption(s).${gapSuffix}${briefSuffix}`,
+    confidence: 0.8,
+  };
+}
+
+/**
  * Plan a run deterministically. Recognized intents get the full V1 pipeline;
  * unknown/underspecified requests get a single human-review triage ticket and a
  * low-confidence decision (never a guessed, potentially dangerous build).
+ *
+ * When `research` (the distilled enriched brief) carries findings, the plan
+ * additionally records an `incorporate-research` decision naming the findings
+ * and pins them as `influencingFindingIds`. The ticket pipeline itself stays
+ * deterministic — research enriches the rationale and the build contract, it
+ * never invents tickets.
  */
-export function planRun(request: RunRequest, registry: ModuleRegistry): RunPlan {
-  if (request.intent === 'ai-services-marketplace') {
-    return planMarketplace(request, registry);
+export function planRun(
+  request: RunRequest,
+  registry: ModuleRegistry,
+  research?: PlannerResearchContext,
+): RunPlan {
+  const base =
+    request.intent === 'ai-services-marketplace'
+      ? planMarketplace(request, registry)
+      : planTriage(request);
+
+  if (research === undefined || research.findings.length === 0) {
+    return base;
   }
-  return planTriage(request);
+  return {
+    ...base,
+    decisions: [...base.decisions, researchDecision(research)],
+    influencingFindingIds: research.findings.map((finding) => finding.findingId),
+  };
 }
 
 /**
@@ -366,7 +466,12 @@ export async function emitPlan(
     subject: { kind: 'run', id: runId },
     severity: 'info',
     idempotencyKey: `${runId}:run.planned`,
-    payload: { ticketCount: plan.tickets.length },
+    payload: {
+      ticketCount: plan.tickets.length,
+      ...(plan.influencingFindingIds !== undefined && plan.influencingFindingIds.length > 0
+        ? { influencingFindingIds: plan.influencingFindingIds }
+        : {}),
+    },
   });
   record(planned);
 

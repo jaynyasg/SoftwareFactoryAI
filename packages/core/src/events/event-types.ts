@@ -83,6 +83,29 @@ export type EmptyPayload = Record<string, never>;
 /** Agent family that initiated a run (e.g. via the CLI `--caller-family` flag). */
 export type CallerFamily = 'claude' | 'codex' | 'api';
 
+/**
+ * How far a run is allowed to progress at creation time (full-factory U3):
+ *  - `plan-only`               — current V1 behavior: blueprint (ticket DAG) only.
+ *  - `research-and-plan`       — bounded research runs BEFORE planning; the
+ *                                enriched brief feeds the supervisor planner and
+ *                                a build contract is generated after planning.
+ *  - `research-plan-and-start` — everything above, plus a recorded request to
+ *                                start execution. Execution controls (queue/
+ *                                daemon) are U5; until they exist the run
+ *                                projects an explicit execution-pending state
+ *                                rather than pretending to start.
+ */
+export const RUN_MODES = ['plan-only', 'research-and-plan', 'research-plan-and-start'] as const;
+export type RunMode = (typeof RUN_MODES)[number];
+
+/** The default run mode: planning-only stays the safe V1 default. */
+export const DEFAULT_RUN_MODE: RunMode = 'plan-only';
+
+/** Type guard for a run mode value. */
+export function isRunMode(value: unknown): value is RunMode {
+  return typeof value === 'string' && (RUN_MODES as readonly string[]).includes(value);
+}
+
 // run
 export interface RunCreatedPayload {
   readonly prompt?: string;
@@ -102,9 +125,21 @@ export interface RunCreatedPayload {
    * nested execution when the selected adapter family matches this caller.
    */
   readonly callerFamily?: CallerFamily;
+  /**
+   * Requested run mode (full-factory U3). Absent on pre-U3 ledgers, which is
+   * equivalent to the `plan-only` default. Recording the mode here is the U5
+   * seam: `research-plan-and-start` is a durable start REQUEST that the future
+   * execution controls (U5 queue/daemon) will act on.
+   */
+  readonly mode?: RunMode;
 }
 export interface RunPlannedPayload {
   readonly ticketCount: number;
+  /**
+   * Research findings (by `findingId`) that influenced this plan/DAG, when the
+   * run was planned from an enriched research brief (full-factory U3).
+   */
+  readonly influencingFindingIds?: readonly string[];
 }
 export interface RunCompletedPayload {
   readonly summary?: string;
@@ -249,6 +284,42 @@ export interface SupervisorDecisionPayload {
   readonly decision: string;
   readonly rationale: string;
   readonly confidence: number;
+}
+
+// contract (build contract, full-factory U3 / CEO expansion X3)
+/**
+ * The build contract generated after research + planning (X3). It summarizes
+ * what execution would do BEFORE any worker mutates files: scope, workspace,
+ * write boundaries, risks, gate expectations, deploy target, completion
+ * criteria, and the operator approvals required before execution.
+ *
+ * Emission is idempotent on `contractDigest` (a digest of the contract
+ * content), so re-emitting appends a new event ONLY when the underlying
+ * research or plan actually changed; projections take the latest contract.
+ */
+export interface ContractGeneratedPayload {
+  /** Digest of the contract content; stable unless research/plan changes. */
+  readonly contractDigest: string;
+  /** What the run will build (title + planned ticket summary). */
+  readonly scope: string;
+  /** The workspace execution would run in (or an explicit "not bound yet"). */
+  readonly workspace: string;
+  /** Where workers are allowed to write. */
+  readonly writeBoundaries: readonly string[];
+  /** Elevated-risk tickets and blocking research gaps. */
+  readonly risks: readonly string[];
+  /** Quality gates the run is expected to pass. */
+  readonly gateExpectations: readonly string[];
+  /** Deploy target, or an explicit "none". */
+  readonly deployTarget: string;
+  /** What "done" means for this run. */
+  readonly completionCriteria: readonly string[];
+  /** Operator approvals required before execution may start. */
+  readonly operatorApprovals: readonly string[];
+  /** Whether completed research findings informed this contract. */
+  readonly researchBacked: boolean;
+  /** Research findings (by `findingId`) that influenced the plan/DAG. */
+  readonly influencingFindingIds: readonly string[];
 }
 
 // ticket
@@ -440,6 +511,7 @@ export interface EventPayloadMap {
   'knowledge.entry_redacted': KnowledgeEntryRedactedPayload;
   'knowledge.entry_retired': KnowledgeEntryRetiredPayload;
   'supervisor.decision': SupervisorDecisionPayload;
+  'contract.generated': ContractGeneratedPayload;
   'ticket.created': TicketCreatedPayload;
   'ticket.queued': EmptyPayload;
   'ticket.state_changed': TicketStateChangedPayload;
@@ -553,6 +625,7 @@ export const EVENT_TYPES = [
   'knowledge.entry_redacted',
   'knowledge.entry_retired',
   'supervisor.decision',
+  'contract.generated',
   'ticket.created',
   'ticket.queued',
   'ticket.state_changed',

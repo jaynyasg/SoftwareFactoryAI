@@ -61,6 +61,8 @@ export * from './supervisor/run-request';
 export * from './supervisor/risk-tier';
 // Deterministic planner: planRun (pure) + emitPlan (ledger writer).
 export * from './supervisor/planner';
+// Build contract (full-factory U3 / X3): derive (pure) + emit (digest-idempotent).
+export * from './supervisor/build-contract';
 // Ticket dependency graph: build, topo order, readyTickets, cycle/missing errors.
 export * from './supervisor/ticket-dag';
 

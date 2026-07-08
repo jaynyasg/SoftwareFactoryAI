@@ -12,6 +12,7 @@
 import { compareEventsBySequence, isFactoryEvent, isKnownEventType } from '../events/event-types';
 import type {
   CallerFamily,
+  ContractGeneratedPayload,
   EventActor,
   EventEvidence,
   EventSeverity,
@@ -19,6 +20,7 @@ import type {
   FactoryEvent,
   FactoryEventType,
   ReviewMode,
+  RunMode,
 } from '../events/event-types';
 
 /* ----------------------------------------------------------------------------
@@ -217,6 +219,31 @@ export interface SupervisorDecisionView {
   readonly confidence: number;
 }
 
+/**
+ * Projected execution intent (full-factory U3; the U5 seam).
+ *
+ * Run modes can REQUEST execution (`research-plan-and-start`), but execution
+ * controls (start command, queue, daemon) are U5 and do not exist yet. This
+ * state makes that explicit instead of pretending a run started:
+ *  - `not_requested` — the run mode never asked for execution (plan-only /
+ *    research-and-plan, or a pre-U3 ledger without a mode).
+ *  - `pending`       — a start was requested and the run is created/planned;
+ *    it stays pending until U5 execution controls exist to act on it.
+ *  - `started`       — a `run.started` event was observed on the ledger.
+ *  - `unavailable`   — a start was requested but the run failed or was
+ *    cancelled, so execution cannot proceed.
+ *
+ * U5 replaces `pending` with real queue/daemon states; until then no component
+ * may treat `pending` as running.
+ */
+export type RunExecutionState = 'not_requested' | 'pending' | 'started' | 'unavailable';
+
+/** The latest projected build contract (from `contract.generated`). */
+export interface BuildContractView extends ContractGeneratedPayload {
+  readonly sequence: number;
+  readonly generatedAt: number;
+}
+
 export interface RunProjection {
   readonly runId: string | null;
   readonly status: RunStatus;
@@ -234,6 +261,12 @@ export interface RunProjection {
   readonly reviewMode?: ReviewMode;
   /** Agent family that initiated the run (from the `run.created` payload). */
   readonly callerFamily?: CallerFamily;
+  /** Requested run mode (from the `run.created` payload); absent = plan-only. */
+  readonly mode?: RunMode;
+  /** Explicit execution intent — see `RunExecutionState` (the U5 seam). */
+  readonly executionState: RunExecutionState;
+  /** Latest build contract, when `contract.generated` exists on the ledger. */
+  readonly buildContract?: BuildContractView;
   readonly plannedTicketCount?: number;
   readonly startedAt?: number;
   readonly completedAt?: number;
@@ -265,6 +298,8 @@ export function projectRun(raw: readonly unknown[], runId?: string): RunProjecti
   let requestedWorkerCap: number | undefined;
   let reviewMode: ReviewMode | undefined;
   let callerFamily: CallerFamily | undefined;
+  let mode: RunMode | undefined;
+  let buildContract: BuildContractView | undefined;
   let plannedTicketCount: number | undefined;
   let startedAt: number | undefined;
   let completedAt: number | undefined;
@@ -291,10 +326,19 @@ export function projectRun(raw: readonly unknown[], runId?: string): RunProjecti
         requestedWorkerCap = event.payload.requestedWorkerCap ?? requestedWorkerCap;
         reviewMode = event.payload.reviewMode ?? reviewMode;
         callerFamily = event.payload.callerFamily ?? callerFamily;
+        mode = event.payload.mode ?? mode;
         break;
       case 'run.planned':
         status = 'planned';
         plannedTicketCount = event.payload.ticketCount;
+        break;
+      case 'contract.generated':
+        // Latest contract wins; older contracts remain replayable in the ledger.
+        buildContract = {
+          ...event.payload,
+          sequence: event.sequence,
+          generatedAt: event.timestamp,
+        };
         break;
       case 'run.started':
         status = 'running';
@@ -327,6 +371,16 @@ export function projectRun(raw: readonly unknown[], runId?: string): RunProjecti
     }
   }
 
+  // U5 seam: derive the explicit execution intent from recorded events only.
+  // `pending` is an honest "start requested, execution controls not yet
+  // available" state — never a claim that anything is running.
+  let executionState: RunExecutionState = 'not_requested';
+  if (startedAt !== undefined) {
+    executionState = 'started';
+  } else if (mode === 'research-plan-and-start') {
+    executionState = status === 'failed' || status === 'cancelled' ? 'unavailable' : 'pending';
+  }
+
   return {
     runId: targetRunId,
     status,
@@ -342,6 +396,9 @@ export function projectRun(raw: readonly unknown[], runId?: string): RunProjecti
     requestedWorkerCap,
     reviewMode,
     callerFamily,
+    mode,
+    executionState,
+    buildContract,
     plannedTicketCount,
     startedAt,
     completedAt,

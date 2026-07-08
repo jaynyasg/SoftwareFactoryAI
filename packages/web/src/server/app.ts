@@ -170,6 +170,12 @@ export interface RouteContext {
    * the request path.
    */
   runResearch(runId: string, input: ResearchTriggerInput): Promise<ResearchRunResult | null>;
+  /**
+   * Whether a researcher is wired on this instance. Research-enabled run modes
+   * fail closed (503) at creation time when this is false, instead of minting a
+   * run that can never satisfy its requested mode.
+   */
+  readonly researchEnabled: boolean;
 }
 
 export type RouteHandler = (ctx: RouteContext) => Promise<ApiResponse>;
@@ -487,6 +493,7 @@ export function createApp(deps: AppDeps): App {
       guardMutation: (input) => guardMutation(request, input),
       planRun,
       runResearch: runResearchForRun,
+      researchEnabled: researcher !== null,
     };
   }
 

@@ -26,7 +26,13 @@ import {
   parseRunRequest,
   planRun,
 } from '@software-factory/core';
-import type { ModuleRegistry, PlanEventSink, ReviewMode } from '@software-factory/core';
+import type {
+  ModuleRegistry,
+  PlanEventSink,
+  PlannerResearchContext,
+  ReviewMode,
+  RunMode,
+} from '@software-factory/core';
 
 /** The intake fields a plan needs (a subset of the `run.created` payload). */
 export interface RunPlanInput {
@@ -36,6 +42,14 @@ export interface RunPlanInput {
   readonly title?: string;
   readonly requestedWorkerCap?: number;
   readonly reviewMode?: ReviewMode;
+  /** Requested run mode (full-factory U3); defaults to plan-only. */
+  readonly mode?: RunMode;
+  /**
+   * Distilled enriched research brief (from `researchPlanContext`). When it
+   * carries findings, the supervisor records a research-backed decision and the
+   * finding ids that influenced the DAG.
+   */
+  readonly research?: PlannerResearchContext;
 }
 
 /**
@@ -96,8 +110,16 @@ export function createGenomePlanner(options: GenomePlannerOptions = {}): RunPlan
 
   return async (sink, runId, input) => {
     const registry = await loadRegistry();
-    const request = parseRunRequest(input);
-    const plan = planRun(request, registry);
+    const request = parseRunRequest({
+      prompt: input.prompt,
+      prdRef: input.prdRef,
+      prdText: input.prdText,
+      title: input.title,
+      requestedWorkerCap: input.requestedWorkerCap,
+      reviewMode: input.reviewMode,
+      mode: input.mode,
+    });
+    const plan = planRun(request, registry, input.research);
     await emitPlan(sink, runId, plan);
   };
 }

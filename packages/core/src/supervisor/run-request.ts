@@ -9,7 +9,8 @@
  * guessed (and potentially dangerous) build.
  */
 import { DEFAULT_REVIEW_MODE } from '../security/review-policy';
-import type { ReviewMode } from '../events/event-types';
+import { DEFAULT_RUN_MODE } from '../events/event-types';
+import type { ReviewMode, RunMode } from '../events/event-types';
 
 /**
  * The detected product intent. V1 recognizes only the AI Services Marketplace
@@ -26,6 +27,8 @@ export interface RunRequestInput {
   readonly title?: string;
   readonly requestedWorkerCap?: number;
   readonly reviewMode?: ReviewMode;
+  /** Requested run mode; defaults to the planning-only V1 mode. */
+  readonly mode?: RunMode;
 }
 
 /** A normalized, deterministic run request ready for planning. */
@@ -42,6 +45,8 @@ export interface RunRequest {
   readonly requestedWorkerCap?: number;
   /** Review mode; defaults to human review. */
   readonly reviewMode: ReviewMode;
+  /** Run mode; defaults to planning-only (`plan-only`). */
+  readonly mode: RunMode;
   /** The detected product intent. */
   readonly intent: RunIntent;
 }
@@ -164,6 +169,7 @@ export function parseRunRequest(input: string | RunRequestInput): RunRequest {
       ? titleTrimmed
       : deriveTitle(prompt, prdRef, prdText);
   const reviewMode = raw.reviewMode ?? DEFAULT_REVIEW_MODE;
+  const mode = raw.mode ?? DEFAULT_RUN_MODE;
   const requestedWorkerCap = normalizeWorkerCap(raw.requestedWorkerCap);
   const intent = detectIntent(prompt, prdRef, prdText, title);
 
@@ -174,6 +180,7 @@ export function parseRunRequest(input: string | RunRequestInput): RunRequest {
     prdText,
     requestedWorkerCap,
     reviewMode,
+    mode,
     intent,
   };
 }

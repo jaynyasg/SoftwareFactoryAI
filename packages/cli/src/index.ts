@@ -5,6 +5,7 @@
  * Surface:
  *   software-factory start    [--port <n>] [--no-spawn] [--base-url <url>] [--json]
  *   software-factory run      <prompt> | --prd <path> | --request <json> | --request-file <path>
+ *                             [--mode plan-only|research-and-plan|research-plan-and-start]
  *                             [--review-mode human|autonomous] [--worker-cap <1-20>]
  *                             [--title <t>] [--caller-family claude|codex|api]
  *                             [--no-follow] [--json]
@@ -24,7 +25,8 @@ import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import type { CallerFamily, ReviewMode } from '@software-factory/core';
+import { RUN_MODES, isRunMode } from '@software-factory/core';
+import type { CallerFamily, ReviewMode, RunMode } from '@software-factory/core';
 import { createApiClient } from './api-client';
 import { ApiError } from './api-client';
 import { processIo, sleep } from './cli-io';
@@ -118,6 +120,10 @@ function asCallerFamily(value: string | undefined): CallerFamily | undefined {
   return value === 'claude' || value === 'codex' || value === 'api' ? value : undefined;
 }
 
+function asRunMode(value: string | undefined): RunMode | undefined {
+  return isRunMode(value) ? value : undefined;
+}
+
 function isLoopbackBaseUrl(value: string): boolean {
   try {
     const url = new URL(value);
@@ -178,8 +184,17 @@ const HELP = `software-factory — local-first software factory CLI
 Usage:
   software-factory start     [--port <n>] [--no-spawn] [--base-url <url>] [--json]
   software-factory run       <prompt> | --prd <path> | --request <json> | --request-file <path>
+                             [--mode plan-only|research-and-plan|research-plan-and-start]
                              [--review-mode human|autonomous] [--worker-cap <1-20>]
                              [--title <t>] [--caller-family claude|codex|api] [--no-follow] [--json]
+
+Run modes:
+  plan-only                (default) blueprint only — research/execution do not run
+  research-and-plan        bounded research runs first; the enriched brief feeds
+                           planning and a build contract is generated
+  research-plan-and-start  as above, plus the start request is recorded; execution
+                           controls are not yet available, so the run settles at
+                           planned with an explicit execution-pending state
   software-factory status    <runId> [--json]
   software-factory events    <runId> [--follow] [--since <n>] [--json]
   software-factory artifacts <runId> [--json]
@@ -240,6 +255,13 @@ export async function runCli(argv: readonly string[], deps: RunCliDeps = {}): Pr
         return 0;
       }
       case 'run': {
+        // A typo'd --mode must NOT silently fall back to plan-only: it controls
+        // whether research (and, later, execution) runs. Fail fast instead.
+        const modeFlag = flagStr(flags, 'mode');
+        if (modeFlag !== undefined && !isRunMode(modeFlag)) {
+          io.err(`Invalid --mode "${modeFlag}". Expected one of: ${RUN_MODES.join(', ')}.`);
+          return 2;
+        }
         const client = await buildClient();
         await runCommand(
           {
@@ -249,6 +271,7 @@ export async function runCli(argv: readonly string[], deps: RunCliDeps = {}): Pr
             requestPath: flagStr(flags, 'request-file'),
             title: flagStr(flags, 'title'),
             reviewMode: asReviewMode(flagStr(flags, 'review-mode')),
+            mode: asRunMode(modeFlag),
             workerCap: flagNum(flags, 'worker-cap'),
             callerFamily: asCallerFamily(flagStr(flags, 'caller-family')),
             idempotencyKey: flagStr(flags, 'idempotency-key'),

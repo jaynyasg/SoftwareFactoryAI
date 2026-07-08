@@ -8,6 +8,7 @@ import {
 } from '@software-factory/core';
 import { ApiError } from '../src/api-client';
 import type { ApiClient, CreateRunInput } from '../src/api-client';
+import { runCli } from '../src/index';
 import { runCommand } from '../src/commands/run';
 import { eventsCommand } from '../src/commands/events';
 import { statusCommand } from '../src/commands/status';
@@ -205,6 +206,62 @@ describe('run command', () => {
     expect(outputs.callerFamily).toBe('claude');
   });
 
+  it('forwards --mode so run modes reach the backend request shape', async () => {
+    const be = makeFakeBackend();
+    const { io } = makeIo();
+    await runCommand(
+      { prompt: 'x', mode: 'research-plan-and-start', follow: false, json: true },
+      { client: be.client, io },
+    );
+    expect(be.createCalls[0].mode).toBe('research-plan-and-start');
+  });
+
+  it('omits mode by default so the backend keeps its plan-only default', async () => {
+    const be = makeFakeBackend();
+    const { io } = makeIo();
+    await runCommand({ prompt: 'x', follow: false, json: true }, { client: be.client, io });
+    expect(be.createCalls[0].mode).toBeUndefined();
+  });
+
+  it('accepts mode from a JSON request body (flag wins when both are present)', async () => {
+    const be = makeFakeBackend();
+    const { io } = makeIo();
+    await runCommand(
+      {
+        requestJson: JSON.stringify({ prompt: 'JSON marketplace', mode: 'research-and-plan' }),
+        follow: false,
+        json: true,
+      },
+      { client: be.client, io },
+    );
+    expect(be.createCalls[0].mode).toBe('research-and-plan');
+
+    await runCommand(
+      {
+        requestJson: JSON.stringify({ prompt: 'JSON marketplace', mode: 'research-and-plan' }),
+        mode: 'plan-only',
+        follow: false,
+        json: true,
+      },
+      { client: be.client, io },
+    );
+    expect(be.createCalls[1].mode).toBe('plan-only');
+  });
+
+  it('ignores an invalid mode in a JSON request body instead of sending garbage', async () => {
+    const be = makeFakeBackend();
+    const { io } = makeIo();
+    await runCommand(
+      {
+        requestJson: JSON.stringify({ prompt: 'JSON marketplace', mode: 'warp-speed' }),
+        follow: false,
+        json: true,
+      },
+      { client: be.client, io },
+    );
+    expect(be.createCalls[0].mode).toBeUndefined();
+  });
+
   it('token mismatch blocks the mutating command before any side effects', async () => {
     const be = makeFakeBackend({
       failCreateWith: new ApiError(401, 'invalid_token', 'Operator token is invalid.'),
@@ -222,6 +279,17 @@ describe('run command', () => {
     // contract build (getEvents never called) — i.e. blocked before side effects.
     expect(be.createCalls).toHaveLength(1);
     expect(be.getEventsCalls()).toBe(0);
+  });
+});
+
+describe('run command via runCli — mode validation', () => {
+  it('rejects an invalid --mode before contacting the backend', async () => {
+    const { io, errText } = makeIo();
+    const code = await runCli(['run', 'build something', '--mode', 'warp-speed'], { io });
+    expect(code).toBe(2);
+    expect(errText()).toContain('Invalid --mode');
+    expect(errText()).toContain('plan-only');
+    expect(errText()).toContain('research-plan-and-start');
   });
 });
 

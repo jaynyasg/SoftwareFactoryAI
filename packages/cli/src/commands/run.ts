@@ -14,7 +14,8 @@
  * worker adapter family if/when live execution runs).
  */
 import { readFile as fsReadFile } from 'node:fs/promises';
-import type { CallerFamily, ReviewMode } from '@software-factory/core';
+import { isRunMode } from '@software-factory/core';
+import type { CallerFamily, ReviewMode, RunMode } from '@software-factory/core';
 import type { ApiClient, CreateRunInput } from '../api-client';
 import type { CliIo } from '../cli-io';
 import { formatEventLine, formatRunOutputs } from '../cli-io';
@@ -33,6 +34,13 @@ export interface RunCommandArgs {
   readonly requestPath?: string;
   readonly title?: string;
   readonly reviewMode?: ReviewMode;
+  /**
+   * `--mode plan-only|research-and-plan|research-plan-and-start`. Omitted =
+   * the backend's plan-only default (V1 behavior). `research-plan-and-start`
+   * records the start request; execution controls are not yet available, so
+   * the run settles at planned with an explicit execution-pending state.
+   */
+  readonly mode?: RunMode;
   readonly workerCap?: number;
   readonly callerFamily?: CallerFamily;
   readonly idempotencyKey?: string;
@@ -79,6 +87,10 @@ function reviewMode(value: unknown): ReviewMode | undefined {
   return value === 'human' || value === 'autonomous' ? value : undefined;
 }
 
+function runMode(value: unknown): RunMode | undefined {
+  return isRunMode(value) ? value : undefined;
+}
+
 /** Resolve the create-run input from the various intake forms (flags win). */
 async function resolveCreateInput(
   args: RunCommandArgs,
@@ -107,6 +119,7 @@ async function resolveCreateInput(
     reasoningEffort: str(base.reasoningEffort),
     requestedWorkerCap: args.workerCap ?? num(base.requestedWorkerCap),
     reviewMode: args.reviewMode ?? reviewMode(base.reviewMode),
+    mode: args.mode ?? runMode(base.mode),
     callerFamily: args.callerFamily,
     idempotencyKey: args.idempotencyKey,
   };

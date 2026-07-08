@@ -22,6 +22,7 @@ import type {
   ReviewDecision,
   ReviewMode,
   RiskTier,
+  RunMode,
   RunProjection,
 } from '@software-factory/core';
 
@@ -75,6 +76,11 @@ export interface CreateRunInput {
   readonly reasoningEffort?: string;
   readonly requestedWorkerCap?: number;
   readonly reviewMode?: ReviewMode;
+  /**
+   * Run mode: `plan-only` (default), `research-and-plan`, or
+   * `research-plan-and-start`. Omitted = the backend's plan-only default.
+   */
+  readonly mode?: RunMode;
   /** Forwarded so nested-agent metadata can be recorded against this run. */
   readonly callerFamily?: CallerFamily;
   /** Idempotency key so a retried create returns the original run. */
@@ -229,6 +235,7 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
         reasoningEffort: input.reasoningEffort,
         requestedWorkerCap: input.requestedWorkerCap,
         reviewMode: input.reviewMode,
+        mode: input.mode,
         callerFamily: input.callerFamily,
         idempotencyKey: input.idempotencyKey,
       });
