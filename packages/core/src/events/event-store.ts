@@ -124,12 +124,35 @@ function isErrnoException(error: unknown): error is NodeJS.ErrnoException {
   return typeof error === 'object' && error !== null && 'code' in error;
 }
 
+/**
+ * Structured persistence failure for the filesystem store: carries the errno
+ * code (`EBUSY`, `ENOSPC`, …) and the ledger file path so callers (e.g. the
+ * execution daemon) can release leases cleanly and surface an actionable
+ * diagnostic instead of an opaque throw.
+ */
+export class EventStorePersistenceError extends Error {
+  /** The underlying errno code, when the failure was an fs error. */
+  readonly code?: string;
+  /** The ledger file (or base directory) the write targeted. */
+  readonly path: string;
+
+  constructor(message: string, options: { readonly code?: string; readonly path: string }) {
+    super(message);
+    this.name = 'EventStorePersistenceError';
+    this.code = options.code;
+    this.path = options.path;
+  }
+}
+
 export function createInMemoryEventStore(options: EventStoreOptions = {}): EventStore {
   const clock = options.clock ?? Date.now;
   const idGenerator = options.idGenerator ?? randomUUID;
   const allocator = createSequenceAllocator();
   const byRun = new Map<string, FactoryEvent[]>();
   const byIdempotencyKey = new Map<string, FactoryEvent>();
+  // Flattened+sorted readAll cache: invalidated on every (non-dedup) append,
+  // returned as a copy so callers can never mutate the cached array.
+  let readAllCache: FactoryEvent[] | null = null;
 
   return {
     append(input) {
@@ -151,6 +174,7 @@ export function createInMemoryEventStore(options: EventStoreOptions = {}): Event
       if (event.idempotencyKey !== undefined) {
         byIdempotencyKey.set(event.idempotencyKey, event);
       }
+      readAllCache = null;
       return Promise.resolve({ event, deduplicated: false });
     },
     readRun(runId) {
@@ -158,8 +182,8 @@ export function createInMemoryEventStore(options: EventStoreOptions = {}): Event
       return Promise.resolve([...list].sort(compareEventsBySequence));
     },
     readAll() {
-      const all = [...byRun.values()].flat();
-      return Promise.resolve(all.sort(compareEventsBySequence));
+      readAllCache ??= [...byRun.values()].flat().sort(compareEventsBySequence);
+      return Promise.resolve([...readAllCache]);
     },
     listRuns() {
       return Promise.resolve([...byRun.keys()]);
@@ -176,6 +200,14 @@ export function createFileSystemEventStore(options: FileSystemEventStoreOptions)
   const hydratedRuns = new Set<string>();
   const byIdempotencyKey = new Map<string, FactoryEvent>();
   let allHydrated = false;
+  // Files whose hydrated content ended in a torn (partial) line: the next
+  // append to such a file must start on a FRESH line so the new event is not
+  // concatenated onto the partial one (which would silently lose it on the
+  // next restart).
+  const tornTailFiles = new Set<string>();
+  // Flattened+sorted readAll cache: invalidated on every (non-dedup) append,
+  // returned as a copy so callers can never mutate the cached array.
+  let readAllCache: FactoryEvent[] | null = null;
   // Serialize all operations so sequence allocation and file appends never race.
   let chain: Promise<unknown> = Promise.resolve();
 
@@ -200,17 +232,23 @@ export function createFileSystemEventStore(options: FileSystemEventStoreOptions)
     try {
       raw = await readFile(path, 'utf8');
     } catch (error) {
-      if (isErrnoException(error) && error.code === 'ENOENT') {
+      // ENOTDIR: a path component is a file, so the run file cannot exist —
+      // the same "nothing persisted yet" case as ENOENT (the append path
+      // reports the underlying problem as a structured persistence error).
+      if (isErrnoException(error) && (error.code === 'ENOENT' || error.code === 'ENOTDIR')) {
         return [];
       }
       throw error;
     }
+    const lines = raw.split('\n');
     const events: FactoryEvent[] = [];
-    for (const line of raw.split('\n')) {
+    let lastNonEmptyParsed = true;
+    for (const line of lines) {
       const trimmed = line.trim();
       if (trimmed.length === 0) {
         continue;
       }
+      lastNonEmptyParsed = false;
       let parsed: unknown;
       try {
         parsed = JSON.parse(trimmed);
@@ -219,7 +257,21 @@ export function createFileSystemEventStore(options: FileSystemEventStoreOptions)
       }
       if (isFactoryEvent(parsed)) {
         events.push(parsed);
+        lastNonEmptyParsed = true;
       }
+    }
+    // Torn-tail recovery: a crash mid-write leaves a partial (non-newline-
+    // terminated or unparseable) last line. Surface the diagnostic and make
+    // sure the NEXT append starts on a fresh line — otherwise the new event
+    // would concatenate onto the partial line and be silently lost (with a
+    // reallocated sequence) on the following restart.
+    const endsWithNewline = raw.length === 0 || raw.endsWith('\n');
+    if (!endsWithNewline || !lastNonEmptyParsed) {
+      tornTailFiles.add(path);
+      console.warn(
+        `[software-factory] event ledger ${path} has a corrupt tail (crash mid-write?); ` +
+          'the partial line was skipped and the next append will start on a fresh line.',
+      );
     }
     return events;
   }
@@ -251,7 +303,7 @@ export function createFileSystemEventStore(options: FileSystemEventStoreOptions)
     try {
       entries = await readdir(baseDir);
     } catch (error) {
-      if (isErrnoException(error) && error.code === 'ENOENT') {
+      if (isErrnoException(error) && (error.code === 'ENOENT' || error.code === 'ENOTDIR')) {
         allHydrated = true;
         return;
       }
@@ -291,15 +343,38 @@ export function createFileSystemEventStore(options: FileSystemEventStoreOptions)
             return { event: existing, deduplicated: true };
           }
         }
+        const sequenceBefore = allocator.peek(input.runId);
         const event = buildEnvelope(input, allocator.next(input.runId), clock, idGenerator);
-        await mkdir(baseDir, { recursive: true });
-        await appendFile(runFile(event.runId), `${JSON.stringify(event)}\n`, 'utf8');
+        const path = runFile(event.runId);
+        try {
+          await mkdir(baseDir, { recursive: true });
+          // Torn-tail recovery: start on a fresh line when hydration found a
+          // partial last line, so the new event is never concatenated onto it.
+          const prefix = tornTailFiles.has(path) ? '\n' : '';
+          await appendFile(path, `${prefix}${JSON.stringify(event)}\n`, 'utf8');
+          tornTailFiles.delete(path);
+        } catch (error) {
+          // Persistence failed (EBUSY/ENOSPC/…): nothing was recorded, so roll
+          // the sequence allocator back to its pre-append high-water mark (the
+          // enqueue chain serializes appends, so no concurrent allocation can
+          // interleave) and rethrow a STRUCTURED error carrying errno + path.
+          allocator.reset(event.runId);
+          allocator.observe(event.runId, sequenceBefore);
+          const code = isErrnoException(error) ? error.code : undefined;
+          const message = error instanceof Error ? error.message : String(error);
+          throw new EventStorePersistenceError(
+            `Failed to persist event ${event.type} for run ${event.runId} to ${path}` +
+              `${code !== undefined ? ` (${code})` : ''}: ${message}`,
+            { code, path },
+          );
+        }
         const list = cache.get(event.runId) ?? [];
         list.push(event);
         cache.set(event.runId, list);
         if (event.idempotencyKey !== undefined) {
           byIdempotencyKey.set(event.idempotencyKey, event);
         }
+        readAllCache = null;
         return { event, deduplicated: false };
       });
     },
@@ -312,7 +387,8 @@ export function createFileSystemEventStore(options: FileSystemEventStoreOptions)
     readAll() {
       return enqueue(async () => {
         await hydrateAll();
-        return [...cache.values()].flat().sort(compareEventsBySequence);
+        readAllCache ??= [...cache.values()].flat().sort(compareEventsBySequence);
+        return [...readAllCache];
       });
     },
     listRuns() {

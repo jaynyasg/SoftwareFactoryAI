@@ -11,10 +11,16 @@
  */
 import { describe, expect, it } from 'vitest';
 import { createInMemoryEventStore, projectRun } from '@software-factory/core';
-import type { EventStore } from '@software-factory/core';
+import type { AppendableEvent, EventStore } from '@software-factory/core';
 import { createExecutionDaemon } from '../../src/server/execution/daemon';
 import type { TicketExecutionResult } from '../../src/server/execution/daemon';
-import { claimJob, executionJobId, projectExecutionQueue } from '../../src/server/execution/queue';
+import {
+  claimJob,
+  enqueueJob,
+  executionJobId,
+  projectExecutionQueue,
+  releaseJob,
+} from '../../src/server/execution/queue';
 import { projectInterventions } from '../../src/server/execution/interventions';
 
 const T0 = 1_700_000_000_000;
@@ -351,5 +357,361 @@ describe('database-ready semantics (U11)', () => {
     expect(reconciled.abandoned).toBe(1);
     const events = await store.readRun('run-fresh');
     expect(projectExecutionQueue(events, 'run-fresh').jobs[0].status).toBe('abandoned');
+  });
+});
+
+/* ----------------------------------------------------------------------------
+ * Fault tolerance: yield-crash recovery, append failures, cancel/claim races,
+ * and shutdown re-entrancy (review-fix batch).
+ * ------------------------------------------------------------------------- */
+
+/** Wrap a store so ONE matching append fails (crash/disk-fault injection). */
+function failingOnceStore(
+  store: EventStore,
+  shouldFail: (event: AppendableEvent) => boolean,
+): EventStore {
+  let failed = false;
+  return {
+    append(event) {
+      if (!failed && shouldFail(event)) {
+        failed = true;
+        return Promise.reject(new Error('injected append failure'));
+      }
+      return store.append(event);
+    },
+    readRun: (runId) => store.readRun(runId),
+    readAll: () => store.readAll(),
+    listRuns: () => store.listRuns(),
+  };
+}
+
+describe('yield-crash recovery (requeue must never wedge)', () => {
+  it('recovers a legacy ledger that ends at released(requeued) without the follow-up enqueued', async () => {
+    const store = createInMemoryEventStore();
+    await seedRun(store, 'run-wedge');
+    // The exact appends a pre-fix daemon wrote before crashing: enqueue,
+    // claim (burning the attempt-1 claim key), release(requeued) — and then
+    // the crash, BEFORE the follow-up enqueued(attempt 2).
+    await enqueueJob(store, {
+      runId: 'run-wedge',
+      jobId: executionJobId('run-wedge'),
+      jobKind: 'run-execution',
+      attempt: 1,
+    });
+    const queued = projectExecutionQueue(await store.readAll(), 'run-wedge').jobs[0];
+    await claimJob(store, queued, {
+      leaseId: 'lease-old',
+      ownerId: 'daemon-old',
+      leaseExpiresAt: T0 + LEASE_MS,
+    });
+    const leased = projectExecutionQueue(await store.readAll(), 'run-wedge').jobs[0];
+    await releaseJob(store, leased, 'requeued', 'safe yield before crash');
+
+    // The job projects `queued` at attempt 1 — whose claim key is burnt.
+    expect(projectExecutionQueue(await store.readAll(), 'run-wedge').jobs[0]).toMatchObject({
+      status: 'queued',
+      attempt: 1,
+    });
+
+    let executed = 0;
+    const daemon = createExecutionDaemon({
+      store,
+      ownerId: 'daemon-fresh',
+      clock: () => T0 + 1000,
+      timers: noopTimers(),
+      executor: (): Promise<TicketExecutionResult> => {
+        executed += 1;
+        return Promise.resolve({ status: 'completed', summary: 'recovered' });
+      },
+    });
+
+    // Pass 1 detects the burnt claim + queued projection and re-enqueues the
+    // next attempt idempotently instead of silently returning.
+    const first = await daemon.tick();
+    expect(first.requeued).toBe(1);
+    expect(executed).toBe(0);
+    expect(projectExecutionQueue(await store.readAll(), 'run-wedge').jobs[0]).toMatchObject({
+      status: 'queued',
+      attempt: 2,
+    });
+
+    // Pass 2 claims the fresh attempt and runs it: the job is NOT wedged.
+    const second = await daemon.tick();
+    expect(second.claimed).toBe(1);
+    expect(executed).toBe(1);
+    expect(projectExecutionQueue(await store.readAll(), 'run-wedge').jobs[0].status).toBe(
+      'completed',
+    );
+  });
+
+  it('a crash between the yield appends leaves a ledger a fresh daemon recovers (fault injection)', async () => {
+    const store = createInMemoryEventStore();
+    await seedRun(store, 'run-yield-crash');
+    await seedQueuedJob(store, 'run-yield-crash');
+
+    // The wrapped store dies exactly on the released(requeued) append — with
+    // the fixed ordering that is the SECOND yield write, after the
+    // next-attempt enqueued already landed.
+    const crashing = failingOnceStore(
+      store,
+      (event) =>
+        event.type === 'queue.released' &&
+        (event.payload as { outcome?: string }).outcome === 'requeued',
+    );
+    const daemonA = createExecutionDaemon({
+      store: crashing,
+      ownerId: 'daemon-a',
+      clock: () => T0,
+      timers: noopTimers(),
+      executor: (): Promise<TicketExecutionResult> =>
+        Promise.resolve({ status: 'yielded', reason: 'graceful shutdown' }),
+    });
+    await expect(daemonA.tick()).rejects.toThrow(/injected append failure/);
+
+    // The next attempt is already enqueued, so the job is queued at attempt 2.
+    const afterCrash = projectExecutionQueue(await store.readAll(), 'run-yield-crash').jobs[0];
+    expect(afterCrash.status).toBe('queued');
+    expect(afterCrash.attempt).toBe(2);
+
+    let executed = 0;
+    const daemonB = createExecutionDaemon({
+      store,
+      ownerId: 'daemon-b',
+      clock: () => T0 + 1000,
+      timers: noopTimers(),
+      executor: (): Promise<TicketExecutionResult> => {
+        executed += 1;
+        return Promise.resolve({ status: 'completed', summary: 'resumed after crash' });
+      },
+    });
+    const tick = await daemonB.tick();
+    expect(tick.claimed).toBe(1);
+    expect(executed).toBe(1);
+
+    const events = await store.readRun('run-yield-crash');
+    expect(events.some((e) => e.type === 'queue.lease_abandoned')).toBe(false);
+    const final = projectExecutionQueue(events, 'run-yield-crash').jobs[0];
+    expect(final.status).toBe('completed');
+    expect(final.attempt).toBe(2);
+  });
+});
+
+describe('append failure after a claim (clean lease release)', () => {
+  it('releases the lease cleanly when a ledger write fails mid-attempt', async () => {
+    const store = createInMemoryEventStore();
+    await seedRun(store, 'run-disk-fault');
+    await seedQueuedJob(store, 'run-disk-fault');
+
+    let executed = 0;
+    const crashing = failingOnceStore(store, (event) => event.type === 'run.started');
+    const daemon = createExecutionDaemon({
+      store: crashing,
+      ownerId: 'daemon-a',
+      clock: () => T0,
+      timers: noopTimers(),
+      executor: (): Promise<TicketExecutionResult> => {
+        executed += 1;
+        return Promise.resolve({ status: 'completed' });
+      },
+    });
+
+    await expect(daemon.tick()).rejects.toThrow(/injected append failure/);
+    expect(executed).toBe(0);
+
+    // No phantom lease: the claim was released as failed instead of sitting
+    // leased until expiry (which would later raise a spurious abandonment).
+    const events = await store.readRun('run-disk-fault');
+    const job = projectExecutionQueue(events, 'run-disk-fault').jobs[0];
+    expect(job.status).toBe('failed');
+    expect(job.leaseId).toBeUndefined();
+    expect(events.some((e) => e.type === 'queue.lease_abandoned')).toBe(false);
+
+    // A follow-up pass abandons nothing and raises no intervention.
+    const tick = await daemon.tick();
+    expect(tick.abandoned).toBe(0);
+    expect(projectInterventions(await store.readRun('run-disk-fault')).open).toHaveLength(0);
+  });
+});
+
+describe('cancelRun racing a drain-tick claim', () => {
+  it('a post-claim cancelled release lands even after a lease-less cancelled release (fold)', async () => {
+    const store = createInMemoryEventStore();
+    await seedRun(store, 'run-race');
+    await seedQueuedJob(store, 'run-race');
+    const queuedView = projectExecutionQueue(await store.readAll(), 'run-race').jobs[0];
+
+    // Interleaving under the OLD key scheme: cancelRun released the QUEUED
+    // (lease-less) job as cancelled, then the racing tick's claim landed —
+    // leaving the job leased with the (jobId, attempt, cancelled) idempotency
+    // scope burnt, so the executor's own cancelled release deduplicated away
+    // and the job stayed leased forever.
+    await releaseJob(store, queuedView, 'cancelled', 'Run was cancelled.');
+    await claimJob(store, queuedView, {
+      leaseId: 'lease-tick',
+      ownerId: 'daemon-a',
+      leaseExpiresAt: T0 + LEASE_MS,
+    });
+    expect(projectExecutionQueue(await store.readAll(), 'run-race').jobs[0].status).toBe('leased');
+
+    // The post-claim release is scoped by leaseId, so it is NOT deduplicated.
+    const leasedView = projectExecutionQueue(await store.readAll(), 'run-race').jobs[0];
+    const release = await releaseJob(store, leasedView, 'cancelled', 'cancelled during execution');
+    expect(release.deduplicated).toBe(false);
+    expect(projectExecutionQueue(await store.readAll(), 'run-race').jobs[0].status).toBe(
+      'cancelled',
+    );
+  });
+
+  it('cancelRun during an in-flight claim converges to cancelled without abandonment', async () => {
+    const store = createInMemoryEventStore();
+    await seedRun(store, 'run-cancel-live');
+    await seedQueuedJob(store, 'run-cancel-live');
+
+    let startedResolve: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      startedResolve = resolve;
+    });
+    const daemon = createExecutionDaemon({
+      store,
+      ownerId: 'daemon-a',
+      clock: () => T0,
+      timers: noopTimers(),
+      executor: (ctx): Promise<TicketExecutionResult> =>
+        new Promise((resolve) => {
+          startedResolve?.();
+          ctx.signal.addEventListener('abort', () =>
+            resolve({ status: 'yielded', reason: 'aborted by cancel' }),
+          );
+        }),
+    });
+
+    const tickPromise = daemon.tick(); // claims and blocks inside the executor
+    await started;
+    // The cancel route appends run.cancelled BEFORE propagating to the daemon.
+    await store.append({
+      runId: 'run-cancel-live',
+      type: 'run.cancelled',
+      actor: { kind: 'operator', id: 'operator' },
+      subject: { kind: 'run', id: 'run-cancel-live' },
+      severity: 'warn',
+      payload: { reason: 'operator stop' },
+    });
+    await daemon.cancelRun('run-cancel-live');
+    await tickPromise;
+
+    const events = await store.readRun('run-cancel-live');
+    const job = projectExecutionQueue(events, 'run-cancel-live').jobs[0];
+    expect(job.status).toBe('cancelled');
+
+    // A later pass (same or fresh owner) abandons nothing and raises nothing.
+    const later = createExecutionDaemon({
+      store,
+      ownerId: 'daemon-later',
+      clock: () => T0 + 10 * LEASE_MS,
+      timers: noopTimers(),
+    });
+    const tick = await later.tick();
+    expect(tick.abandoned).toBe(0);
+    expect(tick.claimed).toBe(0);
+    const after = await store.readRun('run-cancel-live');
+    expect(after.some((e) => e.type === 'queue.lease_abandoned')).toBe(false);
+    expect(projectInterventions(after).open).toHaveLength(0);
+  });
+});
+
+describe('shutdown re-entrancy and interval tick stacking', () => {
+  it('double stop() joins the in-flight shutdown and resolves once cleanly', async () => {
+    const store = createInMemoryEventStore();
+    await seedRun(store, 'run-double-stop');
+    await seedQueuedJob(store, 'run-double-stop');
+
+    let aborts = 0;
+    let startedResolve: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      startedResolve = resolve;
+    });
+    const daemon = createExecutionDaemon({
+      store,
+      ownerId: 'daemon-a',
+      clock: () => T0,
+      timers: noopTimers(),
+      executor: (ctx): Promise<TicketExecutionResult> =>
+        new Promise((resolve) => {
+          startedResolve?.();
+          ctx.signal.addEventListener('abort', () => {
+            aborts += 1;
+            resolve({ status: 'yielded', reason: 'shutdown' });
+          });
+        }),
+    });
+
+    const tickPromise = daemon.tick();
+    await started;
+    const first = daemon.stop();
+    const second = daemon.stop();
+    // Re-entry returns the SAME in-flight promise instead of re-stopping.
+    expect(second).toBe(first);
+    await first;
+    await second;
+    await tickPromise;
+    expect(daemon.running).toBe(false);
+    expect(aborts).toBe(1);
+  });
+
+  it('interval ticks are skipped while one is already pending (skip-not-stack)', async () => {
+    const raw = createInMemoryEventStore();
+    await seedRun(raw, 'run-interval');
+    await seedQueuedJob(raw, 'run-interval');
+    let readAllCalls = 0;
+    const store: EventStore = {
+      append: (event) => raw.append(event),
+      readRun: (runId) => raw.readRun(runId),
+      readAll: () => {
+        readAllCalls += 1;
+        return raw.readAll();
+      },
+      listRuns: () => raw.listRuns(),
+    };
+
+    let intervalCallback: (() => void) | undefined;
+    let releaseExecutor: (() => void) | undefined;
+    const released = new Promise<void>((resolve) => {
+      releaseExecutor = resolve;
+    });
+    let executorStarted: (() => void) | undefined;
+    const executorRunning = new Promise<void>((resolve) => {
+      executorStarted = resolve;
+    });
+    const daemon = createExecutionDaemon({
+      store,
+      ownerId: 'daemon-a',
+      clock: () => T0,
+      timers: {
+        setInterval: (callback: () => void) => {
+          intervalCallback = callback;
+          return 1;
+        },
+        clearInterval: () => undefined,
+      },
+      executor: async (): Promise<TicketExecutionResult> => {
+        executorStarted?.();
+        await released;
+        return { status: 'completed', summary: 'released' };
+      },
+    });
+
+    const startPromise = daemon.start(); // initial pass blocks in the executor
+    await executorRunning;
+    expect(readAllCalls).toBe(1);
+
+    // Two interval fires while the pass is still running: the first enqueues
+    // ONE follow-up pass, the second is skipped instead of stacking a third.
+    intervalCallback?.();
+    intervalCallback?.();
+
+    releaseExecutor?.();
+    await startPromise;
+    await daemon.stop(); // waits for the queued follow-up pass to settle
+    expect(readAllCalls).toBe(2);
   });
 });

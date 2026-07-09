@@ -155,11 +155,19 @@ async function main(): Promise<void> {
     `[software-factory] standalone API listening on ${started.server.url} (.factory: ${started.factoryDir})\n`,
   );
 
+  // Signal handlers are registered ONCE per signal and the shutdown itself is
+  // guarded, so a double signal (or SIGINT followed by SIGTERM) never runs a
+  // second close over a shutdown already in flight.
+  let shuttingDown = false;
   const shutdown = (): void => {
+    if (shuttingDown) {
+      return;
+    }
+    shuttingDown = true;
     void started.close().finally(() => process.exit(0));
   };
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+  process.once('SIGINT', shutdown);
+  process.once('SIGTERM', shutdown);
 }
 
 // Run only when executed directly (tsx/node), not when imported by a test.

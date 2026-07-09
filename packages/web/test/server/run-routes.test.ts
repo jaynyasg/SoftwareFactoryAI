@@ -554,6 +554,86 @@ describe('POST /api/runs — run modes (full-factory U3)', () => {
     ).toHaveLength(1);
   });
 
+  it('a dedup re-create racing an IN-FLIGHT research pass returns honestly without planning', async () => {
+    // A researcher that records `research.requested` and then BLOCKS until the
+    // test releases it — the shape of a concurrent create still mid-research.
+    let releaseResearch: (() => void) | undefined;
+    const researchGate = new Promise<void>((resolve) => {
+      releaseResearch = resolve;
+    });
+    let requestedRecorded: (() => void) | undefined;
+    const requested = new Promise<void>((resolve) => {
+      requestedRecorded = resolve;
+    });
+    const blockingResearcher: RunResearcher = async (store, runId) => {
+      await store.append({
+        runId,
+        actor: { kind: 'researcher', id: 'stub' },
+        subject: { kind: 'research', id: runId },
+        severity: 'info',
+        type: 'research.requested',
+        payload: { objective: 'slow objective' },
+      });
+      requestedRecorded?.();
+      await researchGate;
+      await store.append({
+        runId,
+        actor: { kind: 'researcher', id: 'stub' },
+        subject: { kind: 'research', id: runId },
+        severity: 'info',
+        type: 'research.brief_completed',
+        payload: { summary: 'Slow research brief.' },
+      });
+      return {
+        status: 'completed' as const,
+        briefSummary: 'Slow research brief.',
+        sourcesFound: 0,
+        sourcesRead: 0,
+        findingCount: 0,
+        assumptionCount: 0,
+        gapCount: 0,
+        seededKnowledgeCount: 0,
+        recordedKnowledgeEntryIds: [],
+        budgetStops: [],
+      };
+    };
+
+    const { app, store } = makeAppWith(undefined, blockingResearcher);
+    const body = {
+      prompt: MARKETPLACE_PROMPT,
+      mode: 'research-and-plan',
+      idempotencyKey: 'k-inflight-1',
+    };
+
+    // First create: starts research and blocks inside it.
+    const firstPromise = app.handle(req('POST', '/api/runs', authedHeaders(), body));
+    await requested;
+
+    // Duplicate create while research is requested-but-not-terminal: it must
+    // NOT plan from the partial brief — no supervisor/ticket events.
+    const second = await app.handle(req('POST', '/api/runs', authedHeaders(), body));
+    expect(second.status).toBe(200);
+    expect(record(second).deduplicated).toBe(true);
+    expect(record(second).researchInProgress).toBe(true);
+    expect((record(second).research as ResearchProjection).status).toBe('requested');
+    const midEvents = await store.readRun('run-1');
+    const midTypes = midEvents.map((e) => e.type);
+    expect(midTypes).not.toContain('supervisor.decision');
+    expect(midTypes).not.toContain('ticket.created');
+    expect(midTypes).not.toContain('run.planned');
+    expect(midTypes).not.toContain('contract.generated');
+
+    // The ORIGINAL in-flight flow completes planning once research finishes.
+    releaseResearch?.();
+    const first = await firstPromise;
+    expect(first.status).toBe(201);
+    const events = await store.readRun('run-1');
+    const count = (type: string): number => events.filter((e) => e.type === type).length;
+    expect(count('research.requested')).toBe(1);
+    expect(count('run.planned')).toBe(1);
+    expect(count('ticket.created')).toBe(12);
+  });
+
   it('research failure leaves the run failed and explainable — no plan, no silent success', async () => {
     const { app, store } = makeAppWith(undefined, explodingResearcher());
     const res = await app.handle(

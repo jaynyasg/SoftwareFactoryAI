@@ -201,9 +201,31 @@ export function projectExecutionQueue(
   return { jobs, byJobId };
 }
 
-/** Whether a job is active: queued, leased, or abandoned-awaiting-resolution. */
+/** Whether a job is active: queued or leased (abandoned jobs await operator resolution and are NOT active). */
 export function isActiveJobStatus(status: QueueJobStatus): boolean {
   return status === 'queued' || status === 'leased';
+}
+
+/**
+ * Ledger-derived FAILURE evidence for one job: the number of `queue.released`
+ * events with a failed/blocked outcome. Retry budgets are derived from this —
+ * never from the raw attempt number — so safe yields (pause, graceful
+ * shutdown), which requeue with `attempt + 1`, never consume the operator's
+ * retry budget.
+ */
+export function countJobFailures(raw: readonly unknown[], jobId: string): number {
+  const { events } = validateAndSortEvents(raw);
+  let failures = 0;
+  for (const event of events) {
+    if (
+      event.type === 'queue.released' &&
+      event.payload.jobId === jobId &&
+      (event.payload.outcome === 'failed' || event.payload.outcome === 'blocked')
+    ) {
+      failures += 1;
+    }
+  }
+  return failures;
 }
 
 const QUEUE_ACTOR = { kind: 'system', id: 'execution-daemon' } as const;
@@ -293,7 +315,14 @@ export function heartbeatJob(
   });
 }
 
-/** Append `queue.released`, idempotent per (jobId, attempt). */
+/**
+ * Append `queue.released`, idempotent per (jobId, attempt, outcome, leaseId).
+ * The leaseId scope guarantees a POST-claim release can always land even when
+ * an earlier lease-less release (e.g. a cancelRun racing a drain-tick claim)
+ * already used the same (jobId, attempt, outcome) — otherwise the claimed job
+ * would stay leased forever and later be abandoned with a spurious retry
+ * intervention.
+ */
 export function releaseJob(
   store: EventStore,
   job: QueueJobView,
@@ -306,7 +335,7 @@ export function releaseJob(
     actor: QUEUE_ACTOR,
     subject: subjectFor(job.jobId),
     severity: outcome === 'failed' ? 'error' : outcome === 'completed' ? 'success' : 'info',
-    idempotencyKey: `${job.jobId}:released:${job.attempt}:${outcome}`,
+    idempotencyKey: `${job.jobId}:released:${job.attempt}:${outcome}:${job.leaseId ?? 'no-lease'}`,
     payload: {
       jobId: job.jobId,
       jobKind: job.jobKind,

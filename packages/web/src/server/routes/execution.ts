@@ -28,6 +28,7 @@ import type { ApiResponse, RouteContext, RouteDef } from '../app';
 import { asRecord, num, str } from './parse';
 import { guardRunCommand, notFound, refreshBuildContract } from './shared';
 import {
+  countJobFailures,
   enqueueJob,
   executionJobId,
   gateRerunJobId,
@@ -119,8 +120,17 @@ export async function requestExecutionStart(
   }
 
   const attempt = (job?.attempt ?? 0) + 1;
-  if (attempt > daemon.config.maxAttempts) {
-    return { kind: 'retry_budget_exhausted', attempt, max: daemon.config.maxAttempts };
+  // The retry budget is ledger-derived FAILURE evidence (queue.released with a
+  // failed/blocked outcome), never the raw attempt number: safe yields (pause,
+  // graceful shutdown) requeue with attempt+1 and must not consume the
+  // operator's retry budget.
+  const failures = countJobFailures(events, executionJobId(runId));
+  if (failures >= daemon.config.maxAttempts) {
+    return {
+      kind: 'retry_budget_exhausted',
+      attempt: failures + 1,
+      max: daemon.config.maxAttempts,
+    };
   }
 
   // Build contract before execution (X3): derive from current projections and
@@ -146,12 +156,15 @@ export async function requestExecutionStart(
     ticketId: options.ticketId,
   });
 
+  // One post-enqueue read serves both the retry-resolution scan and the
+  // response projection (perf: no second readRun for the same state).
+  const finalEvents = await ctx.reader.readRun(runId);
+
   if (options.command === 'retry') {
     // A retry IS the operator's retry decision: resolve open retry_choice
     // interventions for this run's execution stage instead of leaving stale
     // entries in the queue.
-    const all = await ctx.reader.readRun(runId);
-    const open = filterInterventions(projectInterventions(all), {
+    const open = filterInterventions(projectInterventions(finalEvents), {
       runId,
       kind: 'retry_choice',
       blockingStage: 'execution',
@@ -167,7 +180,6 @@ export async function requestExecutionStart(
 
   daemon.notify();
 
-  const finalEvents = await ctx.reader.readRun(runId);
   const finalJob = projectExecutionQueue(finalEvents, runId).byJobId[executionJobId(runId)];
   return { kind: 'queued', job: finalJob, preflight };
 }
@@ -515,7 +527,9 @@ async function resolveInterventionRoute(ctx: RouteContext): Promise<ApiResponse>
     };
   }
   await resolveIntervention(ctx.store, target, { resolution, note: str(body.note) });
-  const updated = projectInterventions(await ctx.reader.readAll()).byId[interventionId];
+  // Intervention events live on the target run's ledger, so the post-write
+  // read only needs that run (perf: no second cross-run readAll).
+  const updated = projectInterventions(await ctx.reader.readRun(target.runId)).byId[interventionId];
   return { status: 200, body: { alreadyResolved: false, intervention: updated } };
 }
 

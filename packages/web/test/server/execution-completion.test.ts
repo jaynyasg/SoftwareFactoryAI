@@ -477,6 +477,47 @@ describe('U8: hosted health failure + retry without duplicate packaging', () => 
     expect((hostedReady[0].payload as { url: string }).url).toBe('https://app.onrender.com');
   });
 
+  it('a recurring deploy failure after a resolved intervention opens a NEW intervention', async () => {
+    const counting = countingPackager();
+    // Health fails on BOTH attempts: the operator resolves the first entry,
+    // retries, and the second failure must become visible again.
+    const { app, store, daemon } = makeHarness({
+      deployConfig: CONFIGURED_DEPLOY,
+      packager: counting.packager,
+      deployer: scriptedDeployer([false, false]),
+    });
+    const runId = await createAndStart(app);
+
+    await daemon.tick();
+    let open = projectInterventions(await events(store, runId)).open.filter(
+      (item) => item.blockingStage === 'deploy',
+    );
+    expect(open).toHaveLength(1);
+    const firstId = open[0].interventionId;
+
+    // Operator resolves the first entry (e.g. after investigating), then
+    // retries the deploy — which fails AGAIN.
+    const resolved = await app.handle(
+      req(
+        'POST',
+        `/api/interventions/${encodeURIComponent(firstId)}/resolve`,
+        authedHeaders(),
+        { resolution: 'investigated', note: 'suspected flaky health check' },
+      ),
+    );
+    expect(resolved.status).toBe(200);
+    await app.handle(req('POST', `/api/runs/${runId}/retry`, authedHeaders(), {}));
+    await daemon.tick();
+
+    // The second failure raised a NEW open intervention (attempt-scoped id):
+    // recurring deploy failures never become invisible behind a resolved id.
+    const all = projectInterventions(await events(store, runId));
+    open = all.open.filter((item) => item.blockingStage === 'deploy');
+    expect(open).toHaveLength(1);
+    expect(open[0].interventionId).not.toBe(firstId);
+    expect(all.byId[firstId]?.status).toBe('resolved');
+  });
+
   it('a restarted daemon (new owner) resumes the deploy retry without duplicate packaging', async () => {
     const counting = countingPackager();
     const { app, store, daemon, makeDaemon } = makeHarness({

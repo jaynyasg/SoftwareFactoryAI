@@ -189,7 +189,11 @@ interface Harness {
   makeDaemon(ownerId: string, adapter: ExecutionAdapter): ExecutionDaemon;
 }
 
-function makeHarness(adapter: ExecutionAdapter, gateStages: ExecutorGateStages): Harness {
+function makeHarness(
+  adapter: ExecutionAdapter,
+  gateStages: ExecutorGateStages,
+  options: { readonly maxAttempts?: number } = {},
+): Harness {
   const det = deterministic();
   const store = createInMemoryEventStore(det);
   const provider = createOperatorTokenProvider({
@@ -205,6 +209,7 @@ function makeHarness(adapter: ExecutionAdapter, gateStages: ExecutorGateStages):
       idGenerator: () => `lease-${(leaseSeq += 1)}`,
       ownerId,
       timers: noopTimers(),
+      config: options.maxAttempts !== undefined ? { maxAttempts: options.maxAttempts } : undefined,
       executor: createSchedulerTicketExecutor({
         adapters: createAdapterCatalog([ownAdapter]),
         freshWorkspaceRoot: FRESH_ROOT,
@@ -361,6 +366,12 @@ describe('U7: gate-rerun jobs execute real gate runs', () => {
     for (const [ticketId, count] of executions) {
       expect(count, `ticket ${ticketId}`).toBe(1);
     }
+    // The successful re-run resolved the gates-stage interventions: the
+    // operator queue carries no stale "gates blocked" entries for a run whose
+    // gates now pass.
+    expect(
+      projectInterventions(events).open.filter((item) => item.blockingStage === 'gates'),
+    ).toHaveLength(0);
   });
 });
 
@@ -412,6 +423,123 @@ describe('U7: review approval resumes the blocked stage', () => {
     const final = projectRun(await store.readRun(runId), runId);
     expect(final.status).toBe('completed');
     expect(final.executionState).toBe('completed');
+  });
+
+  it('a refused re-enqueue (budget exhausted) leaves the blocking interventions OPEN', async () => {
+    const unitTest = controllableGate('unit-test', false); // never passes
+    const { app, store, daemon } = makeHarness(
+      immediateAdapter(),
+      fakeGateStages({ postRun: [unitTest.gate] }),
+      { maxAttempts: 1 },
+    );
+    const runId = await createPlannedRun(app);
+    await startRun(app, runId);
+    await daemon.tick(); // blocked on gates (failure evidence 1 on the run job)
+
+    // Burn the gate-rerun budget: one re-run that blocks again.
+    const rerun = await app.handle(
+      req('POST', `/api/runs/${runId}/gates/rerun`, authedHeaders(), {}),
+    );
+    expect(rerun.status).toBe(202);
+    await daemon.tick(); // gate-rerun blocks -> failure evidence 1 on the rerun job
+
+    const openBefore = projectInterventions(await store.readRun(runId)).open.filter(
+      (item) => item.blockingStage === 'gates',
+    );
+    expect(openBefore.length).toBeGreaterThan(0);
+
+    // Approving the stage review now cannot re-enqueue (budget exhausted):
+    // the approval must NOT resolve the interventions, or the run would sit
+    // blocked with an EMPTY intervention queue and no recorded way forward.
+    const res = await app.handle(
+      req('POST', `/api/runs/${runId}/review`, authedHeaders(), {
+        decision: 'approved',
+        rationale: 'attempting to resume past the budget',
+      }),
+    );
+    expect(res.status).toBe(200);
+    const resumed = record(res).resumed as {
+      queued: boolean;
+      resolvedInterventions: string[];
+      note?: string;
+    };
+    expect(resumed.queued).toBe(false);
+    expect(resumed.resolvedInterventions).toEqual([]);
+    expect(resumed.note).toMatch(/retry budget/i);
+
+    const openAfter = projectInterventions(await store.readRun(runId)).open.filter(
+      (item) => item.blockingStage === 'gates',
+    );
+    expect(openAfter.length).toBe(openBefore.length);
+    // Nothing was re-enqueued.
+    const rerunJob = projectExecutionQueue(await store.readRun(runId), runId).byJobId[
+      gateRerunJobId(runId)
+    ];
+    expect(rerunJob?.status).toBe('blocked');
+  });
+});
+
+/* ----------------------------------------------------------------------------
+ * Cancellation racing the post-run stage: cancelled is terminal
+ * ------------------------------------------------------------------------- */
+
+describe('cancellation during the post-run gate stage', () => {
+  it('yields instead of emitting run.completed when a cancel lands mid-stage', async () => {
+    let cancelPromise: Promise<ApiResponse> | undefined;
+    // The gate needs the app it is created BEFORE — a mutable ref bridges the
+    // construction order.
+    const ref: { app?: App; runId?: string } = {};
+    // A gate that fires the operator cancel while the post-run stage runs,
+    // waits for the abort to land, then PASSES: the executor must yield
+    // before run.completed instead of completing a cancelled run.
+    const cancelDuringStage: Gate = {
+      name: 'cancel-racer',
+      run: (context) =>
+        new Promise<GateResult>((resolve) => {
+          const finish = (): void =>
+            resolve({
+              gate: 'cancel-racer',
+              passed: true,
+              summary: 'passed while the cancel landed',
+              evidence: [],
+            });
+          // Do NOT await the route here: its cancel propagation waits for the
+          // daemon pass this gate is running inside (awaiting would deadlock).
+          cancelPromise = ref.app?.handle(
+            req('POST', `/api/runs/${ref.runId ?? ''}/cancel`, authedHeaders(), {
+              reason: 'operator stop mid-stage',
+            }),
+          );
+          if (context.signal?.aborted === true) {
+            finish();
+            return;
+          }
+          context.signal?.addEventListener('abort', finish, { once: true });
+        }),
+    };
+    const harness = makeHarness(
+      immediateAdapter(),
+      fakeGateStages({ postRun: [cancelDuringStage] }),
+    );
+    const { app, store, daemon } = harness;
+    ref.app = app;
+    const cancelRunId = await createPlannedRun(app);
+    ref.runId = cancelRunId;
+    await startRun(app, cancelRunId);
+
+    await daemon.tick();
+    await cancelPromise;
+
+    const events = await store.readRun(cancelRunId);
+    const seen = events.map((event) => event.type);
+    // The stage PASSED, but the cancel wins: no run.completed was recorded.
+    expect(seen).toContain('gate.passed');
+    expect(seen).not.toContain('run.completed');
+    const run = projectRun(events, cancelRunId);
+    expect(run.status).toBe('cancelled');
+    expect(run.executionState).toBe('cancelled');
+    const job = projectExecutionQueue(events, cancelRunId).byJobId[executionJobId(cancelRunId)];
+    expect(job?.status).toBe('cancelled');
   });
 });
 

@@ -37,6 +37,13 @@ import { deployToRender } from './render-deployer';
 import type { DeployOutcome, DeployPreconditions, RenderTarget } from './render-deployer';
 import type { RenderClient } from './render-client';
 
+/** One folded review request and how (whether) it was satisfied. */
+interface FoldedReview {
+  /** The blocked stage the request carried (`gates`/`execution`), when any. */
+  stage?: string;
+  status: 'pending' | 'approved' | 'rejected' | 'stage_resolved';
+}
+
 /** Fold the run's ledger events into the deploy preconditions. Pure. */
 export function deriveDeployPreconditions(events: readonly FactoryEvent[]): DeployPreconditions {
   let sawPostRunGate = false;
@@ -44,7 +51,17 @@ export function deriveDeployPreconditions(events: readonly FactoryEvent[]): Depl
   let previewHealthy = false;
   let packagePresent = false;
   let provenancePresent = false;
-  let pendingReviews = 0;
+  // Reviews are paired FIFO (`review.decided` closes the oldest pending
+  // request — the same fold the operator UI uses) instead of a raw counter:
+  //  - only an APPROVED decision satisfies its request (a rejection closes it
+  //    UNSATISFIED, so a rejected review never green-lights the deploy), and
+  //  - an operator who fixes-and-retries instead of approving satisfies the
+  //    stage review through the recorded retry: resolving a gates/execution
+  //    stage intervention marks that stage's oldest unsatisfied review as
+  //    satisfied, so the deploy precondition cannot deadlock on a review
+  //    nobody will ever approve.
+  const reviews: FoldedReview[] = [];
+  const interventionStages = new Map<string, string>();
 
   for (const event of events) {
     switch (event.type) {
@@ -71,11 +88,31 @@ export function deriveDeployPreconditions(events: readonly FactoryEvent[]): Depl
           event.evidence?.some((item) => item.label === 'provenance') === true;
         break;
       case 'review.requested':
-        pendingReviews += 1;
+        reviews.push({ stage: event.payload.stage, status: 'pending' });
         break;
-      case 'review.decided':
-        pendingReviews = Math.max(0, pendingReviews - 1);
+      case 'review.decided': {
+        const pending = reviews.find((item) => item.status === 'pending');
+        if (pending !== undefined) {
+          pending.status = event.payload.decision === 'approved' ? 'approved' : 'rejected';
+        }
         break;
+      }
+      case 'intervention.raised':
+        interventionStages.set(event.payload.interventionId, event.payload.blockingStage);
+        break;
+      case 'intervention.resolved': {
+        const stage = interventionStages.get(event.payload.interventionId);
+        if (stage === 'gates' || stage === 'execution') {
+          const unsatisfied = reviews.find(
+            (item) =>
+              item.stage === stage && (item.status === 'pending' || item.status === 'rejected'),
+          );
+          if (unsatisfied !== undefined) {
+            unsatisfied.status = 'stage_resolved';
+          }
+        }
+        break;
+      }
       default:
         break;
     }
@@ -98,7 +135,9 @@ export function deriveDeployPreconditions(events: readonly FactoryEvent[]): Depl
     previewHealthy,
     packagePresent,
     provenancePresent,
-    reviewSatisfied: pendingReviews === 0,
+    reviewSatisfied: reviews.every(
+      (item) => item.status === 'approved' || item.status === 'stage_resolved',
+    ),
   };
 }
 

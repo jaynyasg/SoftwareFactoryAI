@@ -362,12 +362,23 @@ export function projectRun(raw: readonly unknown[], runId?: string): RunProjecti
         };
         break;
       case 'run.started':
+        // Cancellation is TERMINAL: a late `run.started` (e.g. a duplicate
+        // daemon claim racing a cancel) never revives a cancelled run.
+        if (status === 'cancelled') {
+          break;
+        }
         status = 'running';
         startedAt = event.timestamp;
         executionFold = 'started';
         executionReason = undefined;
         break;
       case 'run.completed':
+        // Cancellation is TERMINAL: a later `run.completed` (e.g. a post-run
+        // gate stage finishing while the cancel landed) never flips the
+        // status or the execution state back to completed.
+        if (status === 'cancelled') {
+          break;
+        }
         status = 'completed';
         completedAt = event.timestamp;
         // A completed run completes its execution lifecycle too (e.g. a

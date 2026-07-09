@@ -104,6 +104,39 @@ describe('projectRun', () => {
     ]);
   });
 
+  it('treats run.cancelled as TERMINAL: a later run.completed never flips the status back', async () => {
+    const store = createInMemoryEventStore(deterministic());
+    await append(
+      store,
+      lifecycle('run.created', { prompt: 'x' }),
+      lifecycle('run.started', {}),
+      lifecycle('run.cancelled', { reason: 'operator stop' }),
+      // e.g. a post-run gate stage finishing while the cancel landed.
+      lifecycle('run.completed', { summary: 'late completion' }),
+    );
+
+    const projection = projectRun(await store.readAll());
+    expect(projection.status).toBe('cancelled');
+    expect(projection.executionState).toBe('cancelled');
+    expect(projection.failureReason).toBe('operator stop');
+  });
+
+  it('treats run.cancelled as TERMINAL: a later run.started never revives the run', async () => {
+    const store = createInMemoryEventStore(deterministic());
+    await append(
+      store,
+      lifecycle('run.created', { prompt: 'x' }),
+      lifecycle('run.started', {}),
+      lifecycle('run.cancelled', { reason: 'operator stop' }),
+      // e.g. a duplicate daemon claim racing the cancel.
+      lifecycle('run.started', {}),
+    );
+
+    const projection = projectRun(await store.readAll());
+    expect(projection.status).toBe('cancelled');
+    expect(projection.executionState).toBe('cancelled');
+  });
+
   it('scopes to a single run when events span multiple runs', async () => {
     const store = createInMemoryEventStore(deterministic());
     await append(store, lifecycle('run.created', { prompt: 'a' }));

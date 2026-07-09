@@ -33,6 +33,7 @@ import type { ApiResponse, RouteContext, RouteDef } from '../app';
 import { asRecord, num, str } from './parse';
 import { deriveReviews, highestTicketRisk } from '../../lib/run-view';
 import {
+  countJobFailures,
   enqueueJob,
   gateRerunJobId,
   isActiveJobStatus,
@@ -64,10 +65,16 @@ export interface StageResumeResult {
 }
 
 /**
- * Resolve the blocked stage's approval-resolvable interventions and
- * re-enqueue the matching job. KTD6: interventions whose kind fails
- * `canReviewUnblock` (policy blocks, missing setup) are NEVER resolved here,
- * and when none are resolvable the approval resumes nothing.
+ * Re-enqueue the blocked stage's job and resolve its approval-resolvable
+ * interventions. KTD6: interventions whose kind fails `canReviewUnblock`
+ * (policy blocks, missing setup) are NEVER resolved here, and when none are
+ * resolvable the approval resumes nothing.
+ *
+ * ENQUEUE FEASIBILITY IS CHECKED FIRST: interventions are resolved only once
+ * the stage's job is actually (re-)queued. A refused re-enqueue (retry budget
+ * exhausted, execution controls disabled, preflight failed) leaves the
+ * blocking interventions OPEN so the run never sits blocked with an empty
+ * intervention queue.
  */
 async function resumeBlockedStage(
   ctx: RouteContext,
@@ -92,37 +99,43 @@ async function resumeBlockedStage(
           : 'No open intervention blocks this stage.',
     };
   }
-  for (const intervention of resolvable) {
-    await resolveIntervention(ctx.store, intervention, {
-      resolution: 'approved',
-      note: 'Review approval resumed the blocked stage.',
-    });
-  }
-  const resolvedIds = resolvable.map((item) => item.interventionId);
+
+  const resolveAll = async (): Promise<readonly string[]> => {
+    for (const intervention of resolvable) {
+      await resolveIntervention(ctx.store, intervention, {
+        resolution: 'approved',
+        note: 'Review approval resumed the blocked stage.',
+      });
+    }
+    return resolvable.map((item) => item.interventionId);
+  };
 
   const daemon = ctx.executionDaemon;
   if (daemon === null) {
     return {
       stage,
-      resolvedInterventions: resolvedIds,
+      resolvedInterventions: [],
       queued: false,
-      note: 'Execution controls are disabled on this instance; nothing was re-enqueued.',
+      note: 'Execution controls are disabled on this instance; nothing was re-enqueued and the blocking interventions stay open.',
     };
   }
 
   if (stage === 'gates') {
     const jobId = gateRerunJobId(runId);
-    const existing = projectExecutionQueue(await ctx.reader.readRun(runId), runId).byJobId[jobId];
+    const existing = projectExecutionQueue(events, runId).byJobId[jobId];
     if (existing !== undefined && isActiveJobStatus(existing.status)) {
-      return { stage, resolvedInterventions: resolvedIds, queued: true };
+      return { stage, resolvedInterventions: await resolveAll(), queued: true };
     }
     const attempt = (existing?.attempt ?? 0) + 1;
-    if (attempt > daemon.config.maxAttempts) {
+    // Ledger-derived failure budget (failed/blocked releases), so safe yields
+    // never consume the gate re-run budget — mirrors the execution retry path.
+    const failures = countJobFailures(events, jobId);
+    if (failures >= daemon.config.maxAttempts) {
       return {
         stage,
-        resolvedInterventions: resolvedIds,
+        resolvedInterventions: [],
         queued: false,
-        note: `Gate re-run attempt ${attempt} exceeds the retry budget (${daemon.config.maxAttempts}).`,
+        note: `Gate re-run attempt ${failures + 1} exceeds the retry budget (${daemon.config.maxAttempts}); the blocking interventions stay open.`,
       };
     }
     await enqueueJob(ctx.store, {
@@ -133,18 +146,21 @@ async function resumeBlockedStage(
       reason: 'review approval resumed the gate stage',
     });
     daemon.notify();
-    return { stage, resolvedInterventions: resolvedIds, queued: true };
+    return { stage, resolvedInterventions: await resolveAll(), queued: true };
   }
 
   const outcome = await requestExecutionStart(ctx, runId, {
     command: 'retry',
     reason: 'review approval resumed execution',
   });
+  const queued = outcome.kind === 'queued' || outcome.kind === 'already_active';
   return {
     stage,
-    resolvedInterventions: resolvedIds,
-    queued: outcome.kind === 'queued' || outcome.kind === 'already_active',
-    note: outcome.kind === 'queued' || outcome.kind === 'already_active' ? undefined : outcome.kind,
+    // A refused retry (budget exhausted, preflight failed, …) resolves
+    // NOTHING: the blocking interventions stay open and actionable.
+    resolvedInterventions: queued ? await resolveAll() : [],
+    queued,
+    note: queued ? undefined : outcome.kind,
   };
 }
 

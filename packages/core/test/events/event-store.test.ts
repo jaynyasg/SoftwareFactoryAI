@@ -1,8 +1,9 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { appendFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  EventStorePersistenceError,
   createFileSystemEventStore,
   createInMemoryEventStore,
   type AppendableEvent,
@@ -128,6 +129,79 @@ describe('event store (filesystem)', () => {
     const store = fsStore();
     const bad = { type: 'run.created', payload: {} } as unknown as AppendableEvent;
     await expect(store.append(bad)).rejects.toBeInstanceOf(TypeError);
+  });
+
+  it('rethrows a persistence failure as a STRUCTURED error and stays consistent afterwards', async () => {
+    // Block persistence: a FILE where the store expects its base directory
+    // makes `mkdir` fail (the same shape as an EBUSY/ENOSPC append failure).
+    const blockedDir = join(baseDir, 'blocked');
+    await writeFile(blockedDir, 'not a directory', 'utf8');
+    const store = createFileSystemEventStore({ baseDir: blockedDir, ...deterministic() });
+
+    let thrown: unknown;
+    try {
+      await store.append(runCreated('run-1'));
+      expect.unreachable('append over a blocked base dir must reject');
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(EventStorePersistenceError);
+    const structured = thrown as EventStorePersistenceError;
+    expect(structured.path).toContain('run-1.jsonl');
+    expect(typeof structured.code).toBe('string');
+    expect(structured.message).toContain('run-1');
+
+    // The failed append corrupted nothing: once the blocker is removed, the
+    // next append starts at sequence 1 (no gap from the failed allocation)
+    // and hydration sees exactly the persisted events.
+    await rm(blockedDir, { force: true });
+    await store.append(runCreated('run-1'));
+    expect((await store.readRun('run-1')).map((e) => e.sequence)).toEqual([1]);
+  });
+
+  it('recovers a torn JSONL tail: warns, keeps the new append on a fresh line, stable sequences', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const first = fsStore();
+      await first.append(runCreated('run-1'));
+      // Crash mid-write: a partial, non-newline-terminated last line.
+      await appendFile(join(baseDir, 'run-1.jsonl'), '{"eventId":"torn-partial', 'utf8');
+
+      // A fresh instance hydrates, surfaces the corrupt-tail diagnostic, and
+      // the NEXT append starts on a fresh line instead of concatenating onto
+      // the partial line (which would silently lose the new event later).
+      const second = fsStore();
+      await second.append(workerProgress('run-1', 't-1', 'after the tear'));
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('corrupt tail'));
+
+      const raw = await readFile(join(baseDir, 'run-1.jsonl'), 'utf8');
+      expect(raw).toContain('{"eventId":"torn-partial\n');
+
+      // Re-hydrate from disk: the NEW event survived with a stable sequence
+      // continuing from the last durable event (the torn write was never
+      // acknowledged, so only IT is absent).
+      const third = fsStore();
+      const events = await third.readRun('run-1');
+      expect(events.map((e) => e.sequence)).toEqual([1, 2]);
+      expect(events[1].type).toBe('worker.progress');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('caches readAll and invalidates the cache on append (returned arrays are copies)', async () => {
+    const store = fsStore();
+    await store.append(runCreated('run-1'));
+
+    const firstRead = await store.readAll();
+    expect(firstRead).toHaveLength(1);
+    // Mutating the returned array must not poison later reads.
+    firstRead.pop();
+    expect(await store.readAll()).toHaveLength(1);
+
+    // An append invalidates the cache: the next read sees the new event.
+    await store.append(workerProgress('run-1', 't-1', 'x'));
+    expect((await store.readAll()).map((e) => e.sequence)).toEqual([1, 2]);
   });
 });
 

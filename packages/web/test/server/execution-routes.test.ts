@@ -371,6 +371,54 @@ describe('pause, resume, and cancel', () => {
     expect(tick.claimed).toBe(0);
   });
 
+  it('rejects cancel on a terminal (completed) run instead of flipping it retroactively', async () => {
+    const { app, store, daemon } = makeExecApp({
+      executor: (): Promise<TicketExecutionResult> =>
+        Promise.resolve({ status: 'completed', summary: 'done' }),
+    });
+    const runId = await createPlannedRun(app);
+    await app.handle(req('POST', `/api/runs/${runId}/start`, authedHeaders(), {}));
+    await daemon.tick();
+    // The executor completed the queue job; record the run's own completion
+    // (the scheduler executor emits this in production).
+    await store.append({
+      runId,
+      type: 'run.completed',
+      actor: { kind: 'system', id: 'ticket-executor' },
+      subject: { kind: 'run', id: runId },
+      severity: 'success',
+      idempotencyKey: `${runId}:run.completed`,
+      payload: { summary: 'all done' },
+    });
+
+    const res = await app.handle(req('POST', `/api/runs/${runId}/cancel`, authedHeaders(), {}));
+    expect(res.status).toBe(422);
+    expect(record(res).error).toBe('run_terminal');
+    const events = await store.readRun(runId);
+    expect(events.some((e) => e.type === 'run.cancelled')).toBe(false);
+    expect(projectRun(events, runId).status).toBe('completed');
+  });
+
+  it('repeat cancel is idempotent: one run.cancelled event, alreadyCancelled response', async () => {
+    const { app, store } = makeExecApp();
+    const runId = await createPlannedRun(app);
+
+    const first = await app.handle(
+      req('POST', `/api/runs/${runId}/cancel`, authedHeaders(), { reason: 'operator stop' }),
+    );
+    expect(first.status).toBe(200);
+    expect((record(first).run as RunProjection).status).toBe('cancelled');
+
+    const second = await app.handle(
+      req('POST', `/api/runs/${runId}/cancel`, authedHeaders(), { reason: 'again' }),
+    );
+    expect(second.status).toBe(200);
+    expect(record(second).alreadyCancelled).toBe(true);
+
+    const events = await store.readRun(runId);
+    expect(events.filter((e) => e.type === 'run.cancelled')).toHaveLength(1);
+  });
+
   it('cancel propagates to ACTIVE (in-flight) work via the abort signal', async () => {
     let startedResolve: (() => void) | undefined;
     const started = new Promise<void>((resolve) => {
@@ -442,6 +490,46 @@ describe('retry command', () => {
     expect(record(exhausted).error).toBe('retry_budget_exhausted');
     const enqueues = (await store.readRun(runId)).filter((e) => e.type === 'queue.enqueued');
     expect(enqueues).toHaveLength(2);
+  });
+
+  it('safe yields (pause/shutdown requeues) never consume the operator retry budget', async () => {
+    // maxAttempts=2, but the job yields safely THREE times before its first
+    // real failure: raw attempt numbers blow past the budget while ledger
+    // failure evidence stays at zero. The operator must still be able to
+    // retry after the first real failure.
+    const script: TicketExecutionResult[] = [
+      { status: 'yielded', reason: 'graceful shutdown 1' },
+      { status: 'yielded', reason: 'graceful shutdown 2' },
+      { status: 'yielded', reason: 'graceful shutdown 3' },
+      { status: 'failed', reason: 'first real failure' },
+      { status: 'completed', summary: 'finally done' },
+    ];
+    const { app, store, daemon } = makeExecApp({
+      maxAttempts: 2,
+      executor: (): Promise<TicketExecutionResult> =>
+        Promise.resolve(script.shift() ?? { status: 'completed' }),
+    });
+    const runId = await createPlannedRun(app);
+    await app.handle(req('POST', `/api/runs/${runId}/start`, authedHeaders(), {}));
+
+    // Three safe yields: each requeues the SAME work at attempt+1.
+    await daemon.tick();
+    await daemon.tick();
+    await daemon.tick();
+    const requeued = projectExecutionQueue(await store.readRun(runId), runId).jobs[0];
+    expect(requeued.status).toBe('queued');
+    expect(requeued.attempt).toBe(4); // raw attempts already exceed maxAttempts=2
+
+    // First REAL failure (failure evidence = 1).
+    await daemon.tick();
+    expect(projectRun(await store.readRun(runId), runId).executionState).toBe('failed');
+
+    // The retry budget is ledger-derived failure evidence, not the raw
+    // attempt number: this retry MUST be accepted (1 failure < 2 budget).
+    const retry = await app.handle(req('POST', `/api/runs/${runId}/retry`, authedHeaders(), {}));
+    expect(retry.status).toBe(202);
+    await daemon.tick();
+    expect(projectRun(await store.readRun(runId), runId).executionState).toBe('completed');
   });
 
   it('retry after an abandoned lease resolves the retry_choice intervention and resumes', async () => {

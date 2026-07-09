@@ -176,6 +176,88 @@ describe('deriveDeployPreconditions', () => {
     expect(preconditions.gatesPassed).toBe(true);
     expect(preconditions.reviewSatisfied).toBe(true);
   });
+
+  it('a REJECTED review does NOT satisfy the review precondition', async () => {
+    const store = createInMemoryEventStore();
+    await append(store, { type: 'run.created', payload: { prompt: 'x marketplace' } });
+    await append(store, {
+      type: 'review.requested',
+      severity: 'warn',
+      payload: { riskTier: 'high' },
+    });
+    await append(store, {
+      type: 'review.decided',
+      severity: 'warn',
+      payload: { riskTier: 'high', decision: 'rejected' },
+    });
+
+    const preconditions = deriveDeployPreconditions(await store.readRun(RUN_ID));
+    expect(preconditions.reviewSatisfied).toBe(false);
+  });
+
+  it('fix-and-retry satisfies a stage review: resolving the blocking stage intervention counts', async () => {
+    const store = createInMemoryEventStore();
+    await append(store, { type: 'run.created', payload: { prompt: 'x marketplace' } });
+    // A blocked execution stage requested a review AND raised a retry_choice
+    // intervention. The operator fixes the cause and RETRIES (never approves):
+    // the retry resolves the intervention, which must satisfy the stage
+    // review — otherwise the deploy would wait forever on an approval nobody
+    // will give.
+    await append(store, {
+      type: 'review.requested',
+      severity: 'warn',
+      payload: { riskTier: 'low', summary: 'stage review', stage: 'execution' },
+    });
+    await append(store, {
+      type: 'intervention.raised',
+      severity: 'warn',
+      payload: {
+        interventionId: 'job:blocked:1',
+        kind: 'retry_choice',
+        blockingStage: 'execution',
+        reason: 'repair budget exhausted',
+        requiredAction: 'fix and retry',
+      },
+    });
+
+    const before = deriveDeployPreconditions(await store.readRun(RUN_ID));
+    expect(before.reviewSatisfied).toBe(false);
+
+    await append(store, {
+      type: 'intervention.resolved',
+      payload: { interventionId: 'job:blocked:1', resolution: 'retry' },
+    });
+    const after = deriveDeployPreconditions(await store.readRun(RUN_ID));
+    expect(after.reviewSatisfied).toBe(true);
+  });
+
+  it('resolving a stage intervention never satisfies a plain (stage-less) review', async () => {
+    const store = createInMemoryEventStore();
+    await append(store, { type: 'run.created', payload: { prompt: 'x marketplace' } });
+    await append(store, {
+      type: 'review.requested',
+      severity: 'warn',
+      payload: { riskTier: 'high' },
+    });
+    await append(store, {
+      type: 'intervention.raised',
+      severity: 'warn',
+      payload: {
+        interventionId: 'job:blocked:1',
+        kind: 'retry_choice',
+        blockingStage: 'execution',
+        reason: 'blocked',
+        requiredAction: 'retry',
+      },
+    });
+    await append(store, {
+      type: 'intervention.resolved',
+      payload: { interventionId: 'job:blocked:1', resolution: 'retry' },
+    });
+
+    const preconditions = deriveDeployPreconditions(await store.readRun(RUN_ID));
+    expect(preconditions.reviewSatisfied).toBe(false);
+  });
 });
 
 describe('completeRunDeploy — setup pauses preserve local success', () => {

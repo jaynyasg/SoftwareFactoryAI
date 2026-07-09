@@ -128,14 +128,26 @@ describe('createCommandGitCheckoutClient', () => {
     expect(fake.calls[0].args.join(' ')).toContain('--branch develop');
   });
 
-  it('splices credentials into the clone URL at exec time ONLY and never throws them', async () => {
+  it('passes credentials via the git config ENVIRONMENT — never on the argv — and never throws them', async () => {
     const fake = runner({ 'git clone': { code: 128, stdout: '', stderr: 'fatal: auth failed' } });
     const client = createCommandGitCheckoutClient(fake, { credentials: () => TOKEN });
 
     await expect(client.checkout({ repo, dest })).rejects.toThrow(/auth failed/);
-    // The child process received the credentialed URL…
-    expect(fake.calls[0].args.join(' ')).toContain(`x-access-token:${TOKEN}@github.com`);
-    // …but the surfaced error is sanitized.
+    // The argv NEVER carries the token (a process listing is world-readable);
+    // the clone URL stays credential-free.
+    const cloneCall = fake.calls[0];
+    expect(cloneCall.args.join(' ')).not.toContain(TOKEN);
+    expect(cloneCall.args.join(' ')).toContain('https://github.com/octo/app.git');
+    // The credential rides in the exec-time-only git config environment as a
+    // Basic Authorization header.
+    const env = cloneCall.options?.env ?? {};
+    expect(env.GIT_CONFIG_COUNT).toBe('1');
+    expect(env.GIT_CONFIG_KEY_0).toBe('http.extraHeader');
+    expect(env.GIT_CONFIG_VALUE_0).toBe(
+      `Authorization: Basic ${Buffer.from(`x-access-token:${TOKEN}`, 'utf8').toString('base64')}`,
+    );
+    // Follow-up rev-parse commands run WITHOUT the auth environment.
+    // …and the surfaced error is sanitized.
     try {
       await client.checkout({ repo, dest });
       expect.unreachable('checkout should reject');
@@ -144,12 +156,27 @@ describe('createCommandGitCheckoutClient', () => {
     }
   });
 
-  it('uses the remote-URL override when provided (local fixtures, no credential splice)', async () => {
+  it('scopes the auth environment to the clone command only', async () => {
+    const fake = runner();
+    const client = createCommandGitCheckoutClient(fake, { credentials: () => TOKEN });
+    await client.checkout({ repo, dest });
+    expect(fake.calls[0].options?.env?.GIT_CONFIG_KEY_0).toBe('http.extraHeader');
+    for (const call of fake.calls.slice(1)) {
+      expect(call.options?.env).toBeUndefined();
+    }
+    // No call anywhere carries the raw token on its argv.
+    for (const call of fake.calls) {
+      expect(call.args.join(' ')).not.toContain(TOKEN);
+    }
+  });
+
+  it('uses the remote-URL override when provided (local fixtures, no credential env)', async () => {
     const fake = runner();
     const client = createCommandGitCheckoutClient(fake, { credentials: () => TOKEN });
     await client.checkout({ repo, dest, remoteUrl: 'C:\\fixtures\\repo' });
-    // Non-https remotes never receive a credential splice.
+    // Non-https remotes never receive credentials in any form.
     expect(fake.calls[0].args.join(' ')).toContain('C:\\fixtures\\repo');
     expect(fake.calls[0].args.join(' ')).not.toContain(TOKEN);
+    expect(fake.calls[0].options?.env).toBeUndefined();
   });
 });

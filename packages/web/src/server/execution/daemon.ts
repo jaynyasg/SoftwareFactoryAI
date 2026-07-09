@@ -53,7 +53,7 @@
  * deterministically with no real waits.
  */
 import { projectRun } from '@software-factory/core';
-import type { EventStore, InterventionKind } from '@software-factory/core';
+import type { EventStore, InterventionKind, RunProjection } from '@software-factory/core';
 import {
   abandonLease,
   claimJob,
@@ -161,9 +161,6 @@ const defaultTimers: DaemonTimers = {
   },
 };
 
-export const DEFAULT_EXECUTION_QUEUE_CONFIG: ExecutionRuntimeConfig =
-  DEFAULT_EXECUTION_RUNTIME_CONFIG;
-
 export interface ExecutionDaemonOptions {
   readonly store: EventStore;
   /** U6 seam. Defaults to the honest `deferredTicketExecutor`. */
@@ -215,7 +212,7 @@ export function createExecutionDaemon(options: ExecutionDaemonOptions): Executio
   daemonsCreated += 1;
   const store = options.store;
   const executor = options.executor ?? deferredTicketExecutor;
-  const config: ExecutionRuntimeConfig = { ...DEFAULT_EXECUTION_QUEUE_CONFIG, ...options.config };
+  const config: ExecutionRuntimeConfig = { ...DEFAULT_EXECUTION_RUNTIME_CONFIG, ...options.config };
   const clock = options.clock ?? Date.now;
   const idGenerator = options.idGenerator ?? (() => `lease-${Math.random().toString(36).slice(2)}`);
   const ownerId =
@@ -225,6 +222,10 @@ export function createExecutionDaemon(options: ExecutionDaemonOptions): Executio
   let running = false;
   let intervalHandle: unknown = null;
   let stopping = false;
+  // Re-entrant stop guard: a second stop() joins the in-flight shutdown.
+  let stopPromise: Promise<void> | null = null;
+  // Skip-not-stack: interval ticks are skipped while one is still pending.
+  let tickPending = false;
   // Serialize passes: reconcile/drain must never overlap (E2).
   let chain: Promise<unknown> = Promise.resolve();
   const inFlight = new Map<string, AbortController>();
@@ -268,8 +269,7 @@ export function createExecutionDaemon(options: ExecutionDaemonOptions): Executio
     });
   }
 
-  async function runIsPausedOrCancelled(runId: string): Promise<'paused' | 'cancelled' | null> {
-    const run = projectRun(await store.readRun(runId), runId);
+  function pausedOrCancelledOf(run: RunProjection): 'paused' | 'cancelled' | null {
     if (run.status === 'cancelled') {
       return 'cancelled';
     }
@@ -277,6 +277,10 @@ export function createExecutionDaemon(options: ExecutionDaemonOptions): Executio
       return 'paused';
     }
     return null;
+  }
+
+  async function runIsPausedOrCancelled(runId: string): Promise<'paused' | 'cancelled' | null> {
+    return pausedOrCancelledOf(projectRun(await store.readRun(runId), runId));
   }
 
   async function executeJob(
@@ -298,10 +302,67 @@ export function createExecutionDaemon(options: ExecutionDaemonOptions): Executio
     if (claimed.deduplicated) {
       // This attempt was already claimed by a previous incarnation; the
       // reconciler owns its fate (lease expiry -> abandoned). Never run twice.
+      // EXCEPT the wedge case: a crash after `queue.released(requeued)` landed
+      // but before the follow-up `queue.enqueued(attempt+1)` leaves the job
+      // projected `queued` at an attempt whose claim key is already burnt —
+      // no future claim can ever win, so the job would silently wedge forever.
+      // The prior release was a SAFE yield, so re-enqueueing the next attempt
+      // idempotently recovers the job without re-running ambiguous work.
+      const current = projectExecutionQueue(await store.readRun(job.runId), job.runId).byJobId[
+        job.jobId
+      ];
+      if (current !== undefined && current.status === 'queued' && current.attempt === job.attempt) {
+        await enqueueJob(store, {
+          runId: job.runId,
+          jobId: job.jobId,
+          jobKind: job.jobKind,
+          attempt: job.attempt + 1,
+          reason:
+            'Recovered a safely-yielded job whose follow-up re-enqueue was lost to a crash.',
+          ticketId: job.ticketId,
+        });
+        counters.requeued += 1;
+      }
       return;
     }
     counters.claimed += 1;
+    const leasedJob: QueueJobView = { ...job, status: 'leased', leaseId, ownerId };
 
+    try {
+      await runClaimedJob(job, leasedJob, leaseId, counters);
+    } catch (error) {
+      // A ledger append failed mid-attempt (e.g. EBUSY/ENOSPC): release the
+      // lease cleanly so the job never sits leased until expiry (a phantom
+      // lease that would later be abandoned with a spurious intervention),
+      // then rethrow so the pass surfaces the failure.
+      inFlight.delete(job.jobId);
+      const message = error instanceof Error ? error.message : String(error);
+      try {
+        await releaseJob(
+          store,
+          leasedJob,
+          'failed',
+          `A ledger write failed during the attempt: ${message}`,
+        );
+      } catch {
+        // The store is still failing; the reconciler recovers via lease expiry.
+      }
+      throw error;
+    }
+  }
+
+  async function runClaimedJob(
+    job: QueueJobView,
+    leasedJob: QueueJobView,
+    leaseId: string,
+    counters: {
+      claimed: number;
+      completed: number;
+      failed: number;
+      blocked: number;
+      requeued: number;
+    },
+  ): Promise<void> {
     if (job.jobKind === 'run-execution') {
       await store.append({
         runId: job.runId,
@@ -316,7 +377,6 @@ export function createExecutionDaemon(options: ExecutionDaemonOptions): Executio
 
     const abort = new AbortController();
     inFlight.set(job.jobId, abort);
-    const leasedJob: QueueJobView = { ...job, status: 'leased', leaseId, ownerId };
     const ctx: TicketExecutionContext = {
       runId: job.runId,
       jobId: job.jobId,
@@ -419,9 +479,14 @@ export function createExecutionDaemon(options: ExecutionDaemonOptions): Executio
         break;
       }
       case 'yielded': {
-        // Safe stop (pause/shutdown): release + requeue so a later pass or a
+        // Safe stop (pause/shutdown): requeue + release so a later pass or a
         // restarted daemon resumes the SAME work without operator involvement.
-        await releaseJob(store, leasedJob, 'requeued', result.reason ?? 'Execution yielded.');
+        // ORDER MATTERS: the next-attempt `queue.enqueued` lands FIRST. The
+        // queue fold ignores a `queue.released` whose payload.attempt no
+        // longer matches the job's (bumped) attempt, so a crash between the
+        // two appends leaves the job queued at attempt+1 (recoverable by any
+        // fresh daemon) instead of queued at an attempt whose claim key is
+        // already burnt (permanently wedged).
         await enqueueJob(store, {
           runId: job.runId,
           jobId: job.jobId,
@@ -430,6 +495,7 @@ export function createExecutionDaemon(options: ExecutionDaemonOptions): Executio
           reason: result.reason ?? 'Requeued after a safe yield.',
           ticketId: job.ticketId,
         });
+        await releaseJob(store, leasedJob, 'requeued', result.reason ?? 'Execution yielded.');
         counters.requeued += 1;
         break;
       }
@@ -454,6 +520,20 @@ export function createExecutionDaemon(options: ExecutionDaemonOptions): Executio
       const events = await store.readAll();
       const queue = projectExecutionQueue(events);
 
+      // Pause/cancel gating for the drain loop is computed ONCE per run from
+      // the SAME snapshot the queue was projected from (perf: no readRun per
+      // queued job). Post-claim decisions (`shouldContinue`, the post-executor
+      // cancellation check) still re-read the ledger for freshness.
+      const runStates = new Map<string, 'paused' | 'cancelled' | null>();
+      const snapshotRunState = (runId: string): 'paused' | 'cancelled' | null => {
+        let state = runStates.get(runId);
+        if (state === undefined) {
+          state = pausedOrCancelledOf(projectRun(events, runId));
+          runStates.set(runId, state);
+        }
+        return state;
+      };
+
       // 1. Reconcile stale leases first so restart recovery is never starved.
       for (const job of queue.jobs) {
         await reconcileJob(job, counters);
@@ -464,7 +544,7 @@ export function createExecutionDaemon(options: ExecutionDaemonOptions): Executio
         if (job.status !== 'queued' || inFlight.has(job.jobId) || stopping) {
           continue;
         }
-        const state = await runIsPausedOrCancelled(job.runId);
+        const state = snapshotRunState(job.runId);
         if (state === 'cancelled') {
           await releaseJob(store, job, 'cancelled', 'Run was cancelled before execution.');
           counters.cancelled += 1;
@@ -487,31 +567,53 @@ export function createExecutionDaemon(options: ExecutionDaemonOptions): Executio
     }
     running = true;
     stopping = false;
+    tickPending = false;
     intervalHandle = timers.setInterval(() => {
-      void tick().catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error(`[software-factory] execution daemon tick failed: ${message}`);
-      });
+      // Skip-not-stack: while a previous interval tick is still pending, do
+      // not enqueue another pass behind it (a slow pass would otherwise stack
+      // an unbounded backlog of redundant passes).
+      if (tickPending) {
+        return;
+      }
+      tickPending = true;
+      void tick()
+        .catch((error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error);
+          console.error(`[software-factory] execution daemon tick failed: ${message}`);
+        })
+        .finally(() => {
+          tickPending = false;
+        });
     }, config.reconcileIntervalMs);
     // Initial pass: resume safe queued work, abandon stale leases (E2/E6).
     await tick();
   }
 
-  async function stop(): Promise<void> {
-    // Always abort in-flight work, even when the interval loop never started
-    // (e.g. a test-driven tick): graceful shutdown must never strand a lease.
-    stopping = true;
-    if (intervalHandle !== null) {
-      timers.clearInterval(intervalHandle);
-      intervalHandle = null;
+  function stop(): Promise<void> {
+    // Re-entrant guard: a second stop() during shutdown (double SIGTERM/SIGINT,
+    // double close()) joins the in-flight stop instead of re-running it.
+    if (stopPromise !== null) {
+      return stopPromise;
     }
-    for (const controller of inFlight.values()) {
-      controller.abort();
-    }
-    // Wait for the in-flight pass (and its release/requeue writes) to settle.
-    await chain;
-    running = false;
-    stopping = false;
+    stopPromise = (async () => {
+      // Always abort in-flight work, even when the interval loop never started
+      // (e.g. a test-driven tick): graceful shutdown must never strand a lease.
+      stopping = true;
+      if (intervalHandle !== null) {
+        timers.clearInterval(intervalHandle);
+        intervalHandle = null;
+      }
+      for (const controller of inFlight.values()) {
+        controller.abort();
+      }
+      // Wait for the in-flight pass (and its release/requeue writes) to settle.
+      await chain;
+      running = false;
+      stopping = false;
+    })().finally(() => {
+      stopPromise = null;
+    });
+    return stopPromise;
   }
 
   function notify(): void {
@@ -525,23 +627,33 @@ export function createExecutionDaemon(options: ExecutionDaemonOptions): Executio
   }
 
   async function cancelRun(runId: string): Promise<void> {
-    // Abort in-flight work for the run; the executor's finally-path releases
-    // the job as cancelled because the run projection is now cancelled.
-    const events = await store.readAll();
-    const queue = projectExecutionQueue(events);
-    for (const job of queue.jobs) {
-      if (job.runId !== runId) {
-        continue;
-      }
-      const controller = inFlight.get(job.jobId);
-      if (controller !== undefined) {
-        controller.abort();
-        continue;
-      }
-      if (job.status === 'queued' || job.status === 'abandoned') {
-        await releaseJob(store, job, 'cancelled', 'Run was cancelled.');
+    // Abort THIS owner's in-flight work for the run immediately; the
+    // executor's post-run path releases the job as cancelled because the run
+    // projection is now cancelled. The abort must NOT wait behind the pass
+    // chain: the in-flight executor is awaited by the current pass, so a
+    // chained abort would deadlock behind the very work it cancels.
+    const snapshot = projectExecutionQueue(await store.readAll());
+    for (const job of snapshot.jobs) {
+      if (job.runId === runId) {
+        inFlight.get(job.jobId)?.abort();
       }
     }
+    // Release queued/abandoned jobs INSIDE the pass chain, re-projecting the
+    // queue there, so the cancelled release can never interleave with a drain
+    // pass's claim of the same attempt (a pre-claim `released(cancelled)`
+    // would burn the outcome's idempotency scope and leave the claimed job
+    // leased forever, later abandoned with a spurious retry intervention).
+    await enqueuePass(async () => {
+      const queue = projectExecutionQueue(await store.readAll());
+      for (const job of queue.jobs) {
+        if (job.runId !== runId || inFlight.has(job.jobId)) {
+          continue;
+        }
+        if (job.status === 'queued' || job.status === 'abandoned') {
+          await releaseJob(store, job, 'cancelled', 'Run was cancelled.');
+        }
+      }
+    });
   }
 
   return {

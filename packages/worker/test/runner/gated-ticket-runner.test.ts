@@ -142,6 +142,38 @@ describe('gated ticket runner: failing gates create repair work with feedback', 
     expect(seen).not.toContain('repair.failed');
     const events = await store.readRun(RUN);
     expect(projectTickets(events, RUN).byId['data-model']?.state).toBe('completed');
+    // repair.succeeded records the gate whose failure the repair fixed.
+    const succeeded = events.find((event) => event.type === 'repair.succeeded');
+    expect((succeeded?.payload as { gate: string }).gate).toBe('unit-test');
+  });
+
+  it('repair.succeeded records the LAST FAILED gate, not a positional entry of the merged feedback', async () => {
+    const store = createInMemoryEventStore();
+    const adapter = recordingAdapter();
+    // Compiled feedback already carries entries for BOTH gates, with the gate
+    // that will fail this invocation ("unit-test") FIRST: merging by Map
+    // insertion order keeps "unit-test" at position 0, so the last array
+    // entry is "lint" — the wrong gate for positional derivation.
+    const compiledFeedback = [
+      { gate: 'unit-test', reason: 'stale unit-test failure', attempt: 1 },
+      { gate: 'lint', reason: 'stale lint failure', attempt: 1 },
+    ];
+    const runner = makeRunner([flakyGate('unit-test', 1)], 2);
+    const result = await runner(
+      {
+        runId: RUN,
+        compileInput: { ...makeCompileInput('data-model'), gateFeedback: compiledFeedback },
+        workspaceDir: WORKSPACE,
+        signal: new AbortController().signal,
+      },
+      { store, adapter },
+    );
+
+    expect(result.outcome).toBe('completed');
+    const events = await store.readRun(RUN);
+    const succeeded = events.find((event) => event.type === 'repair.succeeded');
+    expect(succeeded).toBeDefined();
+    expect((succeeded?.payload as { gate: string }).gate).toBe('unit-test');
   });
 });
 

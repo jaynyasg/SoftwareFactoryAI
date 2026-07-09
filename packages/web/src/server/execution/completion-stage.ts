@@ -40,7 +40,12 @@ import {
   projectRun,
   projectTickets,
 } from '@software-factory/core';
-import type { EventStore, ProvenanceDeployConfig, TicketProjection } from '@software-factory/core';
+import type {
+  EventStore,
+  FactoryEvent,
+  ProvenanceDeployConfig,
+  TicketProjection,
+} from '@software-factory/core';
 import {
   completeRunDeploy,
   createCommandGitRemoteClient,
@@ -48,7 +53,6 @@ import {
   deriveDeployPreconditions,
   generateRenderConfig,
   packageCompletedRun,
-  provenanceDestinationOf,
   startPreview,
 } from '@software-factory/worker';
 import type {
@@ -141,6 +145,30 @@ export interface CompletionStageOptions {
 
 function plansTicket(tickets: TicketProjection, ticketId: string): boolean {
   return tickets.byId[ticketId] !== undefined;
+}
+
+/**
+ * Ledger-derived deploy attempt counter: how many deploy pause/failure events
+ * the run has recorded so far. Deploy interventions are scoped by this count
+ * so a recurring failure AFTER an earlier resolved intervention opens a NEW
+ * entry (the raise/resolve appends are idempotent per interventionId).
+ */
+function countDeployFailureEvents(events: readonly FactoryEvent[]): number {
+  let count = 0;
+  for (const event of events) {
+    switch (event.type) {
+      case 'deploy.setup_required':
+      case 'deploy.config_invalid':
+      case 'deploy.provider_failed':
+      case 'deploy.migration_failed':
+      case 'deploy.health_failed':
+        count += 1;
+        break;
+      default:
+        break;
+    }
+  }
+  return count;
 }
 
 /** Human summary of a deploy outcome for the run-completed note. */
@@ -279,26 +307,34 @@ export function createCompletionStage(options: CompletionStageOptions): Executor
               note: `Deploy reached hosted-ready at ${outcome.url}.`,
             });
           }
-        } else if (outcome.status === 'setup_required') {
-          await raiseIntervention(ctx.store, {
-            runId: ctx.runId,
-            interventionId: `${ctx.runId}:deploy:setup`,
-            kind: 'deploy_setup',
-            blockingStage: 'deploy',
-            reason:
-              'Deploy is paused pending setup; the local build, package, and provenance are complete and preserved.',
-            requiredAction: `${outcome.action} Then retry execution (POST /api/runs/:id/retry) to re-attempt the deploy.`,
-          });
         } else {
-          await raiseIntervention(ctx.store, {
-            runId: ctx.runId,
-            interventionId: `${ctx.runId}:deploy:retry`,
-            kind: 'retry_choice',
-            blockingStage: 'deploy',
-            reason: `Deploy did not reach hosted-ready (${outcome.status}): ${outcome.reason}`,
-            requiredAction:
-              'Read the recorded deploy evidence, fix the cause, then retry execution (POST /api/runs/:id/retry) to re-attempt the deploy. The local package and provenance are preserved.',
-          });
+          // Interventions are scoped by a LEDGER-DERIVED deploy attempt
+          // counter (the attempt-scoped pattern the daemon/preflight use):
+          // a recurring deploy failure after a resolved earlier one raises a
+          // NEW open entry instead of deduplicating into the resolved id and
+          // becoming invisible to the operator.
+          const deployAttempt = countDeployFailureEvents(await ctx.store.readRun(ctx.runId));
+          if (outcome.status === 'setup_required') {
+            await raiseIntervention(ctx.store, {
+              runId: ctx.runId,
+              interventionId: `${ctx.runId}:deploy:setup:${deployAttempt}`,
+              kind: 'deploy_setup',
+              blockingStage: 'deploy',
+              reason:
+                'Deploy is paused pending setup; the local build, package, and provenance are complete and preserved.',
+              requiredAction: `${outcome.action} Then retry execution (POST /api/runs/:id/retry) to re-attempt the deploy.`,
+            });
+          } else {
+            await raiseIntervention(ctx.store, {
+              runId: ctx.runId,
+              interventionId: `${ctx.runId}:deploy:retry:${deployAttempt}`,
+              kind: 'retry_choice',
+              blockingStage: 'deploy',
+              reason: `Deploy did not reach hosted-ready (${outcome.status}): ${outcome.reason}`,
+              requiredAction:
+                'Read the recorded deploy evidence, fix the cause, then retry execution (POST /api/runs/:id/retry) to re-attempt the deploy. The local package and provenance are preserved.',
+            });
+          }
         }
       }
       if (ctx.signal.aborted) {
@@ -351,16 +387,15 @@ export function createRuntimeCompletionStage(
 
   const deployer: CompletionDeployer = async (params, deps) => {
     const apiKey = process.env.SF_RENDER_API_KEY ?? process.env.RENDER_API_KEY;
-    const result = await completeRunDeploy(params, {
+    // TODO: surface `provenanceDestinationOf(result.gitDestination)` in the
+    // (already-written) provenance package once a provenance-update seam
+    // exists; the resolved destination is available on the returned result.
+    return completeRunDeploy(params, {
       store: deps.store,
       signal: deps.signal,
       renderClient: createRenderClient({ apiKey }),
       gitClient: createCommandGitRemoteClient(runner),
     });
-    // Surface the resolved destination in the (already-written) provenance is
-    // future work; expose it for callers that want to record it.
-    void provenanceDestinationOf(result.gitDestination);
-    return result;
   };
 
   const preview: CompletionPreviewRunner | undefined =

@@ -7,10 +7,13 @@
  *
  * Credential handling (hardening E5): source checkout credentials are their own
  * setup surface (`SF_GIT_CHECKOUT_TOKEN` — separate from deploy and research
- * credentials). The token is read through an injected provider at exec time,
- * spliced into the clone URL for the child process ONLY, and stripped from
- * every error message before it can reach ledger evidence
- * (`sanitizeCheckoutDetail`). No credential value is ever returned or recorded.
+ * credentials). The token is read through an injected provider at exec time and
+ * passed to git through its config ENVIRONMENT (`GIT_CONFIG_*` ->
+ * `http.extraHeader` with a Basic Authorization header) — NEVER on the child
+ * process argv, where any user on the machine could read it from the process
+ * listing. Error messages are still stripped of anything credential-shaped
+ * before they can reach ledger evidence (`sanitizeCheckoutDetail`). No
+ * credential value is ever returned or recorded.
  */
 import { rm } from 'node:fs/promises';
 import type { CommandRunner } from '@software-factory/core';
@@ -97,11 +100,28 @@ export interface GitCheckoutClient {
 export interface CommandGitCheckoutClientOptions {
   /**
    * Source checkout credential provider, read at exec time only (E5). The
-   * value is spliced into the clone URL for the child process and never
-   * returned, logged, or recorded.
+   * value is handed to git through its config ENVIRONMENT (never the argv,
+   * which is world-readable via the process listing) and never returned,
+   * logged, or recorded.
    */
   readonly credentials?: () => string | undefined;
   readonly timeoutMs?: number;
+}
+
+/**
+ * Build the exec-time-only git config ENVIRONMENT that authenticates an https
+ * clone: `GIT_CONFIG_*` -> `http.extraHeader` with a Basic Authorization
+ * header for `x-access-token:<token>`. The token never appears on the child
+ * process argv (E5) — env vars are readable only by the same user, argv by
+ * every user on the machine.
+ */
+function checkoutAuthEnv(token: string): Readonly<Record<string, string>> {
+  const basic = Buffer.from(`x-access-token:${token}`, 'utf8').toString('base64');
+  return {
+    GIT_CONFIG_COUNT: '1',
+    GIT_CONFIG_KEY_0: 'http.extraHeader',
+    GIT_CONFIG_VALUE_0: `Authorization: Basic ${basic}`,
+  };
 }
 
 /**
@@ -120,8 +140,9 @@ export function createCommandGitCheckoutClient(
     args: readonly string[],
     cwd: string | undefined,
     signal?: AbortSignal,
+    env?: Readonly<Record<string, string>>,
   ): Promise<string> => {
-    const result = await runner.run('git', args, { cwd, signal, timeoutMs });
+    const result = await runner.run('git', args, { cwd, signal, timeoutMs, env });
     if (result.code !== 0) {
       throw new Error(
         sanitizeCheckoutDetail(
@@ -134,13 +155,14 @@ export function createCommandGitCheckoutClient(
 
   return {
     async checkout(args: GitCheckoutArgs): Promise<GitCheckoutResult> {
-      const displayUrl = args.remoteUrl ?? args.repo.remoteUrl;
+      const cloneUrl = args.remoteUrl ?? args.repo.remoteUrl;
       const token = options.credentials?.();
-      // Exec-time-only credential splice; the display URL stays credential-free.
-      const cloneUrl =
-        token !== undefined && token.length > 0 && /^https:\/\//i.test(displayUrl)
-          ? displayUrl.replace(/^https:\/\//i, `https://x-access-token:${token}@`)
-          : displayUrl;
+      // Exec-time-only credential ENV; the clone URL stays credential-free on
+      // the argv. Non-https remotes (local fixtures) never receive auth.
+      const authEnv =
+        token !== undefined && token.length > 0 && /^https:\/\//i.test(cloneUrl)
+          ? checkoutAuthEnv(token)
+          : undefined;
       try {
         // Fresh destination per attempt so failed clones cannot poison retries.
         await rm(args.dest, { recursive: true, force: true });
@@ -149,7 +171,7 @@ export function createCommandGitCheckoutClient(
           cloneArgs.push('--branch', args.branch);
         }
         cloneArgs.push(cloneUrl, args.dest);
-        await git(cloneArgs, undefined, args.signal);
+        await git(cloneArgs, undefined, args.signal, authEnv);
         const commit = await git(['rev-parse', 'HEAD'], args.dest, args.signal);
         const branch = await git(['rev-parse', '--abbrev-ref', 'HEAD'], args.dest, args.signal);
         return { branch, commit };

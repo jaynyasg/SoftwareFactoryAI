@@ -230,6 +230,23 @@ async function createRun(ctx: RouteContext): Promise<ApiResponse> {
         body: { runId, deduplicated: result.deduplicated, run: failedRun, research },
       };
     }
+    if (research.status === 'requested' || research.status === 'in_progress') {
+      // Research is REQUESTED/IN PROGRESS (e.g. an idempotent re-create raced
+      // an in-flight research pass): planning now would run from a partial
+      // brief. Return the honest projected state; the ORIGINAL in-flight flow
+      // completes planning when its research pass finishes.
+      const pendingRun = projectRun(await ctx.reader.readRun(runId), runId);
+      return {
+        status,
+        body: {
+          runId,
+          deduplicated: result.deduplicated,
+          run: pendingRun,
+          research,
+          researchInProgress: true,
+        },
+      };
+    }
   }
 
   // Plan the run into the SAME store so the CLI and UI both see a ticket DAG.
@@ -333,12 +350,30 @@ async function cancelRun(ctx: RouteContext): Promise<ApiResponse> {
   }
   const current = guarded.run;
 
+  // Repeated cancels converge instead of stacking run.cancelled appends.
+  if (current.status === 'cancelled') {
+    return { status: 200, body: { runId, alreadyCancelled: true, run: current } };
+  }
+  // Terminal runs cannot be cancelled retroactively (mirrors the pause/resume
+  // state checks): a completed/failed run keeps its recorded outcome.
+  if (current.status === 'completed' || current.status === 'failed') {
+    return {
+      status: 422,
+      body: {
+        error: 'run_terminal',
+        message: `Run ${runId} is "${current.status}"; a terminal run cannot be cancelled.`,
+        run: current,
+      },
+    };
+  }
+
   await ctx.writer.append({
     runId,
     type: 'run.cancelled',
     actor: { kind: 'operator', id: 'operator' },
     subject: { kind: 'run', id: runId, version: current.lastSequence },
     severity: 'warn',
+    idempotencyKey: `${runId}:run.cancelled`,
     payload: { reason: str(body.reason) },
   });
   // Cancel propagates to queued and active execution work (U5): the daemon

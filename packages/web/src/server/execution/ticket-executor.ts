@@ -87,6 +87,11 @@ import type {
 import type { ExecutorGateStages } from './gate-stages';
 import type { ExecutorCompletionStage } from './completion-stage';
 import type { TicketExecutionContext, TicketExecutionResult, TicketExecutor } from './daemon';
+import {
+  filterInterventions,
+  projectInterventions,
+  resolveIntervention,
+} from './interventions';
 import { highestTicketRisk } from '../../lib/run-view';
 import { resolveGenomeDir } from '../planner';
 import { DEFAULT_EXECUTION_RUNTIME_CONFIG, resolveWorkspaceRuntimeConfig } from '../runtime';
@@ -381,6 +386,20 @@ export function createSchedulerTicketExecutor(
         { store: heartbeatingStore },
       );
       if (stage.passed) {
+        // A PASSED post-run stage resolves the open gates-stage interventions
+        // (mirrors the deploy-success resolution in completion-stage.ts):
+        // a successful gate re-run or execution retry must not leave stale
+        // "gates blocked" entries in the operator queue.
+        const openGates = filterInterventions(
+          projectInterventions(await ctx.store.readRun(ctx.runId)),
+          { runId: ctx.runId, blockingStage: 'gates', openOnly: true },
+        );
+        for (const intervention of openGates) {
+          await resolveIntervention(ctx.store, intervention, {
+            resolution: 'gates_passed',
+            note: 'The post-run gate stage passed on re-run.',
+          });
+        }
         return null;
       }
       if (ctx.signal.aborted) {
@@ -445,6 +464,15 @@ export function createSchedulerTicketExecutor(
       const completion = await runCompletionStage();
       if (!('notes' in completion)) {
         return completion;
+      }
+      // A cancellation (or graceful shutdown) that landed while the post-run
+      // gate/completion stages were running wins: yield instead of recording
+      // a `run.completed` that would race the terminal `run.cancelled`.
+      if (ctx.signal.aborted) {
+        return {
+          status: 'yielded',
+          reason: 'Execution aborted after the post-run stages, before run completion.',
+        };
       }
       const summary = withNotes(baseSummary, completion.notes);
       await emitRunCompleted(summary);

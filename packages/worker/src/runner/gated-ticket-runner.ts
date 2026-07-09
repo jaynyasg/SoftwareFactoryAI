@@ -154,6 +154,11 @@ export function createGatedTicketRunner(options: GatedTicketRunnerOptions): Tick
 
     let feedback = mergeFeedback(params.compileInput.gateFeedback, ledgerFeedback);
     let repairedThisInvocation = false;
+    // The gate whose failure triggered the LAST repair attempt. Recorded on
+    // repair.succeeded — never positionally derived from the merged feedback
+    // (Map insertion order keeps an earlier-seen gate in place, so the last
+    // array entry is not necessarily the last failed gate).
+    let lastFailedGate: string | undefined;
 
     // The loop is bounded by the repair budget; each iteration is one worker
     // run followed by one gate-stage run.
@@ -185,8 +190,7 @@ export function createGatedTicketRunner(options: GatedTicketRunnerOptions): Tick
 
       if (gateResult.passed) {
         if (repairedThisInvocation) {
-          const lastGate = feedback[feedback.length - 1]?.gate ?? 'gate';
-          await emitRepairSucceeded(attemptsUsed, lastGate);
+          await emitRepairSucceeded(attemptsUsed, lastFailedGate ?? 'gate');
         }
         return result;
       }
@@ -217,6 +221,7 @@ export function createGatedTicketRunner(options: GatedTicketRunnerOptions): Tick
 
       attemptsUsed += 1;
       repairedThisInvocation = true;
+      lastFailedGate = failedGate;
       await emitRepairStarted(attemptsUsed, failedGate, reason);
       await emitTicketState(
         'retrying',
