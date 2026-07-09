@@ -19,6 +19,8 @@ import { WorkerBoard } from './WorkerBoard';
 import { TicketCard } from './TicketCard';
 import { TraceLedger } from './TraceLedger';
 import { ReviewStudio } from './ReviewStudio';
+import { ResearchBrief } from './ResearchBrief';
+import { ContractHandoff } from './ContractHandoff';
 import { PackageHandoff } from './PackageHandoff';
 import { DeployStatus } from './DeployStatus';
 import { ArtifactDrawer } from './ArtifactDrawer';
@@ -138,6 +140,9 @@ export function RunView({
 
       <div className="run-grid">
         <div className="run-grid__main">
+          {snapshot.research.status !== 'none' ? (
+            <ResearchBrief research={snapshot.research} />
+          ) : null}
           <SupervisorPanel decisions={run.supervisorDecisions} tickets={tickets} />
 
           <section className="panel" aria-label="Tickets">
@@ -178,6 +183,9 @@ export function RunView({
             reconnecting={reconnecting}
             diagnostics={run.diagnostics}
           />
+          {run.buildContract !== undefined || snapshot.preflight.status !== 'none' ? (
+            <ContractHandoff contract={run.buildContract} preflight={snapshot.preflight} />
+          ) : null}
           <ReviewStudio
             runId={runId}
             reviewMode={run.reviewMode ?? 'human'}

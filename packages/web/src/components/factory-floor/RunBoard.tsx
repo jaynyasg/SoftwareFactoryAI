@@ -1,7 +1,10 @@
 /**
- * RunBoard — the run switcher. Lists projected runs (status + prompt + id) with
- * links into each run's detail surface. Status carries a severity label, never
- * color alone (§7).
+ * RunBoard — run history as the BOTTOM/secondary surface (KTD7): a clearable,
+ * scrollable list of projected runs (status + prompt + id) with links into each
+ * run's detail surface and a "Focus" action that points the blueprint lanes at
+ * that run without leaving the floor. Clearing the view hides the list only —
+ * the focused blueprint stays. Status carries a severity label, never color
+ * alone (§7).
  */
 import Link from 'next/link';
 import type { RunProjection } from '@software-factory/core';
@@ -12,12 +15,16 @@ export function RunBoard({
   runs,
   totalCount = runs.length,
   cleared = false,
+  focusedRunId = null,
+  onFocus,
   onClear,
   onRestore,
 }: {
   readonly runs: readonly RunProjection[];
   readonly totalCount?: number;
   readonly cleared?: boolean;
+  readonly focusedRunId?: string | null;
+  readonly onFocus?: (runId: string) => void;
   readonly onClear?: () => void;
   readonly onRestore?: () => void;
 }) {
@@ -40,7 +47,9 @@ export function RunBoard({
       </header>
       <div className="panel__body">
         {cleared ? (
-          <p className="muted">Run history is hidden for this screen.</p>
+          <p className="muted">
+            Run history is hidden for this screen — the focused blueprint stays live above.
+          </p>
         ) : runs.length === 0 ? (
           <p className="muted">No runs yet.</p>
         ) : (
@@ -58,6 +67,22 @@ export function RunBoard({
                   </span>
                   <span className="row" style={{ flex: 'none' }}>
                     <SeverityBadge severity={runStatusSeverity(run.status)} label={run.status} />
+                    {onFocus !== undefined ? (
+                      run.runId === focusedRunId ? (
+                        <span className="badge" data-testid="run-focused">
+                          focused
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          className="btn btn--sm btn--ghost"
+                          onClick={() => onFocus(run.runId as string)}
+                          aria-label={`Focus run ${run.runId}`}
+                        >
+                          Focus
+                        </button>
+                      )
+                    ) : null}
                     <Link className="btn btn--sm btn--ghost" href={`/runs/${run.runId}`}>
                       Open
                     </Link>

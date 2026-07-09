@@ -9,7 +9,7 @@
  * automatically; tokens therefore never leave loopback.
  */
 import type { ReviewDecision, ReviewMode, RiskTier, RunProjection } from '@software-factory/core';
-import type { RunAggregate } from './types';
+import type { InterventionItem, InterventionQueueSnapshot, RunAggregate } from './types';
 import type { LocalSession } from './session';
 
 export type { RunAggregate } from './types';
@@ -121,6 +121,99 @@ export function submitReview(
   input: SubmitReviewInput,
 ): Promise<MutationResult<SubmitReviewResult>> {
   return mutate<SubmitReviewResult>(`/api/runs/${encodeURIComponent(runId)}/review`, session, {
+    ...input,
+  });
+}
+
+/* ----------------------------------------------------------------------------
+ * Execution controls (U5 command surface; U9 operator UI)
+ *
+ * These commands are idempotent and state-checked SERVER-side (duplicate
+ * starts converge on the existing queue job; pause/resume validate the
+ * projected execution state), so they deliberately omit `expectedVersion` —
+ * on a live run every worker event bumps the version and a stale check would
+ * reject nearly every honest click. Cancel keeps its version check because it
+ * is destructive.
+ * ------------------------------------------------------------------------- */
+
+/** Response shape shared by the execution command routes. */
+export interface ExecutionCommandResult {
+  readonly runId?: string;
+  readonly queued?: boolean;
+  readonly alreadyQueued?: boolean;
+  readonly paused?: boolean;
+  readonly alreadyPaused?: boolean;
+  readonly resumed?: boolean;
+  readonly execution?: { readonly state: string; readonly reason?: string };
+  readonly run?: RunProjection;
+}
+
+export function startExecution(
+  session: LocalSession,
+  runId: string,
+  reason?: string,
+): Promise<MutationResult<ExecutionCommandResult>> {
+  return mutate(`/api/runs/${encodeURIComponent(runId)}/start`, session, { reason });
+}
+
+export function pauseExecution(
+  session: LocalSession,
+  runId: string,
+  reason?: string,
+): Promise<MutationResult<ExecutionCommandResult>> {
+  return mutate(`/api/runs/${encodeURIComponent(runId)}/pause`, session, { reason });
+}
+
+export function resumeExecution(
+  session: LocalSession,
+  runId: string,
+  reason?: string,
+): Promise<MutationResult<ExecutionCommandResult>> {
+  return mutate(`/api/runs/${encodeURIComponent(runId)}/resume`, session, { reason });
+}
+
+export function retryExecution(
+  session: LocalSession,
+  runId: string,
+  options: { readonly reason?: string; readonly ticketId?: string } = {},
+): Promise<MutationResult<ExecutionCommandResult>> {
+  return mutate(`/api/runs/${encodeURIComponent(runId)}/retry`, session, { ...options });
+}
+
+export function rerunGates(
+  session: LocalSession,
+  runId: string,
+  reason?: string,
+): Promise<MutationResult<ExecutionCommandResult>> {
+  return mutate(`/api/runs/${encodeURIComponent(runId)}/gates/rerun`, session, { reason });
+}
+
+/* ----------------------------------------------------------------------------
+ * Operator intervention queue (X4)
+ * ------------------------------------------------------------------------- */
+
+/** Poll the cross-run operator intervention queue (read-only, no token). */
+export async function fetchInterventions(): Promise<InterventionQueueSnapshot> {
+  const res = await fetch('/api/interventions', {
+    headers: { accept: 'application/json' },
+    cache: 'no-store',
+  });
+  if (!res.ok) {
+    throw new Error(`interventions_fetch_failed:${res.status}`);
+  }
+  const body = (await res.json()) as {
+    interventions?: InterventionItem[];
+    openCount?: number;
+  };
+  return { interventions: body.interventions ?? [], openCount: body.openCount ?? 0 };
+}
+
+export function resolveInterventionItem(
+  session: LocalSession,
+  interventionId: string,
+  input: { readonly resolution: string; readonly note?: string },
+): Promise<MutationResult<{ alreadyResolved: boolean; intervention: InterventionItem }>> {
+  return mutate(`/api/interventions/${encodeURIComponent(interventionId)}/resolve`, session, {
     ...input,
   });
 }

@@ -124,8 +124,21 @@ ledger projections.
 | Setup checklist | `SetupChecklist`                                           | Adapter auth/setup, sandbox availability, GitHub/Render setup; actionable, not decorative                                                                  |
 | Deploy status   | `DeployStatus`                                             | Render config validity, deploy phases, hosted health; hosted URL only after health success                                                                 |
 | Operator (U11)  | `HealthPanel`, `AdapterPanel`, `QueuePanel`, `DeployPanel` | Operator-facing health/resource/queue/deploy diagnostics                                                                                                   |
+| Blueprint lanes (U9) | `BlueprintLanes`                                      | The FOCUSED run's pipeline as dense status strips — research, planning, queued tickets, active workers, gates, repair, package, deploy — plus the capacity/queue/blocking pulse row. No card mosaic; reuses badge/mono vocabulary |
+| Research brief (U9) | `ResearchBrief`                                        | Source-backed findings, sources, assumptions, and gaps from the research projection; evidence readable without raw JSON                                    |
+| Contract handoff (U9) | `ContractHandoff`                                    | Build contract (scope, workspace, write boundaries, risks, gate expectations, deploy target, completion criteria, approvals) + dry-run preflight check rows as scannable structured rows, with the start/command actions adjacent |
+| Run command bar (U9) | `RunCommandBar`                                       | Compact guarded execution controls — start, pause, resume, retry, re-run gates, cancel — plus preview/deploy state badges; every action is event-confirmed |
+| Intervention queue (U9) | `InterventionQueue`                                | Cross-run operator intervention queue (X4), filterable by run, severity, blocking stage, and required action; links each item back to its run/ledger evidence; designed empty state when nothing needs a human |
+| Run strip (U9)  | `RunStrip`                                                 | Compact cross-run strip: one chip per run (status + needs-attention count); "focus" switches which run the blueprint lanes render — never a mixed view     |
 
 **First screen is the Factory Floor run surface, not a marketing landing page.**
+
+**U9 operator hierarchy (Factory Floor, binding):** (1) items blocking on a human
+(open interventions, failed preflight) render first and stay visible, (2) the
+focused run's blueprint lanes and contract/preflight handoff, (3) run controls
+and new-run intake, (4) run history collapsed/secondary and clearable. The
+blueprint lanes always render exactly ONE focused run; the run strip and run
+board switch focus — never a mixed, ambiguous cross-run view.
 
 ---
 

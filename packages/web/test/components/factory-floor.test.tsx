@@ -9,23 +9,45 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import type { ReactElement, ReactNode } from 'react';
-import { render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import {
+  canReviewUnblock,
   projectArtifacts,
   projectOperator,
+  projectResearch,
   projectRun,
   projectTickets,
 } from '@software-factory/core';
-import { buildMarketplaceRunEvents } from '../../../../tests/fixtures/marketplace-run';
+import type { FactoryEvent } from '@software-factory/core';
 import {
+  buildFullFactoryRunEvents,
+  buildMarketplaceRunEvents,
+} from '../../../../tests/fixtures/marketplace-run';
+import {
+  executionJobId,
+  projectExecutionQueue,
+} from '../../src/server/execution/queue';
+import { projectPreflight } from '../../src/server/execution/preflight';
+import {
+  filterInterventions,
+  projectInterventions,
+} from '../../src/server/execution/interventions';
+import {
+  deriveBlueprintLanes,
   deriveDeploy,
+  deriveFactoryPulse,
   deriveGateOutcomes,
   derivePackage,
   derivePreview,
   deriveRepairSummaries,
   deriveReviews,
 } from '../../src/lib/run-view';
-import type { RunAggregate, SetupStatus } from '../../src/lib/types';
+import type {
+  InterventionItem,
+  InterventionQueueSnapshot,
+  RunAggregate,
+  SetupStatus,
+} from '../../src/lib/types';
 import { SessionProvider } from '../../src/components/session-context';
 import { SupervisorPanel } from '../../src/components/factory-floor/SupervisorPanel';
 import { WorkerBoard } from '../../src/components/factory-floor/WorkerBoard';
@@ -39,37 +61,101 @@ import { RunControl } from '../../src/components/factory-floor/RunControl';
 import { RunView } from '../../src/components/factory-floor/RunView';
 import { FactoryFloor } from '../../src/components/factory-floor/FactoryFloor';
 import { ReviewStudio } from '../../src/components/factory-floor/ReviewStudio';
+import { BlueprintLanes } from '../../src/components/factory-floor/BlueprintLanes';
+import { ContractHandoff } from '../../src/components/factory-floor/ContractHandoff';
+import { RunCommandBar } from '../../src/components/factory-floor/RunCommandBar';
+import { InterventionQueue } from '../../src/components/factory-floor/InterventionQueue';
+import { RunStrip } from '../../src/components/factory-floor/RunStrip';
 import { Mono } from '../../src/components/factory-floor/primitives';
-import type { BlockedStageView, ReviewItem } from '../../src/lib/run-view';
+import type { BlockedStageView, BlueprintInputs, ReviewItem } from '../../src/lib/run-view';
 
 const SESSION = { operatorToken: 'tok-test', csrfToken: 'csrf-test' };
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }) }));
 vi.mock('next/link', () => ({
-  default: ({ href, children }: { href: string; children: ReactNode }) => (
-    <a href={typeof href === 'string' ? href : '#'}>{children}</a>
+  default: ({
+    href,
+    children,
+    ...rest
+  }: { href: string; children: ReactNode } & Record<string, unknown>) => (
+    <a href={typeof href === 'string' ? href : '#'} {...rest}>
+      {children}
+    </a>
   ),
 }));
 
-function buildAggregate(runId = 'run-test'): { aggregate: RunAggregate } {
-  const events = buildMarketplaceRunEvents(runId);
+function aggregateFromEvents(events: readonly FactoryEvent[], runId: string): RunAggregate {
   const run = projectRun(events, runId);
-  const aggregate: RunAggregate = {
+  return {
     run,
     tickets: projectTickets(events, runId).tickets,
     artifacts: projectArtifacts(events, runId).artifacts,
     operator: projectOperator(events, runId),
+    research: projectResearch(events, runId),
+    preflight: projectPreflight(events, runId),
+    executionJob: projectExecutionQueue(events, runId).byJobId[executionJobId(runId)] ?? null,
     preview: derivePreview(events),
     deploy: deriveDeploy(events),
     packageView: derivePackage(events),
     reviews: deriveReviews(events),
     gates: deriveGateOutcomes(events),
     repairs: deriveRepairSummaries(events),
-    interventions: [],
+    interventions: filterInterventions(projectInterventions(events), {
+      runId,
+      openOnly: true,
+    }).map((item) => ({
+      interventionId: item.interventionId,
+      kind: item.kind,
+      blockingStage: item.blockingStage,
+      severity: item.severity,
+      reason: item.reason,
+      requiredAction: item.requiredAction,
+      approvable: canReviewUnblock(item.kind),
+    })),
     lastSequence: run.lastSequence,
     tail: run.ledger,
   };
-  return { aggregate };
+}
+
+function buildAggregate(runId = 'run-test'): { aggregate: RunAggregate } {
+  return { aggregate: aggregateFromEvents(buildMarketplaceRunEvents(runId), runId) };
+}
+
+function buildFullAggregate(runId = 'run-full'): {
+  aggregate: RunAggregate;
+  events: FactoryEvent[];
+} {
+  const events = buildFullFactoryRunEvents(runId);
+  return { aggregate: aggregateFromEvents(events, runId), events };
+}
+
+function blueprintInputs(aggregate: RunAggregate): BlueprintInputs {
+  return {
+    run: aggregate.run,
+    tickets: aggregate.tickets,
+    research: aggregate.research,
+    preflight: aggregate.preflight,
+    executionJob: aggregate.executionJob,
+    gates: aggregate.gates,
+    repairs: aggregate.repairs,
+    packageView: aggregate.packageView,
+    deploy: aggregate.deploy,
+    operator: aggregate.operator,
+  };
+}
+
+function pulseOf(aggregate: RunAggregate) {
+  return deriveFactoryPulse({
+    run: aggregate.run,
+    tickets: aggregate.tickets,
+    operator: aggregate.operator,
+    preflight: aggregate.preflight,
+    interventions: aggregate.interventions,
+  });
+}
+
+function interventionItemsOf(events: readonly FactoryEvent[]): InterventionItem[] {
+  return projectInterventions(events).interventions.map((item) => ({ ...item }));
 }
 
 function withSession(node: ReactElement): ReactElement {
@@ -396,5 +482,369 @@ describe('FactoryFloor empty state', () => {
     expect(screen.getByText('No runs yet.')).toBeInTheDocument();
     // Anti-slop: no fake progress in the empty state.
     expect(screen.queryByRole('progressbar')).toBeNull();
+    // The empty intervention queue is a DESIGNED feature state, not bare text.
+    expect(screen.getByTestId('interventions-empty')).toHaveTextContent(
+      /nothing needs you — the factory is running clean/i,
+    );
+  });
+});
+
+describe('BlueprintLanes (U9)', () => {
+  it('renders all eight pipeline lanes from replayed projections', () => {
+    const { aggregate } = buildFullAggregate();
+    render(<BlueprintLanes inputs={blueprintInputs(aggregate)} pulse={pulseOf(aggregate)} />);
+
+    for (const lane of [
+      'research',
+      'planning',
+      'queue',
+      'workers',
+      'gates',
+      'repair',
+      'package',
+      'deploy',
+    ]) {
+      expect(screen.getByTestId(`lane-${lane}`)).toBeInTheDocument();
+    }
+    // §6 reduced-trust: the fixture's sandbox fallback is loudly labeled.
+    expect(screen.getByText('reduced trust')).toBeVisible();
+    expect(within(screen.getByTestId('lane-research')).getByText('brief complete')).toBeVisible();
+    expect(
+      within(screen.getByTestId('lane-research')).getByText(/2 findings · 2 sources · 1 open gaps/),
+    ).toBeVisible();
+    expect(within(screen.getByTestId('lane-gates')).getByText('failing')).toBeVisible();
+    expect(within(screen.getByTestId('lane-deploy')).getByText('setup required')).toBeVisible();
+    expect(
+      within(screen.getByTestId('lane-workers')).getByText(/capacity 3\/5/),
+    ).toBeVisible();
+  });
+
+  it('shows research findings and source evidence without raw JSON', () => {
+    const { aggregate } = buildFullAggregate();
+    render(<BlueprintLanes inputs={blueprintInputs(aggregate)} pulse={pulseOf(aggregate)} />);
+
+    const researchLane = screen.getByTestId('lane-research');
+    fireEvent.click(within(researchLane).getByText('evidence'));
+
+    expect(
+      screen.getByText(/repo already contains a provider\/request scaffold/),
+    ).toBeInTheDocument();
+    expect(screen.getByText('verified fact')).toBeInTheDocument();
+    // Source evidence: locator rendered as machine data, not a JSON dump.
+    expect(
+      screen.getByText('generated/ai-services-marketplace/apps/web'),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/which payment provider/i)).toBeInTheDocument();
+    expect(researchLane.textContent).not.toContain('{');
+  });
+
+  it('shows the pulse with capacity, queue, throttle reason, and blocking item', () => {
+    const { aggregate } = buildFullAggregate();
+    render(<BlueprintLanes inputs={blueprintInputs(aggregate)} pulse={pulseOf(aggregate)} />);
+
+    const pulse = screen.getByTestId('factory-pulse');
+    expect(within(pulse).getByText('3 active')).toBeVisible();
+    expect(within(pulse).getByText('3/5')).toBeVisible();
+    expect(screen.getByTestId('pulse-throttle')).toHaveTextContent(/CPU budget reached/);
+    expect(screen.getByTestId('pulse-blocking')).toHaveTextContent(
+      /deploy: Connect the GitHub destination/,
+    );
+  });
+
+  it('updates queue and capacity reasons as events arrive (projection replay)', () => {
+    const runId = 'run-live';
+    const events = buildFullFactoryRunEvents(runId);
+    const throttleIndex = events.findIndex((e) => e.type === 'adapter.capacity_changed');
+    expect(throttleIndex).toBeGreaterThan(0);
+
+    const before = aggregateFromEvents(events.slice(0, throttleIndex), runId);
+    const after = aggregateFromEvents(events, runId);
+
+    const beforeLanes = deriveBlueprintLanes(blueprintInputs(before));
+    const afterLanes = deriveBlueprintLanes(blueprintInputs(after));
+    const workersBefore = beforeLanes.find((lane) => lane.id === 'workers');
+    const workersAfter = afterLanes.find((lane) => lane.id === 'workers');
+    expect(workersBefore?.metric).toContain('capacity 5/5');
+    expect(workersAfter?.metric).toContain('capacity 3/5');
+    expect(pulseOf(before).throttleReason).toBeUndefined();
+    expect(pulseOf(after).throttleReason).toMatch(/CPU budget reached/);
+  });
+});
+
+describe('ContractHandoff (U9)', () => {
+  it('renders the build contract as structured rows, never raw JSON', () => {
+    const { aggregate } = buildFullAggregate();
+    render(
+      <ContractHandoff contract={aggregate.run.buildContract} preflight={aggregate.preflight} />,
+    );
+
+    const contract = screen.getByTestId('build-contract');
+    expect(within(contract).getByText(/12 tickets from scaffold through hosted deploy/)).toBeVisible();
+    expect(
+      within(contract).getByTitle('generated/ai-services-marketplace/**'),
+    ).toBeInTheDocument();
+    expect(within(contract).getByText(/deploy ticket is high-risk/)).toBeVisible();
+    expect(within(contract).getByText('secret-scan')).toBeVisible();
+    expect(within(contract).getByText('render:ai-services-marketplace')).toBeVisible();
+    expect(
+      within(contract).getByText(/High-risk deploy requires 2 approvals/),
+    ).toBeVisible();
+    expect(within(contract).getByText('research-backed')).toBeVisible();
+    expect(contract.textContent).not.toContain('"scope"');
+  });
+
+  it('renders preflight check rows with pass state', () => {
+    const { aggregate } = buildFullAggregate();
+    render(
+      <ContractHandoff contract={aggregate.run.buildContract} preflight={aggregate.preflight} />,
+    );
+
+    expect(screen.getByText('preflight passed · attempt 1')).toBeVisible();
+    const rows = screen.getAllByTestId('preflight-check');
+    expect(rows).toHaveLength(8);
+    expect(within(rows[0]).getByText('pass')).toBeVisible();
+  });
+
+  it('shows honest empty states before contract and preflight exist', () => {
+    render(
+      <ContractHandoff
+        contract={undefined}
+        preflight={{ status: 'none', attempt: 0, checks: [], failedChecks: [] }}
+      />,
+    );
+    expect(screen.getByTestId('contract-empty')).toHaveTextContent(/No build contract yet/);
+    expect(screen.getByText(/Not rehearsed yet/)).toBeVisible();
+    expect(screen.getByText('preflight pending')).toBeVisible();
+  });
+});
+
+describe('RunCommandBar (U9)', () => {
+  it('offers Start for a planned run that has not requested execution', () => {
+    render(
+      withSession(
+        <RunCommandBar
+          runId="run-a"
+          status="planned"
+          executionState="not_requested"
+          lastSequence={10}
+        />,
+      ),
+    );
+    expect(screen.getByRole('button', { name: /start execution for run run-a/i })).toBeEnabled();
+    expect(screen.queryByRole('button', { name: /pause/i })).toBeNull();
+  });
+
+  it('offers Pause + Cancel while execution is started', () => {
+    const { aggregate } = buildFullAggregate('run-b');
+    expect(aggregate.run.executionState).toBe('started');
+    render(
+      withSession(
+        <RunCommandBar
+          runId="run-b"
+          status={aggregate.run.status}
+          executionState={aggregate.run.executionState}
+          lastSequence={aggregate.lastSequence}
+          preview={aggregate.preview}
+          deploy={aggregate.deploy}
+        />,
+      ),
+    );
+    expect(screen.getByRole('button', { name: /pause execution/i })).toBeEnabled();
+    expect(screen.getByRole('button', { name: /cancel run/i })).toBeEnabled();
+    expect(screen.queryByRole('button', { name: /start execution/i })).toBeNull();
+    // Preview/deploy badges stay honest (from events).
+    expect(screen.getByTestId('preview-status')).toHaveTextContent('ready');
+    expect(screen.getByTestId('deploy-summary')).toHaveTextContent('setup required');
+  });
+
+  it('offers Resume when paused and Retry with the reason when blocked', () => {
+    const { rerender } = render(
+      withSession(
+        <RunCommandBar runId="run-c" status="running" executionState="paused" lastSequence={5} />,
+      ),
+    );
+    expect(screen.getByRole('button', { name: /resume execution/i })).toBeEnabled();
+
+    rerender(
+      withSession(
+        <RunCommandBar
+          runId="run-c"
+          status="running"
+          executionState="blocked"
+          executionReason="preflight failed: credentials"
+          lastSequence={5}
+        />,
+      ),
+    );
+    expect(screen.getByRole('button', { name: /retry execution/i })).toBeEnabled();
+    expect(screen.getByTestId('execution-reason')).toHaveTextContent(/preflight failed/);
+  });
+});
+
+describe('InterventionQueue (U9/X4)', () => {
+  function twoRunQueue(): InterventionQueueSnapshot {
+    const a = interventionItemsOf(buildFullFactoryRunEvents('run-alpha'));
+    const b = interventionItemsOf(buildFullFactoryRunEvents('run-beta'));
+    const interventions = [...a, ...b];
+    return { interventions, openCount: interventions.length };
+  }
+
+  it('lists interventions across runs with run id, stage, and ledger link', () => {
+    render(withSession(<InterventionQueue snapshot={twoRunQueue()} />));
+
+    const items = screen.getAllByTestId('intervention-item');
+    expect(items).toHaveLength(2);
+    expect(items[0]).toHaveAttribute('data-run-id', 'run-alpha');
+    expect(items[1]).toHaveAttribute('data-run-id', 'run-beta');
+    expect(
+      within(items[0]).getByRole('link', { name: /open ledger evidence/i }),
+    ).toHaveAttribute('href', '/runs/run-alpha');
+    expect(within(items[0]).getByText(/seq \d+/)).toBeInTheDocument();
+  });
+
+  it('filters by run, severity, blocking stage, and required action', () => {
+    render(withSession(<InterventionQueue snapshot={twoRunQueue()} />));
+
+    fireEvent.change(screen.getByLabelText('Filter interventions by run'), {
+      target: { value: 'run-beta' },
+    });
+    expect(screen.getAllByTestId('intervention-item')).toHaveLength(1);
+    expect(screen.getByTestId('intervention-item')).toHaveAttribute('data-run-id', 'run-beta');
+
+    fireEvent.change(screen.getByLabelText('Filter interventions by run'), {
+      target: { value: 'all' },
+    });
+    fireEvent.change(screen.getByLabelText('Filter interventions by severity'), {
+      target: { value: 'critical' },
+    });
+    expect(screen.queryAllByTestId('intervention-item')).toHaveLength(0);
+    expect(screen.getByTestId('interventions-empty')).toHaveTextContent(/nothing matches/i);
+
+    fireEvent.change(screen.getByLabelText('Filter interventions by severity'), {
+      target: { value: 'warn' },
+    });
+    fireEvent.change(screen.getByLabelText('Filter interventions by blocking stage'), {
+      target: { value: 'deploy' },
+    });
+    fireEvent.change(screen.getByLabelText('Filter interventions by required action'), {
+      target: { value: 'render credentials' },
+    });
+    expect(screen.getAllByTestId('intervention-item')).toHaveLength(2);
+  });
+
+  it('renders the designed empty state when the factory is running clean', () => {
+    render(withSession(<InterventionQueue snapshot={{ interventions: [], openCount: 0 }} />));
+    const empty = screen.getByTestId('interventions-empty');
+    expect(empty).toHaveTextContent(/nothing needs you — the factory is running clean/i);
+    expect(empty).toHaveTextContent(/across every run/i);
+  });
+
+  it('offers Focus for other runs and asks for a resolution before resolving', () => {
+    const onFocus = vi.fn();
+    render(
+      withSession(
+        <InterventionQueue
+          snapshot={twoRunQueue()}
+          focusedRunId="run-alpha"
+          onFocusRun={onFocus}
+        />,
+      ),
+    );
+
+    // The focused run's item offers no Focus button; the other run's does.
+    const items = screen.getAllByTestId('intervention-item');
+    expect(within(items[0]).queryByRole('button', { name: /focus run/i })).toBeNull();
+    fireEvent.click(within(items[1]).getByRole('button', { name: /focus run run-beta/i }));
+    expect(onFocus).toHaveBeenCalledWith('run-beta');
+
+    // Resolve requires an explicit ledger-recorded resolution.
+    fireEvent.click(within(items[0]).getByRole('button', { name: /resolve intervention/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Record' }));
+    expect(screen.getByRole('alert')).toHaveTextContent(/state how this was resolved/i);
+  });
+});
+
+describe('RunStrip (U9)', () => {
+  it('marks the focused run and switches focus on press', () => {
+    const runs = [
+      projectRun(buildFullFactoryRunEvents('run-one'), 'run-one'),
+      projectRun(buildMarketplaceRunEvents('run-two'), 'run-two'),
+    ];
+    const onFocus = vi.fn();
+    render(
+      <RunStrip
+        runs={runs}
+        focusedRunId="run-one"
+        openInterventionsByRun={{ 'run-one': 1 }}
+        onFocus={onFocus}
+      />,
+    );
+
+    const one = screen.getByRole('button', { name: 'Focus run run-one' });
+    expect(one).toHaveAttribute('aria-pressed', 'true');
+    expect(within(one).getByText('1 open')).toBeInTheDocument();
+
+    const two = screen.getByRole('button', { name: 'Focus run run-two' });
+    expect(two).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(two);
+    expect(onFocus).toHaveBeenCalledWith('run-two');
+  });
+});
+
+describe('FactoryFloor blueprint-first hierarchy (U9/KTD7)', () => {
+  const setup: SetupStatus = {
+    operatorToken: { present: true },
+    sandbox: { status: 'available' },
+    adapters: { status: 'ready', detected: ['codex-cli'] },
+    deploy: { status: 'required' },
+    workspace: { root: 'C:\\repo\\software-factory' },
+  };
+
+  function renderFloor() {
+    const runId = 'run-floor';
+    const events = buildFullFactoryRunEvents(runId);
+    const aggregate = aggregateFromEvents(events, runId);
+    const items = interventionItemsOf(events);
+    return render(
+      withSession(
+        <FactoryFloor
+          initialRuns={[aggregate.run]}
+          setup={setup}
+          latest={aggregate}
+          initialInterventions={{ interventions: items, openCount: items.length }}
+        />,
+      ),
+    );
+  }
+
+  it('orders interventions above the blueprint, controls, then run history', () => {
+    renderFloor();
+
+    const interventions = screen.getByLabelText('Operator interventions');
+    const blueprint = screen.getByLabelText('Factory blueprint');
+    const intake = screen.getByLabelText('Run control');
+    const history = screen.getByLabelText('Runs');
+
+    const before = (a: Element, b: Element): boolean =>
+      (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+    expect(before(interventions, blueprint)).toBe(true);
+    expect(before(blueprint, intake)).toBe(true);
+    expect(before(intake, history)).toBe(true);
+
+    // The blueprint region includes the contract handoff with commands adjacent.
+    expect(screen.getByLabelText('Build contract and preflight')).toBeInTheDocument();
+    expect(screen.getByTestId('run-command-bar')).toBeInTheDocument();
+  });
+
+  it('clearing run history preserves the focused blueprint', () => {
+    renderFloor();
+
+    expect(screen.getByTestId('blueprint-run')).toHaveTextContent(/run-floor/);
+    fireEvent.click(screen.getByRole('button', { name: 'Clear view' }));
+
+    expect(screen.getByText(/Run history is hidden/)).toBeInTheDocument();
+    // Focus (and the lanes) survive the clear — KTD7.
+    expect(screen.getByLabelText('Factory blueprint')).toBeInTheDocument();
+    expect(screen.getByTestId('blueprint-run')).toHaveTextContent(/run-floor/);
   });
 });

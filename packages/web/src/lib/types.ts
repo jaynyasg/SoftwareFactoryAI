@@ -7,9 +7,12 @@
  */
 import type {
   ArtifactView,
+  EventSeverity,
+  InterventionKind,
   LedgerRow,
   OperatorMetrics,
   OperatorProjection,
+  ResearchProjection,
   RunDiagnosticsReport,
   RunProjection,
   TicketView,
@@ -24,12 +27,83 @@ import type {
   ReviewItem,
 } from './run-view';
 
+/**
+ * One dry-run preflight check outcome, ready to render as a structured row
+ * (client-safe mirror of the server preflight projection — U9).
+ */
+export interface PreflightCheckRow {
+  readonly check: string;
+  readonly ok: boolean;
+  readonly detail?: string;
+  readonly reason?: string;
+  readonly requiredAction?: string;
+}
+
+/** The latest projected preflight rehearsal for a run (X2), or `none`. */
+export interface PreflightSnapshot {
+  readonly status: 'none' | 'running' | 'passed' | 'failed';
+  readonly attempt: number;
+  readonly checks: readonly PreflightCheckRow[];
+  readonly failedChecks: readonly string[];
+}
+
+/** The projected run-execution queue job (client-safe mirror — U9). */
+export interface ExecutionJobSnapshot {
+  readonly jobId: string;
+  readonly jobKind: string;
+  readonly attempt: number;
+  readonly status:
+    | 'queued'
+    | 'leased'
+    | 'completed'
+    | 'failed'
+    | 'blocked'
+    | 'cancelled'
+    | 'abandoned';
+  readonly reason?: string;
+  readonly ticketId?: string;
+  readonly enqueuedAt: number;
+}
+
+/**
+ * One cross-run operator intervention item (X4), as served by
+ * GET /api/interventions. Client-safe mirror of the server projection.
+ */
+export interface InterventionItem {
+  readonly interventionId: string;
+  readonly runId: string;
+  readonly ticketId?: string;
+  readonly kind: InterventionKind;
+  readonly severity: EventSeverity;
+  readonly blockingStage: string;
+  readonly reason: string;
+  readonly requiredAction: string;
+  readonly raisedAt: number;
+  readonly sequence: number;
+  readonly status: 'open' | 'resolved';
+  readonly resolution?: string;
+  readonly resolutionNote?: string;
+  readonly resolvedAt?: number;
+}
+
+/** The cross-run intervention queue payload the UI polls (X4). */
+export interface InterventionQueueSnapshot {
+  readonly interventions: readonly InterventionItem[];
+  readonly openCount: number;
+}
+
 /** The full projected view of one run, ready to render. */
 export interface RunAggregate {
   readonly run: RunProjection;
   readonly tickets: readonly TicketView[];
   readonly artifacts: readonly ArtifactView[];
   readonly operator: OperatorProjection;
+  /** Research status, sources, findings, assumptions, and gaps (U1–U3). */
+  readonly research: ResearchProjection;
+  /** Latest dry-run preflight rehearsal outcome for the run (X2/U5). */
+  readonly preflight: PreflightSnapshot;
+  /** The run-execution queue job, when one was ever enqueued (U5). */
+  readonly executionJob: ExecutionJobSnapshot | null;
   /** Preview lifecycle (url present only after `preview.ready`). */
   readonly preview: PreviewView;
   /** Deploy lifecycle (hosted url present only after `deploy.hosted_ready`). */

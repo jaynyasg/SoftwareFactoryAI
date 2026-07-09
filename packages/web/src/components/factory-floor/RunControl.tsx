@@ -1,19 +1,20 @@
 'use client';
 
 /**
- * RunControl — prompt/PRD intake plus the run's operating controls
+ * RunControl — prompt/PRD intake plus the new run's operating controls
  * (DESIGN.md §5; plan R1/R5). Prompt/PRD text, local/GitHub destination,
  * execution-adapter selector, model profile + effort budget, review-mode toggle,
- * and an adaptive worker cap (1–20, default 10, explicitly labeled as a system-gated upper
- * bound). It also surfaces the local preview status for an active run and the
- * start/cancel actions, all guarded by the operator token + CSRF.
+ * and an adaptive worker cap (1–20, default 10, explicitly labeled as a
+ * system-gated upper bound), all guarded by the operator token + CSRF. An
+ * ACTIVE run's execution controls (start/pause/resume/retry/cancel + preview
+ * and deploy badges) live in `RunCommandBar` (U9) — this surface only creates
+ * runs.
  */
 import { useId, useRef, useState } from 'react';
 import type { ChangeEvent, FormEvent } from 'react';
 import type { ReviewMode } from '@software-factory/core';
-import type { DeployView, PreviewView } from '../../lib/run-view';
 import { useSession } from '../session-context';
-import { cancelRun, startRun } from '../../lib/api-client';
+import { startRun } from '../../lib/api-client';
 
 const ADAPTERS = [
   { id: 'codex-cli', label: 'Codex CLI (local)' },
@@ -30,14 +31,6 @@ const MODELS = [
 
 const EFFORTS = ['minimal', 'low', 'medium', 'high', 'extra high', 'maximum'] as const;
 
-const PREVIEW_LABEL: Readonly<Record<PreviewView['status'], string>> = {
-  idle: 'not started',
-  starting: 'starting…',
-  health_pending: 'health pending',
-  ready: 'ready',
-  failed: 'failed',
-};
-
 interface DirectoryHandle {
   readonly name?: string;
 }
@@ -47,23 +40,11 @@ type WindowWithDirectoryPicker = Window & {
 };
 
 export function RunControl({
-  activeRun,
-  preview,
-  deploy,
   defaultLocalFolder,
   onStarted,
-  onChanged,
 }: {
-  readonly activeRun?: {
-    readonly runId: string;
-    readonly status: string;
-    readonly lastSequence: number;
-  };
-  readonly preview?: PreviewView;
-  readonly deploy?: DeployView;
   readonly defaultLocalFolder?: string;
   readonly onStarted?: (runId: string) => void;
-  readonly onChanged?: () => void;
 }) {
   const session = useSession();
   const fieldId = useId();
@@ -85,8 +66,6 @@ export function RunControl({
 
   const canStart =
     (prompt.trim().length > 0 || prdText.trim().length > 0 || prdRef.trim().length > 0) && !busy;
-  const cancellable =
-    activeRun !== undefined && ['created', 'planned', 'running'].includes(activeRun.status);
 
   async function onPrdFileSelected(event: ChangeEvent<HTMLInputElement>): Promise<void> {
     const file = event.target.files?.[0];
@@ -155,31 +134,6 @@ export function RunControl({
       }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Network error starting run.');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function onCancel(): Promise<void> {
-    if (activeRun === undefined) {
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    try {
-      const result = await cancelRun(
-        session,
-        activeRun.runId,
-        activeRun.lastSequence,
-        'operator stop',
-      );
-      if (!result.ok) {
-        setError(result.message ?? `Could not cancel (${result.error}).`);
-      } else {
-        onChanged?.();
-      }
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Network error cancelling run.');
     } finally {
       setBusy(false);
     }
@@ -401,36 +355,7 @@ export function RunControl({
           <button type="submit" className="btn btn--primary" disabled={!canStart}>
             {busy ? 'Working…' : 'Start run'}
           </button>
-          {cancellable ? (
-            <button
-              type="button"
-              className="btn btn--danger"
-              onClick={() => void onCancel()}
-              disabled={busy}
-            >
-              Cancel run
-            </button>
-          ) : null}
         </div>
-
-        {activeRun !== undefined ? (
-          <div className="row" style={{ justifyContent: 'space-between' }}>
-            <span className="label">local preview</span>
-            <span className="badge" data-testid="preview-status">
-              {preview ? PREVIEW_LABEL[preview.status] : 'not started'}
-            </span>
-            {preview?.status === 'ready' && preview.url ? (
-              <a href={preview.url} target="_blank" rel="noreferrer" className="mono">
-                {preview.url}
-              </a>
-            ) : null}
-            {deploy ? (
-              <span className="badge" data-testid="deploy-summary">
-                deploy: {deploy.status.replace(/_/g, ' ')}
-              </span>
-            ) : null}
-          </div>
-        ) : null}
       </form>
     </section>
   );

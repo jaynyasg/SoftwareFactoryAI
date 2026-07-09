@@ -9,7 +9,7 @@
  */
 import type { APIRequestContext } from '@playwright/test';
 import type { FactoryEvent } from '@software-factory/core';
-import { buildMarketplaceRunEvents } from '../fixtures/marketplace-run';
+import { buildFullFactoryRunEvents, buildMarketplaceRunEvents } from '../fixtures/marketplace-run';
 
 /** Append a run's event log to the dev server via the in-process seed route. */
 export async function seedRun(
@@ -29,5 +29,19 @@ export async function seedMarketplaceRun(
 ): Promise<string> {
   const runId = `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
   await seedRun(request, buildMarketplaceRunEvents(runId));
+  return runId;
+}
+
+/**
+ * Seed the FULL-FACTORY run (U9): marketplace body plus research events, a
+ * build contract, a passed preflight, a claimed execution-queue job, and one
+ * OPEN deploy-setup intervention. Returns the run id.
+ */
+export async function seedFullFactoryRun(
+  request: APIRequestContext,
+  prefix: string,
+): Promise<string> {
+  const runId = `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+  await seedRun(request, buildFullFactoryRunEvents(runId));
   return runId;
 }

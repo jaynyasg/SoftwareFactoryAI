@@ -98,14 +98,32 @@
 .factory-screen__nav {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  flex-wrap: wrap;
   gap: var(--space-8);
   min-width: 0;
 }
 
-.factory-screen__top {
+.factory-screen__nav .run-strip {
+  flex: 1;
+  min-width: 0;
+}
+
+.factory-screen__nav-link {
+  margin-left: auto;
+  flex: none;
+}
+
+/* §5 U9 hierarchy: interventions -> blueprint -> controls -> history. */
+.factory-screen__blueprint {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  min-width: 0;
+}
+
+.factory-screen__controls {
   display: grid;
-  grid-template-columns: minmax(460px, 1.35fr) minmax(280px, 0.85fr) minmax(320px, 1fr);
+  grid-template-columns: minmax(420px, 1.4fr) minmax(280px, 1fr);
   gap: var(--space-16);
   align-items: start;
   min-width: 0;
@@ -115,42 +133,386 @@
   min-width: 0;
 }
 
-.active-run__body {
+/* Blueprint region: lanes (left) + contract/preflight handoff (right). */
+.blueprint-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.1fr) minmax(220px, 0.9fr) auto;
-  align-items: center;
-  gap: var(--space-12);
+  grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.9fr);
+  gap: var(--space-16);
+  align-items: start;
+  min-width: 0;
 }
 
-.active-run__title {
-  font-weight: var(--fw-medium);
-  line-height: var(--lh-dense);
+.blueprint-grid__foot {
+  grid-column: 1 / -1;
 }
 
-.run-metrics {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+.blueprint__body {
+  gap: var(--space-8);
+  padding: var(--space-8) var(--space-16) var(--space-12);
+}
+
+/* The intervention panel stays dense so the blueprint below keeps the fold. */
+.iq .panel__body {
+  padding: var(--space-8) var(--space-16) var(--space-12);
   gap: var(--space-8);
 }
 
-.run-metric {
+/* Operator pulse: capacity, queue, throttle, blocking item (dense, one row). */
+.pulse {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2) var(--space-16);
+  padding: var(--space-4) var(--space-8);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-inset);
+  font-size: var(--fs-2xs);
+}
+
+.pulse__item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.pulse__item--wide {
+  flex-basis: 100%;
+  min-width: 0;
+}
+
+.pulse__text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* Blueprint lanes: dense status strips, one per factory stage (no card grid). */
+.lanes {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.lane {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2) var(--space-8);
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--border-subtle);
+  line-height: var(--lh-dense);
+  min-width: 0;
+}
+
+.lane:last-child {
+  border-bottom: none;
+}
+
+.lane__name {
+  flex: 0 0 104px;
+  font-size: var(--fs-2xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+  font-weight: var(--fw-medium);
+}
+
+.lane__metric {
+  flex: none;
+  font-size: var(--fs-2xs);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.lane__detail {
+  flex: 1 1 160px;
+  color: var(--text-muted);
+  font-size: var(--fs-2xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.lane__expand {
+  flex: 1 1 160px;
+  min-width: 0;
+}
+
+.lane__expand[open] {
+  flex-basis: 100%;
+}
+
+.lane__expand > summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-size: var(--fs-2xs);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.lane__expand[open] {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-inset);
+  padding: var(--space-8);
+}
+
+/* Research evidence rows (findings/sources/assumptions/gaps). */
+.research-row {
   display: flex;
   align-items: baseline;
-  justify-content: space-between;
+  gap: var(--space-8);
+  font-size: var(--fs-xs);
+  min-width: 0;
+}
+
+.research-row__body {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.research-row__meta {
+  display: block;
+  font-size: var(--fs-2xs);
+}
+
+/* Contract handoff: structured key/value rows, never raw JSON. */
+.kv {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  gap: var(--space-8);
+  align-items: baseline;
+  padding: var(--space-2) 0;
+  min-width: 0;
+}
+
+.kv__value {
+  font-size: var(--fs-xs);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.contract__rows {
+  gap: var(--space-4);
+}
+
+.contract__list {
+  margin: 0;
+  padding-left: var(--space-16);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  font-size: var(--fs-xs);
+}
+
+.contract__actions {
+  border-bottom: 1px solid var(--border-subtle);
+  padding-bottom: var(--space-8);
+}
+
+.preflight-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.preflight-row {
+  display: grid;
+  grid-template-columns: auto 110px minmax(0, 1fr);
+  align-items: baseline;
+  gap: var(--space-8);
+  font-size: var(--fs-2xs);
+  min-width: 0;
+}
+
+.preflight-row__detail {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+/* Compact run command bar (start/pause/resume/retry/cancel). */
+.cmd-bar {
+  display: flex;
+  flex-direction: column;
   gap: var(--space-8);
   min-width: 0;
 }
 
+.cmd-bar__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8);
+  align-items: center;
+}
+
+.cmd-bar__reason {
+  font-size: var(--fs-2xs);
+  margin: 0;
+}
+
+/* Cross-run strip: one chip per run; pressing focuses the blueprint. */
+.run-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8);
+  min-width: 0;
+}
+
+.run-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-8);
+  padding: var(--space-4) var(--space-8);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-raised);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: var(--fs-2xs);
+  min-width: 0;
+}
+
+.run-chip:hover {
+  border-color: var(--accent);
+}
+
+.run-chip--focused {
+  background: var(--accent-quiet);
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+
+.run-chip__id {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.run-chip__status {
+  white-space: nowrap;
+}
+
+/* Intervention queue (X4): bounded height so the blueprint stays on screen. */
+.iq__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  /* Bounded so the blueprint below always stays on the first screen (KTD7). */
+  max-height: clamp(96px, 14vh, 168px);
+  overflow-y: auto;
+}
+
+.iq__item {
+  border: 1px solid var(--border-subtle);
+  border-left-width: 3px;
+  border-left-color: var(--sev-warn);
+  border-radius: var(--radius-sm);
+  background: var(--bg-base);
+  padding: var(--space-4) var(--space-8);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.iq__item-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-8);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.iq__item-reason {
+  font-size: var(--fs-xs);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.iq__item-action {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--fs-2xs);
+  overflow-wrap: anywhere;
+}
+
+.iq__item-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-8);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.iq__filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4) var(--space-8);
+  align-items: center;
+}
+
+.iq__filters .select--sm {
+  width: auto;
+  min-width: 0;
+  max-width: 180px;
+}
+
+.iq__filters .iq__filter--grow {
+  flex: 1 1 160px;
+  max-width: none;
+}
+
+.iq__filter--toggle {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-4);
+  flex: none;
+}
+
+.iq__empty {
+  padding: var(--space-12);
+}
+
+.iq__resolve {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.iq__resolve-input {
+  width: 200px;
+  padding: var(--space-4) var(--space-8);
+  font-size: var(--fs-2xs);
+}
+
+.select--sm {
+  padding: var(--space-4) var(--space-8);
+  font-size: var(--fs-2xs);
+}
+
 @media (max-width: 1279px) {
-  /* §9 Tablet supervision: two -> single column for the run grid; drawer overlays. */
+  /* §9 Tablet supervision: single-column grids; lanes stack, no side scroll. */
   .run-grid {
     grid-template-columns: minmax(0, 1fr);
   }
   .home-grid,
-  .factory-screen__top {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .active-run__body {
+  .blueprint-grid,
+  .factory-screen__controls {
     grid-template-columns: minmax(0, 1fr);
   }
 }
@@ -949,8 +1311,39 @@
   .control-row--runtime {
     grid-template-columns: minmax(0, 1fr);
   }
-  .run-metrics {
+  /* §9 Mobile triage: lane details wrap instead of truncating meaning away. */
+  .lane__name {
+    flex-basis: 88px;
+  }
+  /* Run chips become full-width rows so ids stay readable (§8). */
+  .factory-screen__nav .run-strip {
+    flex-basis: 100%;
+  }
+  .run-chip {
+    flex: 1 1 100%;
+    justify-content: flex-start;
+  }
+  .run-chip__id {
+    flex: 1;
+    max-width: none;
+    text-align: left;
+  }
+  .lane__detail {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .kv {
     grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-2);
+  }
+  .preflight-row {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+  .preflight-row__detail {
+    grid-column: 1 / -1;
+  }
+  .iq__item-foot {
+    align-items: flex-start;
   }
 }
 

@@ -14,11 +14,20 @@ import type {
   FactoryEvent,
   GateStage,
   InterventionKind,
+  OperatorProjection,
+  ResearchProjection,
   ReviewDecision,
   RiskTier,
+  RunExecutionState,
+  RunProjection,
   RunStatus,
   TicketView,
 } from '@software-factory/core';
+import type {
+  ExecutionJobSnapshot,
+  InterventionItem,
+  PreflightSnapshot,
+} from './types';
 
 /* -------------------------------------------------------------------------- */
 /* Severity / risk -> CSS token classes                                       */
@@ -432,6 +441,320 @@ export function deriveWorkerBoard(tickets: readonly TicketView[]): WorkerBoardMo
     done: tickets.filter((t) => DONE_STATES.has(t.state)),
     blocked: tickets.filter((t) => BLOCKED_STATES.has(t.state)),
   };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Execution state + blueprint lane derivations (U9)                          */
+/* -------------------------------------------------------------------------- */
+
+const EXECUTION_STATE_SEVERITY: Readonly<Record<RunExecutionState, EventSeverity>> = {
+  not_requested: 'info',
+  pending: 'info',
+  queued: 'info',
+  started: 'info',
+  paused: 'warn',
+  blocked: 'warn',
+  completed: 'success',
+  failed: 'error',
+  cancelled: 'warn',
+  unavailable: 'warn',
+};
+
+export function executionStateSeverity(state: RunExecutionState): EventSeverity {
+  return EXECUTION_STATE_SEVERITY[state];
+}
+
+/** Human label for a projected execution state (underscores removed). */
+export function executionStateLabel(state: RunExecutionState): string {
+  return state.replace(/_/g, ' ');
+}
+
+export type BlueprintLaneId =
+  | 'research'
+  | 'planning'
+  | 'queue'
+  | 'workers'
+  | 'gates'
+  | 'repair'
+  | 'package'
+  | 'deploy';
+
+/** One dense status strip in the factory blueprint (never invented state). */
+export interface BlueprintLane {
+  readonly id: BlueprintLaneId;
+  readonly label: string;
+  /** Short projected status word(s), always paired with the severity color. */
+  readonly status: string;
+  readonly severity: EventSeverity;
+  /** Compact machine metric (counts), rendered mono. */
+  readonly metric?: string;
+  /** One-line human detail from the underlying projection. */
+  readonly detail?: string;
+}
+
+/** Everything the blueprint folds over — all replayed projections, no invention. */
+export interface BlueprintInputs {
+  readonly run: RunProjection;
+  readonly tickets: readonly TicketView[];
+  readonly research: ResearchProjection;
+  readonly preflight: PreflightSnapshot;
+  readonly executionJob: ExecutionJobSnapshot | null;
+  readonly gates: readonly GateOutcomeRow[];
+  readonly repairs: readonly RepairSummaryRow[];
+  readonly packageView: PackageView;
+  readonly deploy: DeployView;
+  readonly operator: OperatorProjection;
+}
+
+const DEPLOY_LANE: Readonly<Record<DeployStatusValue, { status: string; severity: EventSeverity }>> =
+  {
+    idle: { status: 'not started', severity: 'info' },
+    setup_required: { status: 'setup required', severity: 'warn' },
+    config_invalid: { status: 'config invalid', severity: 'error' },
+    provider_failed: { status: 'provider failed', severity: 'error' },
+    migration_failed: { status: 'migration failed', severity: 'error' },
+    health_pending: { status: 'health pending', severity: 'warn' },
+    health_failed: { status: 'health failed', severity: 'error' },
+    hosted_ready: { status: 'hosted · healthy', severity: 'success' },
+  };
+
+function researchLane(research: ResearchProjection): BlueprintLane {
+  const base = { id: 'research' as const, label: 'Research' };
+  switch (research.status) {
+    case 'none':
+      return { ...base, status: 'not requested', severity: 'info', detail: 'No research events recorded for this run.' };
+    case 'requested':
+      return { ...base, status: 'requested', severity: 'info', detail: research.objective };
+    case 'in_progress':
+      return {
+        ...base,
+        status: 'in progress',
+        severity: 'info',
+        metric: `${research.readSourceCount}/${research.sourceCount} sources read`,
+        detail: research.objective,
+      };
+    case 'failed':
+      return {
+        ...base,
+        status: 'failed',
+        severity: 'error',
+        metric: `${research.findings.length} findings · ${research.unresolvedGapCount} gaps`,
+        detail: research.failureReason,
+      };
+    case 'completed':
+      return {
+        ...base,
+        status: 'brief complete',
+        severity: 'success',
+        metric: `${research.findings.length} findings · ${research.sourceCount} sources · ${research.unresolvedGapCount} open gaps`,
+        detail: research.briefSummary,
+      };
+    default:
+      return { ...base, status: research.status, severity: 'info' };
+  }
+}
+
+function planningLane(run: RunProjection, tickets: readonly TicketView[]): BlueprintLane {
+  const base = { id: 'planning' as const, label: 'Planning' };
+  const decisions = run.supervisorDecisions.length;
+  if (run.status === 'created') {
+    return { ...base, status: 'planning', severity: 'info', detail: 'Supervisor has not planned this run yet.' };
+  }
+  if (run.status === 'unknown') {
+    return { ...base, status: 'no plan', severity: 'info' };
+  }
+  const count = run.plannedTicketCount ?? tickets.length;
+  return {
+    ...base,
+    status: 'planned',
+    severity: 'success',
+    metric: `${count} tickets · ${decisions} decisions`,
+    detail: run.buildContract !== undefined ? run.buildContract.scope : undefined,
+  };
+}
+
+export function deriveBlueprintLanes(inputs: BlueprintInputs): BlueprintLane[] {
+  const { run, tickets, research, executionJob, gates, repairs, packageView, deploy, operator } =
+    inputs;
+  const board = deriveWorkerBoard(tickets);
+
+  const queueDetail =
+    executionJob !== null
+      ? `execution job ${executionJob.status} · attempt ${executionJob.attempt}${
+          executionJob.reason !== undefined ? ` (${executionJob.reason})` : ''
+        }`
+      : 'No execution job enqueued yet.';
+  const queueLane: BlueprintLane = {
+    id: 'queue',
+    label: 'Queued',
+    status:
+      board.queued.length > 0 ? 'waiting' : board.active.length > 0 ? 'drained' : 'empty',
+    severity: 'info',
+    metric: `${board.queued.length} queued`,
+    detail: queueDetail,
+  };
+
+  const cap = run.requestedWorkerCap ?? 10;
+  const effectiveCap = Math.min(cap, operator.adapterCapacity ?? cap);
+  const throttled = effectiveCap < cap;
+  const workersLane: BlueprintLane = {
+    id: 'workers',
+    label: 'Workers',
+    status: board.active.length > 0 ? 'running' : 'idle',
+    severity: throttled ? 'warn' : 'info',
+    metric: `${board.active.length} active · capacity ${effectiveCap}/${cap}`,
+    detail: throttled ? 'Throttled below the requested cap by system constraints.' : undefined,
+  };
+
+  const failedGates = gates.filter((g) => g.status === 'failed');
+  const runningGates = gates.filter((g) => g.status === 'running');
+  const passedGates = gates.filter((g) => g.status === 'passed');
+  const gatesLane: BlueprintLane = {
+    id: 'gates',
+    label: 'Gates',
+    status:
+      gates.length === 0
+        ? 'not run'
+        : failedGates.length > 0
+          ? 'failing'
+          : runningGates.length > 0
+            ? 'running'
+            : 'passing',
+    severity: failedGates.length > 0 ? 'error' : gates.length === 0 ? 'info' : 'success',
+    metric:
+      gates.length === 0
+        ? undefined
+        : `${passedGates.length} passed · ${failedGates.length} failed`,
+    detail: failedGates[0] !== undefined ? `${failedGates[0].gate}: ${failedGates[0].detail ?? 'failed'}` : undefined,
+  };
+
+  const exhausted = repairs.filter((r) => r.status === 'exhausted');
+  const repairing = repairs.filter((r) => r.status === 'repairing');
+  const repairLane: BlueprintLane = {
+    id: 'repair',
+    label: 'Repair',
+    status:
+      repairs.length === 0
+        ? 'none needed'
+        : exhausted.length > 0
+          ? 'escalated'
+          : repairing.length > 0
+            ? 'repairing'
+            : 'recovered',
+    severity: exhausted.length > 0 ? 'error' : repairing.length > 0 ? 'warn' : repairs.length > 0 ? 'success' : 'info',
+    metric: repairs.length > 0 ? `${repairs.length} ticket(s) in repair` : undefined,
+    detail: exhausted[0]?.reason ?? repairing[0]?.reason,
+  };
+
+  const packageLane: BlueprintLane = {
+    id: 'package',
+    label: 'Package',
+    status: packageView.status === 'packaged' ? 'packaged' : 'not packaged',
+    severity: packageView.status === 'packaged' ? 'success' : 'info',
+    metric:
+      packageView.confidence !== undefined
+        ? `confidence ${formatPercent(packageView.confidence)}`
+        : undefined,
+    detail: packageView.summary,
+  };
+
+  const deployMeta = DEPLOY_LANE[deploy.status];
+  const deployLane: BlueprintLane = {
+    id: 'deploy',
+    label: 'Deploy',
+    status: deployMeta.status,
+    severity: deployMeta.severity,
+    detail: deploy.reason ?? deploy.action ?? (deploy.status === 'hosted_ready' ? deploy.url : undefined),
+  };
+
+  return [
+    researchLane(research),
+    planningLane(run, tickets),
+    queueLane,
+    workersLane,
+    gatesLane,
+    repairLane,
+    packageLane,
+    deployLane,
+  ];
+}
+
+/** The compact operator pulse: capacity, throttle, queue, and blocking item. */
+export interface FactoryPulse {
+  readonly activeWorkers: number;
+  readonly queuedTickets: number;
+  readonly effectiveCapacity: number;
+  readonly requestedCap: number;
+  readonly throttleReason?: string;
+  /** The FIRST currently blocking policy/setup/intervention item, when any. */
+  readonly blocking?: string;
+}
+
+export function deriveFactoryPulse(inputs: {
+  readonly run: RunProjection;
+  readonly tickets: readonly TicketView[];
+  readonly operator: OperatorProjection;
+  readonly preflight: PreflightSnapshot;
+  readonly interventions: readonly BlockedStageView[];
+}): FactoryPulse {
+  const { run, tickets, operator, preflight, interventions } = inputs;
+  const board = deriveWorkerBoard(tickets);
+  const cap = run.requestedWorkerCap ?? 10;
+  const effectiveCapacity = Math.min(cap, operator.adapterCapacity ?? cap);
+  const throttleReason = operator.alerts
+    .filter((alert) => alert.type === 'adapter.capacity_changed')
+    .map((alert) => alert.message)
+    .at(-1);
+
+  let blocking: string | undefined;
+  const firstIntervention = interventions[0];
+  if (firstIntervention !== undefined) {
+    blocking = `${firstIntervention.blockingStage}: ${firstIntervention.requiredAction}`;
+  } else if (preflight.status === 'failed') {
+    blocking = `preflight: ${preflight.failedChecks.join(', ')} failed`;
+  } else if (run.executionState === 'blocked' && run.executionReason !== undefined) {
+    blocking = run.executionReason;
+  }
+
+  return {
+    activeWorkers: board.active.length,
+    queuedTickets: board.queued.length,
+    effectiveCapacity,
+    requestedCap: cap,
+    throttleReason,
+    blocking,
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Cross-run intervention queue filtering (X4, client mirror of the server)   */
+/* -------------------------------------------------------------------------- */
+
+export interface InterventionItemFilter {
+  readonly runId?: string;
+  readonly severity?: EventSeverity;
+  readonly blockingStage?: string;
+  /** Case-insensitive substring match over the required action. */
+  readonly actionText?: string;
+  readonly openOnly?: boolean;
+}
+
+/** Pure client-side filter over the polled cross-run intervention queue. */
+export function filterInterventionItems(
+  items: readonly InterventionItem[],
+  filter: InterventionItemFilter = {},
+): InterventionItem[] {
+  const actionText = filter.actionText?.trim().toLowerCase();
+  return items.filter(
+    (item) =>
+      (filter.openOnly !== true || item.status === 'open') &&
+      (filter.runId === undefined || item.runId === filter.runId) &&
+      (filter.severity === undefined || item.severity === filter.severity) &&
+      (filter.blockingStage === undefined || item.blockingStage === filter.blockingStage) &&
+      (actionText === undefined ||
+        actionText.length === 0 ||
+        item.requiredAction.toLowerCase().includes(actionText)),
+  );
 }
 
 /* -------------------------------------------------------------------------- */

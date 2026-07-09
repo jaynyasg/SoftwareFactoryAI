@@ -18,6 +18,7 @@ import {
   isRealRun,
   projectArtifacts,
   projectOperator,
+  projectResearch,
   projectRun,
   projectTickets,
 } from '@software-factory/core';
@@ -25,6 +26,8 @@ import type { FactoryEvent, RunProjection } from '@software-factory/core';
 import { getApp } from './instance';
 import type { ApiResponse } from './app';
 import { filterInterventions, projectInterventions } from './execution/interventions';
+import { executionJobId, projectExecutionQueue } from './execution/queue';
+import { projectPreflight } from './execution/preflight';
 import {
   deriveDeploy,
   deriveGateOutcomes,
@@ -34,7 +37,13 @@ import {
   deriveReviews,
 } from '../lib/run-view';
 import type { BlockedStageView } from '../lib/run-view';
-import type { OperatorAggregate, RunAggregate, SetupStatus } from '../lib/types';
+import type {
+  InterventionItem,
+  InterventionQueueSnapshot,
+  OperatorAggregate,
+  RunAggregate,
+  SetupStatus,
+} from '../lib/types';
 
 export type { OperatorAggregate, RunAggregate, SetupStatus } from '../lib/types';
 
@@ -68,6 +77,10 @@ export async function loadRunAggregate(
   const tickets = projectTickets(events, runId).tickets;
   const artifacts = projectArtifacts(events, runId).artifacts;
   const operator = projectOperator(events, runId);
+  const research = projectResearch(events, runId);
+  const preflight = projectPreflight(events, runId);
+  const executionJob =
+    projectExecutionQueue(events, runId).byJobId[executionJobId(runId)] ?? null;
   const preview = derivePreview(events);
   const deploy = deriveDeploy(events);
   const packageView = derivePackage(events);
@@ -94,6 +107,9 @@ export async function loadRunAggregate(
     tickets,
     artifacts,
     operator,
+    research,
+    preflight,
+    executionJob,
     preview,
     deploy,
     packageView,
@@ -103,6 +119,28 @@ export async function loadRunAggregate(
     interventions,
     lastSequence: run.lastSequence,
     tail,
+  };
+}
+
+/**
+ * Load the cross-run operator intervention queue (X4) through the same
+ * read-only route the client polls, so the initial render and every poll see
+ * the identical projection.
+ */
+export async function loadInterventionQueue(): Promise<InterventionQueueSnapshot> {
+  const res = await getApp().handle({
+    method: 'GET',
+    path: '/api/interventions',
+    query: {},
+    headers: {},
+  });
+  if (res.status !== 200) {
+    return { interventions: [], openCount: 0 };
+  }
+  const body = bodyOf(res);
+  return {
+    interventions: (body.interventions as InterventionItem[] | undefined) ?? [],
+    openCount: typeof body.openCount === 'number' ? body.openCount : 0,
   };
 }
 
