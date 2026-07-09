@@ -1,7 +1,7 @@
 ---
 title: 'feat: Complete Software Factory build loop'
 type: feat
-status: active
+status: completed
 date: 2026-06-28
 origin: docs/brainstorms/2026-06-28-full-factory-build-loop-requirements.md
 deepened: 2026-07-08
