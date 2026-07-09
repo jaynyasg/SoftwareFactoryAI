@@ -261,6 +261,75 @@ paths:
             application/json:
               schema:
                 type: object
+  /api/runs/{runId}/research:
+    post:
+      operationId: triggerResearch
+      summary: >-
+        Trigger one bounded, source-backed research pass for a run. Idempotent:
+        when research already ran for the run the existing projected state is
+        returned instead of re-running (unless `force` is true).
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResearchTriggerRequest'
+      responses:
+        '201':
+          description: Research ran; the projected research state is returned.
+          content:
+            application/json:
+              schema:
+                type: object
+        '200':
+          description: Research already existed (idempotent repeat).
+          content:
+            application/json:
+              schema:
+                type: object
+        '503':
+          description: Research is not enabled on this server instance.
+          content:
+            application/json:
+              schema:
+                type: object
+    get:
+      operationId: getResearch
+      summary: >-
+        Read the projected research state for a run: status, sources, findings,
+        assumptions, unresolved gaps, and the enriched brief summary.
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      responses:
+        '200':
+          description: Projected research state.
+          content:
+            application/json:
+              schema:
+                type: object
+  /api/runs/{runId}/outputs:
+    get:
+      operationId: getRunOutputs
+      summary: >-
+        Read the run artifact contract: package path, handoff and provenance
+        references, gate evidence, deploy state, and the hosted URL (present
+        ONLY after hosted health passed).
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      responses:
+        '200':
+          description: The projected run outputs/artifact contract.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  runId:
+                    type: string
+                  outputs:
+                    $ref: '#/components/schemas/RunOutputs'
   /api/interventions:
     get:
       operationId: listInterventions
@@ -438,6 +507,156 @@ components:
           type: boolean
         run:
           $ref: '#/components/schemas/RunProjection'
+    ResearchTriggerRequest:
+      type: object
+      properties:
+        objective:
+          type: string
+          description: Optional research objective override for this pass.
+        force:
+          type: boolean
+          description: >-
+            Re-run research even when a projected research state already
+            exists. Without this, repeated triggers return the existing state.
+        budget:
+          type: object
+          properties:
+            maxSources:
+              type: integer
+              minimum: 1
+            maxDurationMs:
+              type: integer
+              minimum: 1
+          additionalProperties: false
+        expectedVersion:
+          type: integer
+          minimum: 0
+      additionalProperties: false
+    RunOutputs:
+      type: object
+      description: >-
+        The stable run artifact contract, derived entirely from ledger events.
+        The same shape is returned to web, CLI, MCP, and Action callers.
+      properties:
+        runId:
+          type: string
+        status:
+          type: string
+        reviewMode:
+          type: string
+        callerFamily:
+          type: string
+        plannedTicketCount:
+          type: integer
+        tickets:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              title:
+                type: string
+              state:
+                type: string
+              riskTier:
+                type: string
+              dependsOn:
+                type: array
+                items:
+                  type: string
+        previewUrl:
+          type: string
+          description: Local preview URL — present only after `preview.ready`.
+        hostedUrl:
+          type: string
+          description: >-
+            Hosted URL — present ONLY after `deploy.hosted_ready`, i.e. after
+            the provider succeeded AND the hosted health check passed.
+        repoPath:
+          type: string
+          description: Packaged repo artifact path from `package.created`.
+        handoffRef:
+          type: string
+          description: Handoff markdown reference from `package.created`.
+        provenanceRef:
+          type: string
+          description: Provenance bundle reference from `package.created`.
+        handoffSummary:
+          type: string
+        deploy:
+          type: object
+          properties:
+            status:
+              type: string
+              enum:
+                - idle
+                - setup_required
+                - config_invalid
+                - provider_failed
+                - migration_failed
+                - health_pending
+                - health_failed
+                - hosted_ready
+            url:
+              type: string
+              description: Present only on `hosted_ready`.
+            reason:
+              type: string
+            action:
+              type: string
+            retryable:
+              type: boolean
+        tests:
+          type: object
+          properties:
+            passed:
+              type: integer
+            failed:
+              type: integer
+            total:
+              type: integer
+            summary:
+              type: string
+            gates:
+              type: array
+              items:
+                type: object
+                properties:
+                  gate:
+                    type: string
+                  status:
+                    type: string
+                    enum:
+                      - passed
+                      - failed
+                  detail:
+                    type: string
+        artifacts:
+          type: array
+          items:
+            type: object
+            properties:
+              artifactId:
+                type: string
+              kind:
+                type: string
+              path:
+                type: string
+              confidence:
+                type: number
+        eventsUrl:
+          type: string
+          description: Absolute URL of the read-only event log for this run.
+        diagnostics:
+          type: array
+          items:
+            type: object
+            properties:
+              code:
+                type: string
+              message:
+                type: string
     RunProjection:
       type: object
       properties:

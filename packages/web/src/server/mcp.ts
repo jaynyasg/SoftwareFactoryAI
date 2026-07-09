@@ -209,7 +209,8 @@ const TOOLS: readonly McpTool[] = [
   },
   {
     name: 'software_factory_resolve_intervention',
-    description: 'Resolve one operator intervention with a resolution note.',
+    description:
+      'Resolve one operator intervention with a resolution note. Resolving an already-resolved intervention returns its existing state.',
     inputSchema: {
       type: 'object',
       required: ['interventionId', 'resolution'],
@@ -221,6 +222,80 @@ const TOOLS: readonly McpTool[] = [
       },
       additionalProperties: false,
     },
+  },
+  {
+    name: 'software_factory_trigger_research',
+    description:
+      'Trigger one bounded, source-backed research pass for a run. Idempotent: when research already ran, the existing projected state is returned instead of re-running (unless force is true).',
+    inputSchema: {
+      type: 'object',
+      required: ['runId'],
+      properties: {
+        runId: { type: 'string' },
+        objective: { type: 'string' },
+        force: { type: 'boolean' },
+        budget: {
+          type: 'object',
+          properties: {
+            maxSources: { type: 'integer', minimum: 1 },
+            maxDurationMs: { type: 'integer', minimum: 1 },
+          },
+          additionalProperties: false,
+        },
+        expectedVersion: { type: 'integer', minimum: 0 },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'software_factory_get_research',
+    description:
+      'Read the projected research state for a run: status, sources, findings, assumptions, unresolved gaps, and the enriched brief summary.',
+    inputSchema: {
+      type: 'object',
+      required: ['runId'],
+      properties: { runId: { type: 'string' } },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'software_factory_get_contract',
+    description:
+      'Read the build contract for a run (scope, workspace, write boundaries, risks, gates, deploy target, completion criteria). Null when no contract has been generated yet.',
+    inputSchema: {
+      type: 'object',
+      required: ['runId'],
+      properties: { runId: { type: 'string' } },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'software_factory_get_preflight',
+    description:
+      'Read the latest dry-run preflight rehearsal outcome for a run, including the open preflight interventions blocking a start.',
+    inputSchema: {
+      type: 'object',
+      required: ['runId'],
+      properties: { runId: { type: 'string' } },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'software_factory_get_outputs',
+    description:
+      'Read the run artifact contract: package path, handoff and provenance references, gate evidence, deploy state, and the hosted URL (present ONLY after hosted health passed).',
+    inputSchema: {
+      type: 'object',
+      required: ['runId'],
+      properties: { runId: { type: 'string' } },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'software_factory_get_setup',
+    description:
+      'Read cloud/local setup diagnostics: operator token, deploy readiness, research provider readiness, source checkout credentials, workspace source rules, and persistent-storage state. Credentials are reported by presence only; secret values are never emitted.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   },
 ];
 
@@ -278,6 +353,65 @@ function toolResult(body: unknown, isError = false): Record<string, unknown> {
     content: [{ type: 'text', text: JSON.stringify(body, null, 2) }],
     isError,
   };
+}
+
+/* ----------------------------------------------------------------------------
+ * Concise summaries (U10): remote tools return run summaries plus links/ids,
+ * never the full event ledger — `software_factory_get_events` stays the
+ * explicit detail read.
+ * ------------------------------------------------------------------------- */
+
+/** Summarize a projected run: ledger rows become a count, PRD text a length. */
+function summarizeRunValue(value: unknown): unknown {
+  if (typeof value !== 'object' || value === null) {
+    return value;
+  }
+  const run = value as Record<string, unknown>;
+  if (!Array.isArray(run.ledger)) {
+    return value;
+  }
+  const { ledger, prdText, ...rest } = run;
+  return {
+    ...rest,
+    ledgerEventCount: ledger.length,
+    ...(typeof prdText === 'string' ? { prdTextChars: prdText.length } : {}),
+  };
+}
+
+/** Relative detail links for a run (fetchable via the matching tools/routes). */
+function runLinks(runId: string): Record<string, string> {
+  const id = encodeURIComponent(runId);
+  return {
+    events: `/api/runs/${id}/events`,
+    execution: `/api/runs/${id}/execution`,
+    research: `/api/runs/${id}/research`,
+    outputs: `/api/runs/${id}/outputs`,
+  };
+}
+
+/** Tools that intentionally return event-level detail, exempt from trimming. */
+const DETAIL_TOOLS: ReadonlySet<string> = new Set(['software_factory_get_events']);
+
+/**
+ * Trim a route response body for remote consumption: embedded run projections
+ * are summarized and, when the target run is known, detail links are attached.
+ */
+function conciseBody(name: string, args: Record<string, unknown>, body: unknown): unknown {
+  if (DETAIL_TOOLS.has(name) || typeof body !== 'object' || body === null || Array.isArray(body)) {
+    return body;
+  }
+  const record: Record<string, unknown> = { ...(body as Record<string, unknown>) };
+  if (record.run !== undefined) {
+    record.run = summarizeRunValue(record.run);
+  }
+  if (Array.isArray(record.runs)) {
+    record.runs = record.runs.map(summarizeRunValue);
+  }
+  const runId = str(record.runId) ?? str(args.runId);
+  if (runId !== undefined) {
+    record.links = runLinks(runId);
+  }
+  return record;
 }
 
 async function requireSession(
@@ -445,10 +579,111 @@ async function callFactoryTool(
         );
         break;
       }
+      case 'software_factory_trigger_research': {
+        const runId = str(args.runId);
+        if (runId === undefined) {
+          return toolResult({ error: 'runId is required.' }, true);
+        }
+        const budget = asRecord(args.budget);
+        response = await deps.app.handle(
+          internalRequest('POST', `/api/runs/${encodeURIComponent(runId)}/research`, session, {
+            objective: str(args.objective),
+            force: args.force === true,
+            budget: {
+              maxSources: num(budget.maxSources),
+              maxDurationMs: num(budget.maxDurationMs),
+            },
+            expectedVersion: num(args.expectedVersion),
+          }),
+        );
+        break;
+      }
+      case 'software_factory_get_research': {
+        const runId = str(args.runId);
+        if (runId === undefined) {
+          return toolResult({ error: 'runId is required.' }, true);
+        }
+        response = await deps.app.handle(
+          internalRequest('GET', `/api/runs/${encodeURIComponent(runId)}/research`, session),
+        );
+        break;
+      }
+      case 'software_factory_get_contract': {
+        // Thin read over the run projection: the contract is replayed from
+        // `contract.generated` ledger events, never invented here.
+        const runId = str(args.runId);
+        if (runId === undefined) {
+          return toolResult({ error: 'runId is required.' }, true);
+        }
+        const runResponse = await deps.app.handle(
+          internalRequest('GET', `/api/runs/${encodeURIComponent(runId)}`, session),
+        );
+        if (runResponse.status !== 200) {
+          response = runResponse;
+          break;
+        }
+        const run = asRecord(asRecord(runResponse.body).run);
+        const contract = run.buildContract ?? null;
+        response = {
+          status: 200,
+          body: {
+            runId,
+            contract,
+            ...(contract === null
+              ? {
+                  message:
+                    'No build contract has been generated for this run yet. Research-enabled ' +
+                    'run modes generate one after research and planning; starting execution ' +
+                    'refreshes it.',
+                }
+              : {}),
+          },
+        };
+        break;
+      }
+      case 'software_factory_get_preflight': {
+        // Thin read over the execution projection, narrowed to the dry-run
+        // rehearsal outcome plus the interventions blocking the start.
+        const runId = str(args.runId);
+        if (runId === undefined) {
+          return toolResult({ error: 'runId is required.' }, true);
+        }
+        const executionResponse = await deps.app.handle(
+          internalRequest('GET', `/api/runs/${encodeURIComponent(runId)}/execution`, session),
+        );
+        if (executionResponse.status !== 200) {
+          response = executionResponse;
+          break;
+        }
+        const body = asRecord(executionResponse.body);
+        const interventions = Array.isArray(body.interventions)
+          ? body.interventions.filter(
+              (entry) => asRecord(entry).blockingStage === 'preflight',
+            )
+          : [];
+        response = {
+          status: 200,
+          body: { runId, preflight: body.preflight, execution: body.execution, interventions },
+        };
+        break;
+      }
+      case 'software_factory_get_outputs': {
+        const runId = str(args.runId);
+        if (runId === undefined) {
+          return toolResult({ error: 'runId is required.' }, true);
+        }
+        response = await deps.app.handle(
+          internalRequest('GET', `/api/runs/${encodeURIComponent(runId)}/outputs`, session),
+        );
+        break;
+      }
+      case 'software_factory_get_setup':
+        response = await deps.app.handle(internalRequest('GET', '/api/setup', session));
+        break;
       default:
         return toolResult({ error: `Unknown tool: ${name}` }, true);
     }
-    return toolResult(response.body ?? {}, response.status >= 400);
+    return toolResult(conciseBody(name, args, response.body ?? {}), response.status >= 400);
   }
   return toolResult(sessionOrError.body, true);
 }

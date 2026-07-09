@@ -12,6 +12,7 @@
     "lint": "eslint ."
   },
   "dependencies": {
+    "@software-factory/cli": "workspace:*",
     "@software-factory/core": "workspace:*",
     "@software-factory/worker": "workspace:*",
     "next": "^15.1.4",
@@ -19,6 +20,7 @@
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
+    "@seriousme/openapi-schema-validator": "^2.9.0",
     "@testing-library/dom": "^10.4.0",
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.1.0",

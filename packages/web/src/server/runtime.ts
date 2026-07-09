@@ -114,6 +114,13 @@ export interface RuntimeConfig {
   readonly host: string;
   readonly port: number;
   readonly factoryDir: string;
+  /**
+   * How the factory dir was chosen: `env` (explicit `SF_FACTORY_DIR`, e.g. a
+   * mounted persistent disk in cloud mode) or `derived` (walked up from the
+   * working directory). Cloud setup diagnostics use this to flag ledgers that
+   * would land on an ephemeral filesystem (U10).
+   */
+  readonly factoryDirSource?: 'env' | 'derived';
   readonly allowedOrigins: readonly string[];
   readonly publicBaseUrl?: string;
   readonly operatorTokenSource: OperatorTokenSource;
@@ -341,6 +348,7 @@ export function resolveRuntimeConfig(
     host,
     port,
     factoryDir,
+    factoryDirSource: clean(env.SF_FACTORY_DIR) !== undefined ? 'env' : 'derived',
     allowedOrigins,
     publicBaseUrl,
     operatorTokenSource,

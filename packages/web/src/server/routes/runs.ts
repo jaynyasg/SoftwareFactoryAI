@@ -15,6 +15,11 @@
  *                             build contract (when one exists) is re-derived
  *                             with the materialization evidence.
  *   GET  /api/runs/:id/workspace (read-only) — the projected workspace state.
+ *   GET  /api/runs/:id/outputs   (read-only) — the run artifact contract
+ *                             (full-factory U10): the SAME `buildRunOutputs`
+ *                             shape the CLI returns — package path, handoff,
+ *                             provenance ref, gate evidence, deploy state, and
+ *                             a hosted URL only after hosted health passed.
  *
  * Run modes (full-factory U3):
  *   - `plan-only` (DEFAULT)        — identical to the V1 flow: create + plan.
@@ -51,6 +56,9 @@ import type {
   RunProjection,
 } from '@software-factory/core';
 import { projectWorkspace } from '@software-factory/worker';
+// Subpath import: pulls ONLY the caller-agnostic artifact-contract module
+// (run-outputs + core projections), not the CLI command surface.
+import { buildRunOutputs } from '@software-factory/cli/run-outputs';
 import type { ApiResponse, RouteContext, RouteDef } from '../app';
 import { asRecord, num, reviewMode, str } from './parse';
 import { requestExecutionStart } from './execution';
@@ -398,6 +406,24 @@ async function getWorkspace(ctx: RouteContext): Promise<ApiResponse> {
   return { status: 200, body: { runId, workspace: projectWorkspace(events, runId) } };
 }
 
+/**
+ * The run artifact contract (full-factory U10): expose the SAME
+ * `buildRunOutputs` shape the CLI derives — every field traces to a ledger
+ * event, and the hosted URL exists only after `deploy.hosted_ready`. The
+ * events URL is absolute when the runtime knows its public base URL, so hosted
+ * callers get a fetchable link instead of a bare path.
+ */
+async function getRunOutputs(ctx: RouteContext): Promise<ApiResponse> {
+  const runId = ctx.params.id;
+  const events = await ctx.reader.readRun(runId);
+  if (events.length === 0) {
+    return notFound(runId);
+  }
+  const base = ctx.config.runtime?.publicBaseUrl?.replace(/\/+$/, '') ?? '';
+  const eventsUrl = `${base}/api/runs/${encodeURIComponent(runId)}/events`;
+  return { status: 200, body: { runId, outputs: buildRunOutputs(runId, events, eventsUrl) } };
+}
+
 export function runRoutes(): RouteDef[] {
   return [
     { method: 'POST', pattern: '/api/runs', handler: createRun },
@@ -405,5 +431,6 @@ export function runRoutes(): RouteDef[] {
     { method: 'POST', pattern: '/api/runs/:id/cancel', handler: cancelRun },
     { method: 'POST', pattern: '/api/runs/:id/workspace', handler: materializeWorkspaceRoute },
     { method: 'GET', pattern: '/api/runs/:id/workspace', handler: getWorkspace },
+    { method: 'GET', pattern: '/api/runs/:id/outputs', handler: getRunOutputs },
   ];
 }

@@ -8,7 +8,6 @@
  * daemon singleton, abandoned lease recovery) are split across this file,
  * execution-daemon.test.ts, and execution-queue.test.ts.
  */
-import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   AdapterError,
@@ -721,39 +720,6 @@ describe('MCP execution tools', () => {
   });
 });
 
-/* ----------------------------------------------------------------------------
- * ChatGPT Action schema carries the same control verbs
- * ------------------------------------------------------------------------- */
-
-describe('ChatGPT Action schema (integrations/chatgpt/actions.openai.yaml)', () => {
-  const yaml = readFileSync(
-    new URL('../../../../integrations/chatgpt/actions.openai.yaml', import.meta.url),
-    'utf8',
-  );
-
-  it('declares the execution lifecycle operations', () => {
-    for (const operationId of [
-      'startRun',
-      'pauseRun',
-      'resumeRun',
-      'retryRun',
-      'rerunGates',
-      'getExecution',
-      'listInterventions',
-      'resolveIntervention',
-    ]) {
-      expect(yaml, `missing operationId ${operationId}`).toContain(`operationId: ${operationId}`);
-    }
-    expect(yaml).toContain('/api/runs/{runId}/start');
-    expect(yaml).toContain('/api/runs/{runId}/pause');
-    expect(yaml).toContain('/api/runs/{runId}/resume');
-    expect(yaml).toContain('/api/runs/{runId}/retry');
-    expect(yaml).toContain('/api/runs/{runId}/gates/rerun');
-    expect(yaml).toContain('/api/runs/{runId}/execution');
-    expect(yaml).toContain('/api/interventions');
-  });
-
-  it('exposes run modes on run creation', () => {
-    expect(yaml).toContain('research-plan-and-start');
-  });
-});
+// NOTE: the ChatGPT Action schema assertions that previously lived here were
+// upgraded to REAL OpenAPI 3.1 validation in chatgpt-action-schema.test.ts
+// (full-factory U10).

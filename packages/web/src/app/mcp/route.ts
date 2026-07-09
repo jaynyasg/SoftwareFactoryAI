@@ -1,8 +1,14 @@
 /**
- * Remote MCP endpoint for web-hosted model clients.
+ * Remote MCP endpoint for web-hosted model clients (Claude.com custom
+ * connectors, ChatGPT.com remote-MCP integrations, and other hosted callers).
  *
- * Use this URL as the Claude.com custom connector target:
+ * Use this URL as the connector target:
  *   https://<factory-host>/mcp
+ *
+ * Tool calls authenticate with the hosted operator token via
+ * `Authorization: Bearer <SF_OPERATOR_TOKEN>` or `x-operator-token`. Platforms
+ * that can only speak OAuth should sit behind an auth proxy that injects the
+ * header — see docs/runbooks/cloud-deployment.md.
  */
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
@@ -42,5 +48,14 @@ export function GET(): NextResponse {
     name: 'software-factory',
     transport: 'streamable-http',
     message: 'POST JSON-RPC MCP requests to this endpoint.',
+    authentication:
+      'Tool calls require the operator token: `Authorization: Bearer <SF_OPERATOR_TOKEN>` ' +
+      'or `x-operator-token`. OAuth-only platforms need an auth proxy in front of this ' +
+      'endpoint (see docs/runbooks/cloud-deployment.md).',
+    documentation: [
+      'integrations/claude/remote-mcp.md',
+      'integrations/chatgpt/remote-mcp.md',
+      'docs/runbooks/cloud-deployment.md',
+    ],
   });
 }

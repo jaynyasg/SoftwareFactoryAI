@@ -13,6 +13,7 @@ export interface TestRuntimeConfigOverrides {
   readonly host?: string;
   readonly port?: number;
   readonly factoryDir?: string;
+  readonly factoryDirSource?: RuntimeConfig['factoryDirSource'];
   readonly allowedOrigins?: readonly string[];
   readonly publicBaseUrl?: string;
   readonly operatorTokenSource?: RuntimeConfig['operatorTokenSource'];
@@ -30,6 +31,7 @@ export function testRuntimeConfig(overrides: TestRuntimeConfigOverrides = {}): R
     host: overrides.host ?? '127.0.0.1',
     port: overrides.port ?? 3000,
     factoryDir: overrides.factoryDir ?? '.factory',
+    factoryDirSource: overrides.factoryDirSource,
     allowedOrigins: overrides.allowedOrigins ?? [],
     publicBaseUrl: overrides.publicBaseUrl,
     operatorTokenSource: overrides.operatorTokenSource ?? 'file',

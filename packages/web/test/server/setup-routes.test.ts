@@ -163,6 +163,46 @@ describe('GET /api/setup — deploy readiness (full-factory U8)', () => {
   });
 });
 
+describe('GET /api/setup — research and storage surfaces (full-factory U10)', () => {
+  it('reports research provider readiness by presence only (E5)', async () => {
+    const secret = 'sk_SetupRouteResearchKey456';
+    const runtime = resolveRuntimeConfig(
+      { SF_RESEARCH_SEARCH_PROVIDER: 'tavily', SF_RESEARCH_SEARCH_API_KEY: secret },
+      'C:\\repo',
+    );
+    const body = await getSetup(makeApp(runtime));
+    const research = body.research as {
+      provider: string | null;
+      searchCredentials: { present: boolean };
+      budgets: { maxSources: number; maxDurationMs: number };
+    };
+    expect(research.provider).toBe('tavily');
+    expect(research.searchCredentials).toEqual({ present: true });
+    expect(research.budgets.maxSources).toBeGreaterThan(0);
+    expect(JSON.stringify(body)).not.toContain(secret);
+  });
+
+  it('flags cloud storage as attention without an explicit SF_FACTORY_DIR', async () => {
+    const body = await getSetup(makeApp(runtimeConfig('cloud')));
+    const storage = body.storage as { status: string; missing?: string[]; eventStore: string };
+    expect(storage.eventStore).toBe('jsonl');
+    expect(storage.status).toBe('attention');
+    expect(String(storage.missing)).toMatch(/SF_FACTORY_DIR/);
+  });
+
+  it('reports cloud storage ready when SF_FACTORY_DIR is explicit; local is always ready', async () => {
+    const cloud = resolveRuntimeConfig(
+      { SF_RUNTIME: 'cloud', SF_FACTORY_DIR: '/var/data/.factory' },
+      'C:\\repo',
+    );
+    const cloudBody = await getSetup(makeApp(cloud));
+    expect((cloudBody.storage as { status: string }).status).toBe('ready');
+
+    const localBody = await getSetup(makeApp(runtimeConfig('local')));
+    expect((localBody.storage as { status: string }).status).toBe('ready');
+  });
+});
+
 describe('resolveRuntimeConfig — workspace section', () => {
   it('defaults the boundary to the workspace root and checkouts under the factory dir', () => {
     // Forward slashes keep the dirname expectation identical on win32 + posix.

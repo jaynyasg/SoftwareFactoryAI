@@ -13,12 +13,30 @@
  * The `workspace` section (full-factory U4) reports the materialization rules
  * for this runtime: in local mode, which boundary local folders must resolve
  * inside; in cloud mode, that laptop paths are UNAVAILABLE (KTD5) and a GitHub
- * repository or uploaded PRD is required. Source checkout credentials are a
- * separate setup surface from deploy and research credentials (E5) — only
- * their PRESENCE is reported, never a value.
+ * repository or uploaded PRD is required.
+ *
+ * The `research` and `storage` sections (full-factory U10) complete the cloud
+ * setup diagnostics: research provider readiness and whether the JSONL ledger
+ * directory is explicitly configured (cloud instances without SF_FACTORY_DIR
+ * on a persistent disk lose the ledger on redeploy).
+ *
+ * The THREE credential surfaces stay separate (hardening E5) — source checkout
+ * (`workspace.materialization.checkoutCredentials`), deploy (`deploy`), and
+ * research provider (`research.searchCredentials`) — and every credential is
+ * reported by PRESENCE only, never a value.
  */
-import { resolveDeployRuntimeConfig, resolveWorkspaceRuntimeConfig } from '../runtime';
-import type { DeployRuntimeConfig, WorkspaceRuntimeConfig } from '../runtime';
+import {
+  resolveDeployRuntimeConfig,
+  resolveFactoryDir,
+  resolveResearchRuntimeConfig,
+  resolveWorkspaceRuntimeConfig,
+} from '../runtime';
+import type {
+  DeployRuntimeConfig,
+  ResearchRuntimeConfig,
+  RuntimeConfig,
+  WorkspaceRuntimeConfig,
+} from '../runtime';
 import type { ApiResponse, RouteContext, RouteDef } from '../app';
 
 /**
@@ -78,6 +96,44 @@ function workspaceSetup(mode: 'local' | 'cloud', workspace: WorkspaceRuntimeConf
   };
 }
 
+/**
+ * Research provider readiness (U10). Reports the configured provider and
+ * credential PRESENCE — never the `SF_RESEARCH_SEARCH_API_KEY` value (E5).
+ */
+function researchSetup(research: ResearchRuntimeConfig): unknown {
+  return {
+    allowNetwork: research.allowNetwork,
+    documentationUrls: research.documentationUrls,
+    provider: research.searchProviderId ?? null,
+    searchCredentials: { present: research.searchCredentialsPresent },
+    budgets: { maxSources: research.maxSources, maxDurationMs: research.maxDurationMs },
+  };
+}
+
+/**
+ * Persistent-storage diagnostics (U10). The V1.5 event store is a
+ * single-instance JSONL ledger: local disks persist by default, but a cloud
+ * instance must point `SF_FACTORY_DIR` at a mounted persistent disk or the
+ * ledger disappears on redeploy.
+ */
+function storageSetup(mode: 'local' | 'cloud', runtime: RuntimeConfig | undefined): unknown {
+  const factoryDir = runtime?.factoryDir ?? resolveFactoryDir();
+  const persistent = mode === 'local' || runtime?.factoryDirSource === 'env';
+  return {
+    eventStore: 'jsonl',
+    singleInstance: true,
+    factoryDir,
+    status: persistent ? 'ready' : 'attention',
+    ...(persistent
+      ? {}
+      : {
+          missing: [
+            'persistent ledger directory (set SF_FACTORY_DIR to a mounted persistent disk, e.g. /var/data/.factory)',
+          ],
+        }),
+  };
+}
+
 async function getSetup(ctx: RouteContext): Promise<ApiResponse> {
   const session = await ctx.operatorToken.current();
   const runtime = ctx.config.runtime;
@@ -90,6 +146,8 @@ async function getSetup(ctx: RouteContext): Promise<ApiResponse> {
       sandbox: { status: 'unknown' },
       adapters: { status: 'unknown', detected: [] as readonly string[] },
       deploy: deploySetup(runtime?.deploy ?? resolveDeployRuntimeConfig()),
+      research: researchSetup(runtime?.research ?? resolveResearchRuntimeConfig()),
+      storage: storageSetup(mode, runtime),
       workspace: {
         root: process.cwd(),
         materialization: workspaceSetup(mode, workspaceConfig),
