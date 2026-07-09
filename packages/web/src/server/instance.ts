@@ -90,11 +90,15 @@ export function getStore(): EventStore {
  * queued work, abandon stale leases) and the interval loop; SIGTERM/SIGINT
  * stop it gracefully so in-flight work yields and requeues.
  *
- * Bootstrap is EAGER at server startup via the Next instrumentation hook
- * (`src/instrumentation.ts` calls this), so queued/requeued work resumes after
- * a restart WITHOUT waiting for the first HTTP request — matching the eager
- * standalone server. `getApp()` still calls this lazily as a fallback (whichever
- * runs first wins; the singleton makes the second call a no-op).
+ * Bootstrap is LAZY under the Next-mounted server: `getApp()` calls this on the
+ * first request, so a Next instance that restarts with pending queue work
+ * resumes it when the first request arrives (in local/operator use a request is
+ * effectively immediate). A `src/instrumentation.ts` eager-bootstrap hook was
+ * tried but pulls this module — and its `node:child_process`-backed core
+ * adapters — into Next's edge/instrumentation compilation, which webpack cannot
+ * bundle; the hosted long-running daemon runs under the standalone server
+ * (`standalone.ts`), which already bootstraps eagerly. So this lazy path is the
+ * deliberate trade-off for the Next mount, not an oversight.
  */
 /** The process-wide adapter catalog shared by preflight and the executor. */
 function getAdapterCatalog(): AdapterCatalog {
