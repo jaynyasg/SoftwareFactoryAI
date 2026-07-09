@@ -203,6 +203,41 @@ describe('GET /api/setup — research and storage surfaces (full-factory U10)', 
   });
 });
 
+describe('GET /api/setup — queue/scale diagnostics (full-factory U11)', () => {
+  interface QueueView {
+    readonly mode: string;
+    readonly storage: string;
+    readonly singleInstance: boolean;
+    readonly horizontalScaling: string;
+    readonly warning: string;
+  }
+
+  it('reports the storage mode and queue mode', async () => {
+    const body = await getSetup(makeApp(runtimeConfig('cloud')));
+    const queue = body.queue as QueueView;
+    expect(queue.mode).toBe('ledger');
+    expect(queue.storage).toBe('jsonl');
+    // The storage section stays the persistent-disk surface; both agree.
+    expect((body.storage as { eventStore: string }).eventStore).toBe('jsonl');
+  });
+
+  it('carries an explicit single-instance-only warning against horizontal scaling', async () => {
+    const body = await getSetup(makeApp(runtimeConfig('cloud')));
+    const queue = body.queue as QueueView;
+    expect(queue.singleInstance).toBe(true);
+    expect(queue.horizontalScaling).toBe('unsafe');
+    expect(queue.warning).toMatch(/single-instance only/i);
+    expect(queue.warning).toMatch(/exactly one instance/i);
+  });
+
+  it('reports the same diagnostics in local mode (the limit is build-wide)', async () => {
+    const body = await getSetup(makeApp(runtimeConfig('local')));
+    const queue = body.queue as QueueView;
+    expect(queue.mode).toBe('ledger');
+    expect(queue.singleInstance).toBe(true);
+  });
+});
+
 describe('resolveRuntimeConfig — workspace section', () => {
   it('defaults the boundary to the workspace root and checkouts under the factory dir', () => {
     // Forward slashes keep the dirname expectation identical on win32 + posix.

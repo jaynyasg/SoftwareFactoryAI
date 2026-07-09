@@ -20,6 +20,35 @@
  * scheduler-backed executor; the daemon, queue, and command surface do not
  * change.
  *
+ * U11 DATABASE-READY INVARIANTS: every scheduling decision in this file is a
+ * function of LEDGER state (store reads + pure projections), never of process
+ * memory, so a database-backed EventStore/queue can replace the JSONL store
+ * without changing daemon semantics. There is no separate reconciler module —
+ * reconciliation IS step 1 of `tick()` below, and the invariants live here.
+ * Any replacement queue/daemon must preserve:
+ *   1. QUEUE TRUTH IS A FOLD: queue state is `projectExecutionQueue` over
+ *      `queue.*` ledger events — a restart replays the exact same queue.
+ *   2. STORE-LEVEL CLAIM ARBITRATION: `queue.claimed` is idempotent per
+ *      (jobId, attempt); a deduplicated claim means another owner already won
+ *      and the loser must NOT execute. (SQL shape: unique idempotency key.)
+ *   3. SINGLE ACTIVE OWNER OR LEASE-SAFE MULTI-OWNER: safety against foreign
+ *      owners rests ONLY on ledger lease expiry — never on shared memory.
+ *   4. HEARTBEAT FRESHNESS: heartbeats extend `leaseExpiresAt` on the ledger;
+ *      an UNexpired foreign lease is never abandoned or re-claimed.
+ *   5. ABANDONED-LEASE RECOVERY: expired leases are marked abandoned and
+ *      escalated to the intervention queue — never silently re-run.
+ *   6. RECONCILE-BEFORE-DRAIN: every pass reconciles stale leases before
+ *      claiming new work, so restart recovery is never starved.
+ *   7. PAUSE FOLD IMMUNITY: pause/cancel gating reads the run projection from
+ *      the ledger on EVERY decision (`runIsPausedOrCancelled`), so pauses
+ *      survive restarts and apply to every owner identically.
+ * Documented exception (the only process-local state): `inFlight` maps THIS
+ * owner's live executions to their AbortControllers. It exists to abort the
+ * owner's own work on cancel/shutdown and to stop the owner's own reconciler
+ * from abandoning a job its executor is still running. Foreign owners never
+ * see it — for them, correctness rests purely on invariants 2-5, which the
+ * U11 tests in `execution-queue.test.ts` pin.
+ *
  * Timers are injectable and the clock is injectable, so tests drive `tick()`
  * deterministically with no real waits.
  */

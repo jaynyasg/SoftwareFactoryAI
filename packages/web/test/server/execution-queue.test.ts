@@ -14,7 +14,7 @@ import { createInMemoryEventStore, projectRun } from '@software-factory/core';
 import type { EventStore } from '@software-factory/core';
 import { createExecutionDaemon } from '../../src/server/execution/daemon';
 import type { TicketExecutionResult } from '../../src/server/execution/daemon';
-import { executionJobId, projectExecutionQueue } from '../../src/server/execution/queue';
+import { claimJob, executionJobId, projectExecutionQueue } from '../../src/server/execution/queue';
 import { projectInterventions } from '../../src/server/execution/interventions';
 
 const T0 = 1_700_000_000_000;
@@ -239,5 +239,117 @@ describe('queue lease semantics', () => {
     const queue = projectExecutionQueue(events, 'run-release');
     expect(queue.jobs[0].status).toBe('failed');
     expect(queue.jobs[0].reason).toBe('boom');
+  });
+});
+
+/**
+ * U11 — database-ready semantics. Lease, heartbeat, and abandon decisions must
+ * be functions of LEDGER state only, never of process-local memory, so a
+ * Postgres-backed EventStore (unique idempotency-key constraint + atomic
+ * appends) can replace JSONL without changing daemon behavior. Documented
+ * exception: the daemon's `inFlight` map guards only its OWN live executions;
+ * foreign owners rely purely on the ledger (see daemon.ts header).
+ */
+describe('database-ready semantics (U11)', () => {
+  it('arbitrates claims at the STORE level: the losing claim is deduplicated', async () => {
+    const store = createInMemoryEventStore();
+    await seedRun(store, 'run-arb');
+    await seedQueuedJob(store, 'run-arb');
+    const job = projectExecutionQueue(await store.readAll(), 'run-arb').jobs[0];
+
+    // Two owners race to claim the same (jobId, attempt) — e.g. two daemons
+    // that both projected the job as `queued` before either append landed.
+    const first = await claimJob(store, job, {
+      leaseId: 'lease-a',
+      ownerId: 'daemon-a',
+      leaseExpiresAt: T0 + LEASE_MS,
+    });
+    const second = await claimJob(store, job, {
+      leaseId: 'lease-b',
+      ownerId: 'daemon-b',
+      leaseExpiresAt: T0 + LEASE_MS,
+    });
+
+    expect(first.deduplicated).toBe(false);
+    expect(second.deduplicated).toBe(true);
+    // The loser learns the ORIGINAL claim: arbitration truth is the store's
+    // idempotency guarantee, not either process's memory.
+    expect(second.event).toEqual(first.event);
+
+    const view = projectExecutionQueue(await store.readAll(), 'run-arb').jobs[0];
+    expect(view.status).toBe('leased');
+    expect(view.ownerId).toBe('daemon-a');
+    expect(view.leaseId).toBe('lease-a');
+  });
+
+  it('two daemon owners racing over the same ledger execute a job exactly once', async () => {
+    const store = createInMemoryEventStore();
+    await seedRun(store, 'run-two-owners');
+    await seedQueuedJob(store, 'run-two-owners');
+
+    let aRuns = 0;
+    let bRuns = 0;
+    const daemonA = createExecutionDaemon({
+      store,
+      ownerId: 'daemon-a',
+      clock: () => T0,
+      timers: noopTimers(),
+      executor: (): Promise<TicketExecutionResult> => {
+        aRuns += 1;
+        return Promise.resolve({ status: 'completed', summary: 'built by a' });
+      },
+    });
+    const daemonB = createExecutionDaemon({
+      store,
+      ownerId: 'daemon-b',
+      clock: () => T0,
+      timers: noopTimers(),
+      executor: (): Promise<TicketExecutionResult> => {
+        bRuns += 1;
+        return Promise.resolve({ status: 'completed', summary: 'built by b' });
+      },
+    });
+
+    // Concurrent passes: whichever interleaving occurs, the store-level claim
+    // dedup (or the already-folded lease/release) must keep the loser out.
+    await Promise.all([daemonA.tick(), daemonB.tick()]);
+
+    expect(aRuns + bRuns).toBe(1);
+    const events = await store.readRun('run-two-owners');
+    expect(events.filter((e) => e.type === 'queue.claimed')).toHaveLength(1);
+    expect(events.filter((e) => e.type === 'run.started')).toHaveLength(1);
+    expect(events.filter((e) => e.type === 'execution.completed')).toHaveLength(1);
+    expect(projectExecutionQueue(events, 'run-two-owners').jobs[0].status).toBe('completed');
+  });
+
+  it('a daemon with fresh process memory makes identical decisions from the ledger alone', async () => {
+    const store = createInMemoryEventStore();
+    await seedRun(store, 'run-fresh');
+    const jobId = await seedQueuedJob(store, 'run-fresh');
+    await seedClaim(store, 'run-fresh', jobId, T0 + LEASE_MS);
+
+    // Owner C never saw the claim happen — it has empty process memory. Its
+    // reconcile/drain decisions must match daemon-a's own view exactly:
+    // unexpired lease => wait; expired lease => abandon. No memory involved.
+    const freshWaiter = createExecutionDaemon({
+      store,
+      ownerId: 'daemon-c',
+      clock: () => T0 + LEASE_MS / 2,
+      timers: noopTimers(),
+    });
+    const waited = await freshWaiter.tick();
+    expect(waited.abandoned).toBe(0);
+    expect(waited.claimed).toBe(0);
+
+    const freshReconciler = createExecutionDaemon({
+      store,
+      ownerId: 'daemon-d',
+      clock: () => T0 + 2 * LEASE_MS,
+      timers: noopTimers(),
+    });
+    const reconciled = await freshReconciler.tick();
+    expect(reconciled.abandoned).toBe(1);
+    const events = await store.readRun('run-fresh');
+    expect(projectExecutionQueue(events, 'run-fresh').jobs[0].status).toBe('abandoned');
   });
 });

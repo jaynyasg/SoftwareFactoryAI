@@ -29,7 +29,11 @@ import type { ExecutionDaemon } from './execution/daemon';
 import { createRuntimeCompletionStage } from './execution/completion-stage';
 import { createRuntimeGateStages } from './execution/gate-stages';
 import { createSchedulerTicketExecutor } from './execution/ticket-executor';
-import { createRuntimeOperatorTokenProvider, resolveRuntimeConfig } from './runtime';
+import {
+  createRuntimeOperatorTokenProvider,
+  resolveRuntimeConfig,
+  scaleSafetyStartupLine,
+} from './runtime';
 
 export interface StandaloneOptions {
   /** Port to bind (0 = ephemeral). Defaults to `SF_PORT` or 3000. */
@@ -89,6 +93,12 @@ export async function startStandaloneServer(
     }),
   });
   await daemon.start();
+
+  // U11 scale-safety: hosted logs must state the single-instance limit once
+  // per process. stderr, so the machine-readable stdout line stays first.
+  if (runtime.mode === 'cloud') {
+    console.warn(scaleSafetyStartupLine(runtime));
+  }
 
   // No CSRF token here: the CLI is a non-browser caller authenticated by the
   // operator token. The default genome planner plans every created run.

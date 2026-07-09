@@ -3,6 +3,12 @@ services:
     name: software-factory
     runtime: node
     plan: starter
+    # SINGLE-INSTANCE ONLY (U11): the JSONL event ledger and the ledger-backed
+    # execution queue do not support horizontal scaling. Do not raise this or
+    # enable autoscaling until the database-backed event store + durable queue
+    # land (see ARCHITECTURE.md "Hosted Scale Migration Seam" and
+    # docs/runbooks/cloud-deployment.md "Scaling Limits And The Migration Seam").
+    numInstances: 1
     buildCommand: corepack enable && corepack pnpm@10.27.0 install --frozen-lockfile && corepack pnpm@10.27.0 --filter @software-factory/web build
     startCommand: corepack pnpm@10.27.0 --filter @software-factory/web start -- -H 0.0.0.0 -p $PORT
     healthCheckPath: /api/setup

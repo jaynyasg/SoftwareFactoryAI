@@ -20,6 +20,10 @@
  * directory is explicitly configured (cloud instances without SF_FACTORY_DIR
  * on a persistent disk lose the ledger on redeploy).
  *
+ * The `queue` section (full-factory U11) reports the storage and queue modes
+ * with an explicit single-instance-only / horizontal-scaling-unsafe warning,
+ * mirroring the scale-safety startup log line.
+ *
  * The THREE credential surfaces stay separate (hardening E5) — source checkout
  * (`workspace.materialization.checkoutCredentials`), deploy (`deploy`), and
  * research provider (`research.searchCredentials`) — and every credential is
@@ -29,6 +33,7 @@ import {
   resolveDeployRuntimeConfig,
   resolveFactoryDir,
   resolveResearchRuntimeConfig,
+  resolveScaleDiagnostics,
   resolveWorkspaceRuntimeConfig,
 } from '../runtime';
 import type {
@@ -134,6 +139,23 @@ function storageSetup(mode: 'local' | 'cloud', runtime: RuntimeConfig | undefine
   };
 }
 
+/**
+ * Execution queue + scale diagnostics (full-factory U11). The V1.5 queue is a
+ * fold over `queue.*` ledger events owned by ONE daemon process, so setup
+ * reports the storage/queue modes plus an explicit single-instance-only
+ * warning — a hosted operator must never scale horizontally by accident.
+ */
+function queueSetup(): unknown {
+  const diagnostics = resolveScaleDiagnostics();
+  return {
+    mode: diagnostics.queueMode,
+    storage: diagnostics.storageMode,
+    singleInstance: diagnostics.singleInstanceOnly,
+    horizontalScaling: diagnostics.horizontalScaling,
+    warning: diagnostics.warning,
+  };
+}
+
 async function getSetup(ctx: RouteContext): Promise<ApiResponse> {
   const session = await ctx.operatorToken.current();
   const runtime = ctx.config.runtime;
@@ -148,6 +170,7 @@ async function getSetup(ctx: RouteContext): Promise<ApiResponse> {
       deploy: deploySetup(runtime?.deploy ?? resolveDeployRuntimeConfig()),
       research: researchSetup(runtime?.research ?? resolveResearchRuntimeConfig()),
       storage: storageSetup(mode, runtime),
+      queue: queueSetup(),
       workspace: {
         root: process.cwd(),
         materialization: workspaceSetup(mode, workspaceConfig),

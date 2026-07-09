@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { resolveRuntimeConfig } from '../../src/server/runtime';
+import {
+  resolveRuntimeConfig,
+  resolveScaleDiagnostics,
+  scaleSafetyStartupLine,
+} from '../../src/server/runtime';
 
 describe('resolveRuntimeConfig', () => {
   it('keeps local defaults loopback-first', () => {
@@ -60,5 +64,42 @@ describe('resolveRuntimeConfig', () => {
     expect(config.research.maxDurationMs).toBe(30_000);
     // E5: the credential VALUE never appears in resolved config.
     expect(JSON.stringify(config)).not.toContain('super-secret-value');
+  });
+});
+
+describe('scale diagnostics (full-factory U11)', () => {
+  it('reports single-instance JSONL storage and the ledger queue mode', () => {
+    const diagnostics = resolveScaleDiagnostics();
+    expect(diagnostics.storageMode).toBe('jsonl');
+    expect(diagnostics.queueMode).toBe('ledger');
+    expect(diagnostics.singleInstanceOnly).toBe(true);
+    expect(diagnostics.horizontalScaling).toBe('unsafe');
+  });
+
+  it('warns explicitly that horizontal scaling is unsafe and names the seam', () => {
+    const diagnostics = resolveScaleDiagnostics();
+    expect(diagnostics.warning).toMatch(/single-instance only/i);
+    expect(diagnostics.warning).toMatch(/exactly one instance/i);
+    expect(diagnostics.warning).toMatch(/horizontal/i);
+    // The warning points at the documented migration seam, not a dead end.
+    expect(diagnostics.warning).toMatch(/Hosted Scale Migration Seam/);
+  });
+
+  it('formats a startup log line naming mode, storage, and queue', () => {
+    const config = resolveRuntimeConfig(
+      {
+        SF_RUNTIME: 'cloud',
+        SF_FACTORY_DIR: '/var/data/.factory',
+        SF_OPERATOR_TOKEN: 'cloud-secret',
+      },
+      '/repo',
+    );
+    const line = scaleSafetyStartupLine(config);
+    expect(line).toContain('[software-factory] scale-safety:');
+    expect(line).toContain('mode=cloud');
+    expect(line).toContain('storage=jsonl');
+    expect(line).toContain('queue=ledger');
+    expect(line).toContain('horizontal-scaling=unsafe');
+    expect(line).toMatch(/single-instance only/i);
   });
 });

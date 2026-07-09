@@ -309,6 +309,62 @@ export function resolveDeployRuntimeConfig(
   };
 }
 
+/**
+ * Scale-safety diagnostics (full-factory U11).
+ *
+ * This build persists events in a single-instance JSONL ledger and runs the
+ * execution queue as a fold over `queue.*` ledger events owned by ONE daemon
+ * process. Horizontal scaling — more than one instance (or daemon) against the
+ * same ledger — is UNSAFE until the database-backed EventStore and durable
+ * queue replacement lands: JSONL appends and per-run sequence allocation are
+ * serialized per process, not across processes. These diagnostics feed
+ * `GET /api/setup` (the `queue` section) and the cloud startup log line so a
+ * hosted operator sees the limit instead of discovering it.
+ */
+export interface ScaleDiagnostics {
+  /** Event persistence backend in this build. */
+  readonly storageMode: 'jsonl';
+  /** Execution queue backend: a fold over `queue.*` ledger events. */
+  readonly queueMode: 'ledger';
+  /** This build supports exactly one instance per ledger. */
+  readonly singleInstanceOnly: true;
+  readonly horizontalScaling: 'unsafe';
+  /** Operator-facing warning naming the limit and the migration seam. */
+  readonly warning: string;
+}
+
+/**
+ * Resolve the scale-safety diagnostics. Constant for this build (there is one
+ * storage and one queue implementation); a database-backed store/queue keys
+ * this off runtime config when it lands (the U11 seam).
+ */
+export function resolveScaleDiagnostics(): ScaleDiagnostics {
+  return {
+    storageMode: 'jsonl',
+    queueMode: 'ledger',
+    singleInstanceOnly: true,
+    horizontalScaling: 'unsafe',
+    warning:
+      'Single-instance only: run exactly one instance (and one execution daemon) against this ' +
+      'ledger. JSONL event storage and the ledger-backed queue do not support horizontal ' +
+      'scaling; scaling out requires the database-backed event store and durable queue ' +
+      'described in ARCHITECTURE.md ("Hosted Scale Migration Seam").',
+  };
+}
+
+/**
+ * The scale-safety startup log line (U11). Server entry points emit this once
+ * per process in cloud mode so hosted logs state the single-instance limit.
+ */
+export function scaleSafetyStartupLine(config: Pick<RuntimeConfig, 'mode'>): string {
+  const diagnostics = resolveScaleDiagnostics();
+  return (
+    `[software-factory] scale-safety: mode=${config.mode} ` +
+    `storage=${diagnostics.storageMode} queue=${diagnostics.queueMode} ` +
+    `horizontal-scaling=${diagnostics.horizontalScaling} — ${diagnostics.warning}`
+  );
+}
+
 /** Resolve the shared ledger/operator-token directory. */
 export function resolveFactoryDir(
   env: RuntimeEnv = process.env as RuntimeEnv,

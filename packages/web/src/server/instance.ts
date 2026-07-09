@@ -39,7 +39,11 @@ import type { ExecutionDaemon } from './execution/daemon';
 import { createRuntimeCompletionStage } from './execution/completion-stage';
 import { createRuntimeGateStages } from './execution/gate-stages';
 import { createSchedulerTicketExecutor } from './execution/ticket-executor';
-import { createRuntimeOperatorTokenProvider, resolveRuntimeConfig } from './runtime';
+import {
+  createRuntimeOperatorTokenProvider,
+  resolveRuntimeConfig,
+  scaleSafetyStartupLine,
+} from './runtime';
 import type { LocalSession } from '../lib/session';
 
 export type { LocalSession } from '../lib/session';
@@ -111,6 +115,11 @@ export function getExecutionDaemon(): ExecutionDaemon {
       }),
     });
     singletons.daemon = daemon;
+    // U11 scale-safety: hosted logs must state the single-instance limit once
+    // per process — this build's storage/queue cannot scale horizontally.
+    if (runtime.mode === 'cloud') {
+      console.warn(scaleSafetyStartupLine(runtime));
+    }
     daemon.start().catch((error: unknown) => {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`[software-factory] execution daemon failed to start: ${message}`);

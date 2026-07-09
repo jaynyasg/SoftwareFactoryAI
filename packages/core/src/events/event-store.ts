@@ -11,6 +11,29 @@
  *  - strictly increasing per-run `sequence` numbers, and
  *  - idempotency: appending with a previously-seen `idempotencyKey` returns the
  *    original event instead of creating a duplicate.
+ *
+ * MIGRATION SEAM (full-factory U11): `EventStore` is the replacement boundary
+ * for hosted scale. A database-backed implementation (e.g. Postgres) plugs in
+ * at the construction sites — `packages/web/src/server/instance.ts#getStore`
+ * and `packages/web/src/server/standalone.ts` — behind this same interface.
+ * The `EventReader`/`EventWriter` facades, every projection, the command
+ * guard's stale-version check, and the execution queue fold consume ONLY this
+ * contract, so nothing above the store changes. Beyond the two guarantees
+ * above, a replacement backend MUST preserve:
+ *  - APPEND ATOMICITY: sequence assignment + persistence are one atomic step;
+ *    two concurrent appends can never share a (runId, sequence) pair. (SQL
+ *    shape: allocate the per-run sequence inside the insert transaction.)
+ *  - GLOBAL IDEMPOTENCY: `idempotencyKey` dedup spans ALL runs, survives
+ *    restarts, and returns the ORIGINAL stored event. (SQL shape: unique
+ *    index on idempotencyKey; on conflict, return the existing row.)
+ *  - PER-RUN ORDERING: `readRun` returns events ordered by sequence, and
+ *    `readAll` ordering is deterministic (sequence, then eventId tie-break).
+ *  - RESTART CONTINUATION: a fresh store instance over the same persisted
+ *    state continues each run's sequence from the high-water mark.
+ * The executable form of this contract lives in
+ * `packages/core/test/events/event-store-contract.ts`; any replacement
+ * backend must pass that suite unchanged. See ARCHITECTURE.md
+ * ("Hosted Scale Migration Seam") for the full upgrade path.
  */
 import { randomUUID } from 'node:crypto';
 import { appendFile, mkdir, readdir, readFile } from 'node:fs/promises';

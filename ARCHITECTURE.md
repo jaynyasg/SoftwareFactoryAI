@@ -6,11 +6,13 @@ one rule: the append-only event ledger is the source of truth. UI, CLI, MCP
 tools, projections, worker scheduling, provenance, and deploy status are all
 derived from ledger events.
 
-V1 is planning-first. A fresh run creates a durable `run.created` event, emits
-supervisor decisions, creates a ticket DAG, and records `run.planned`. Worker,
-package, preview, and deploy events are supported by the worker package, but the
-default create-run path stops after planning until worker execution is wired into
-the operator flow.
+Runs are mode-gated. The default run mode is `plan-only`: a fresh run creates a
+durable `run.created` event, emits supervisor decisions, creates a ticket DAG,
+and records `run.planned`. Execution-capable modes (`research-and-plan`,
+`research-plan-and-start`) add source-backed research, a build contract, a
+dry-run preflight, and a ledger-backed execution queue owned by one execution
+daemon per process, which drives workers, gates, repair loops, packaging,
+provenance, and Render deploy.
 
 ## System Context
 
@@ -227,12 +229,21 @@ Important event families:
 | Family     | Examples                                                                          |
 | ---------- | --------------------------------------------------------------------------------- |
 | Run        | `run.created`, `run.planned`, `run.completed`, `run.cancelled`                    |
+| Research   | `research.requested`, `research.finding_recorded`, `research.brief_completed`     |
+| Knowledge  | `knowledge.entry_recorded`, `knowledge.entry_redacted`                            |
 | Supervisor | `supervisor.decision`                                                             |
+| Contract   | `contract.generated`                                                              |
+| Workspace  | `workspace.local_bound`, `workspace.checkout_completed`, `workspace.unavailable`  |
+| Execution  | `execution.paused`, `execution.blocked`, `execution.completed`                    |
+| Preflight  | `preflight.started`, `preflight.check_failed`, `preflight.passed`                 |
+| Queue      | `queue.enqueued`, `queue.claimed`, `queue.heartbeat`, `queue.lease_abandoned`     |
+| Intervention | `intervention.raised`, `intervention.resolved`                                  |
 | Ticket     | `ticket.created`, `ticket.queued`, `ticket.state_changed`, `ticket.dead_lettered` |
 | Worker     | `worker.started`, `worker.progress`, `worker.retry`, `worker.completed`           |
 | Adapter    | `adapter.selected`, `adapter.setup_required`, `adapter.capacity_changed`          |
 | Sandbox    | `sandbox.started`, `sandbox.fallback`, `sandbox.error`                            |
 | Gate       | `gate.started`, `gate.passed`, `gate.failed`                                      |
+| Repair     | `repair.started`, `repair.succeeded`, `repair.failed`                             |
 | Review     | `review.requested`, `review.decided`                                              |
 | Artifact   | `artifact.created`, `artifact.confidence_computed`                                |
 | Package    | `package.created`                                                                 |
@@ -330,9 +341,10 @@ flowchart LR
   Operator["Browser operator"] --> Node
 ```
 
-The current JSONL event store is intended for one hosted instance. Horizontal
-scaling should replace it with a database-backed event store plus advisory
-locking, and add a real queue for worker execution.
+The current JSONL event store and ledger-backed execution queue are intended
+for exactly one hosted instance. Horizontal scaling is unsafe with this build;
+see "Hosted Scale Migration Seam" below for the diagnostics that state this
+limit and the contracts a database-backed replacement must satisfy.
 
 ### Generated App Deployment
 
@@ -349,6 +361,96 @@ hosted health check passes
 ```
 
 Until all of that is true, hosted URLs are not projected as ready.
+
+## Hosted Scale Migration Seam
+
+This build is deliberately single-instance (KTD4): events persist in a JSONL
+ledger, and the execution queue is a pure fold over `queue.*` ledger events
+owned by ONE execution daemon per process. Horizontal scaling — running more
+than one instance (or more than one daemon) against the same ledger — is
+UNSAFE with this build. JSONL appends and per-run sequence allocation are
+serialized inside one process, not across processes, so a second instance can
+corrupt sequence ordering and defeat idempotency-key arbitration.
+
+Operational diagnostics state this limit instead of hiding it:
+
+- `GET /api/setup` reports `storage` (event-store mode, factory dir,
+  persistent-disk status) and `queue` (queue mode, `singleInstance: true`,
+  `horizontalScaling: "unsafe"`, and an explicit single-instance-only
+  warning).
+- Cloud entry points log one `[software-factory] scale-safety:` warning line
+  at startup (`mode=cloud storage=jsonl queue=ledger
+  horizontal-scaling=unsafe ...`).
+- `render.yaml` pins `numInstances: 1`.
+
+### What stays stable across the migration
+
+Replacing JSONL with a database is a storage/queue swap behind existing
+interfaces, not a redesign. These contracts do not change:
+
+| Seam                          | Stable contract                                                                                                    |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `EventStore`                  | `append` / `readRun` / `readAll` / `listRuns` plus `AppendResult` (`packages/core/src/events/event-store.ts`)      |
+| `EventReader` / `EventWriter` | Thin facades over `EventStore`; consumers never see the backend                                                    |
+| Queue event semantics         | `queue.enqueued` -> `queue.claimed` -> `queue.heartbeat` -> `queue.released` / `queue.lease_abandoned`, idempotent per `(jobId, attempt)` and folded by `projectExecutionQueue` |
+| Execution daemon seam         | `createExecutionDaemon` with the injectable `TicketExecutor` (`packages/web/src/server/execution/daemon.ts`)       |
+| Projections                   | Pure functions over sequence-ordered events; no backend awareness                                                  |
+| Stale-version guard           | The command guard compares client `expectedVersion` against the run projection's `lastSequence` — ledger-derived   |
+
+A database-backed `EventStore` plugs in at exactly two construction sites,
+both of which call `createFileSystemEventStore` today:
+`packages/web/src/server/instance.ts` (`getStore`) and
+`packages/web/src/server/standalone.ts`.
+
+### What a database-backed EventStore must preserve
+
+- Append atomicity: sequence assignment and persistence are one atomic step;
+  two concurrent appends can never share a `(runId, sequence)` pair. In SQL,
+  allocate the per-run sequence inside the insert transaction.
+- Global idempotency: `idempotencyKey` dedup spans all runs, survives
+  restarts, and returns the ORIGINAL stored event. In SQL, a unique index on
+  the idempotency key; on conflict, return the existing row.
+- Per-run ordering: `readRun` returns events ordered by sequence, and
+  `readAll` ordering is deterministic (sequence, then eventId tie-break).
+- Restart continuation: a fresh store instance over the same persisted state
+  continues each run's sequence from the high-water mark, never from 1.
+
+The executable form of this contract is
+`packages/core/test/events/event-store-contract.ts`. The suite runs against
+the JSONL and in-memory stores today and must pass UNCHANGED for any
+replacement backend before it ships.
+
+### Queue and daemon invariants that must survive the swap
+
+1. Queue truth is a fold: queue state is `projectExecutionQueue` over
+   `queue.*` events — a restart replays the exact same queue.
+2. Store-level claim arbitration: `queue.claimed` is idempotent per
+   `(jobId, attempt)`; a deduplicated claim means another owner already won
+   and the loser must not execute.
+3. Single active daemon owner OR lease-safe multi-owner: safety against
+   foreign owners rests only on ledger lease expiry, never on shared memory.
+4. Heartbeat freshness: heartbeats extend `leaseExpiresAt` on the ledger; an
+   unexpired foreign lease is never abandoned or re-claimed.
+5. Abandoned-lease recovery: expired leases are marked abandoned and
+   escalated to the operator intervention queue — never silently re-run.
+6. Reconcile-before-drain: every daemon pass reconciles stale leases before
+   claiming new work, so restart recovery is never starved.
+7. Pause fold immunity: pause/cancel gating reads the run projection from the
+   ledger on every decision, so pauses survive restarts and apply to every
+   owner identically.
+
+Documented exception: the daemon's `inFlight` map is process-local, but it
+only guards that owner's own live executions (abort on cancel/shutdown, and
+not self-abandoning a job its executor is still running). Foreign owners never
+observe it; for them, correctness rests purely on invariants 2-5, which
+`packages/web/test/server/execution-queue.test.ts` pins ("database-ready
+semantics (U11)").
+
+### Explicitly out of scope
+
+Multi-tenant SaaS concerns — billing, quotas, team administration, and tenant
+isolation — stay out of this seam. The upgrade path above covers single-tenant
+hosted scale only; it must not be widened to multi-tenancy without a new plan.
 
 ## Package Map
 
@@ -399,18 +501,20 @@ docs/
 
 Current limits:
 
-- Fresh runs are planning-first.
-- JSONL storage is single-instance.
-- Remote web-model auth may need an OAuth/auth proxy depending on platform UI.
-- Cloud workers cannot see local desktop folders unless those folders are synced
-  or mounted into the cloud runtime.
+- Fresh runs default to the `plan-only` mode; execution requires an
+  execution-capable run mode plus explicit start controls.
+- JSONL storage and the ledger-backed queue are single-instance; horizontal
+  scaling is unsafe (see "Hosted Scale Migration Seam").
+- Remote web-model auth may need an OAuth/auth proxy depending on platform UI;
+  the reference proxy shape lives in the cloud deployment runbook.
+- Cloud runs never read laptop paths; they require a GitHub repository,
+  uploaded PRD content, or a future sync/upload input.
 
 Recommended next moves:
 
-- Wire operator-triggered worker execution into the run flow.
-- Add a queue between planned tickets and workers.
-- Replace JSONL with Postgres or SQLite-on-volume plus locking for hosted scale.
-- Add OAuth-compatible auth in front of `/mcp` for Claude.com/ChatGPT.com setups
-  that cannot send static headers.
-- Add explicit repository checkout/materialization for cloud runs that specify
-  `githubRepo`.
+- Implement the database-backed event store and durable queue behind the
+  documented migration seam, keeping the contract test suite green.
+- Promote the OAuth/auth-proxy reference in front of `/mcp` to a maintained
+  component if a hosted platform drops static-header auth.
+- Extend deploy beyond the Render path once the single-provider flow is
+  proven in hosted use.

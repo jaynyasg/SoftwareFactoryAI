@@ -15,7 +15,11 @@
  * All append helpers are idempotent per (jobId, attempt) so client retries and
  * repeated reconciler passes converge instead of duplicating queue state. The
  * database-backed queue replacement seam (U11) must preserve exactly these
- * invariants.
+ * invariants: append atomicity plus a unique idempotency-key constraint give
+ * store-level claim arbitration, per-run sequence monotonicity gives fold
+ * ordering, and `projectExecutionQueue` stays the single reader. Nothing in
+ * this module holds queue state in process memory. See daemon.ts (invariants
+ * list) and ARCHITECTURE.md ("Hosted Scale Migration Seam").
  */
 import { resolveTargetRunId, validateAndSortEvents } from '@software-factory/core';
 import type {

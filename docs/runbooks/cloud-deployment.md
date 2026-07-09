@@ -12,8 +12,9 @@ This is also the shape required for web-model access: ChatGPT.com and Claude.com
 cannot run local skill scripts, so they need public HTTPS endpoints they can call
 from their own cloud.
 
-Horizontal scaling needs a database-backed event store and a worker queue; do
-not run more than one instance against the same JSONL ledger.
+Horizontal scaling is UNSAFE with this build: do not run more than one
+instance (or more than one execution daemon) against the same JSONL ledger.
+See "Scaling Limits And The Migration Seam" below.
 
 ## Render Deployment
 
@@ -51,12 +52,54 @@ the response or in ledger evidence:
 | `deploy`                                         | Deploy provider (`status` + named `missing` pieces)           | `SF_RENDER_API_KEY`, `SF_RENDER_SERVICE_ID`, `SF_RENDER_HOSTED_URL`, `SF_DEPLOY_GITHUB_OWNER/REPO` |
 | `research.searchCredentials`                     | Research web-search provider                                  | `SF_RESEARCH_SEARCH_PROVIDER`, `SF_RESEARCH_SEARCH_API_KEY` |
 | `storage`                                        | Persistent JSONL ledger (single-instance)                     | `SF_FACTORY_DIR` on a mounted persistent disk      |
+| `queue`                                          | Execution queue mode + single-instance scaling warning        | none — informational (see scaling section below)   |
 
 `storage.status` is `attention` on a cloud instance that has not set
 `SF_FACTORY_DIR` explicitly: without a persistent disk the ledger (and a
 file-backed operator token) disappears on redeploy. Missing deploy or research
 setup never blocks local execution — the affected stage pauses with a
 setup-required state instead.
+
+The `queue` section always reports `{ mode: "ledger", storage: "jsonl",
+singleInstance: true, horizontalScaling: "unsafe" }` plus a warning naming the
+migration seam. In cloud mode the server also logs one
+`[software-factory] scale-safety:` warning line at startup with the same
+information, so hosted logs record the limit for whoever operates the service
+next.
+
+## Scaling Limits And The Migration Seam
+
+**When horizontal scaling is unsafe: always, with this build.** The factory
+must run as exactly ONE instance with ONE execution daemon per ledger. Do not:
+
+- set the instance/replica count above 1 (the shipped `render.yaml` pins
+  `numInstances: 1` — keep it),
+- enable autoscaling for the service,
+- point two services (e.g. a web instance plus a "worker" instance) at the
+  same `SF_FACTORY_DIR`, or
+- run a local factory against a mounted copy of a cloud ledger while the cloud
+  instance is live.
+
+What breaks if you do: JSONL appends and per-run sequence allocation are
+serialized inside one process, not across processes. A second writer can
+interleave partial lines, duplicate sequence numbers, and bypass the
+idempotency-key arbitration that keeps queue claims and command retries safe.
+The failure is silent data corruption, not a clean error.
+
+What IS safe today:
+
+- one instance restarting (the ledger replays queued/leased/completed state;
+  stale leases are abandoned and escalated to the intervention queue), and
+- vertical scaling (a larger instance for the single process).
+
+Scaling out requires the database-backed event store and durable queue behind
+the documented seam — see ARCHITECTURE.md, "Hosted Scale Migration Seam", for
+the stable interfaces (`EventStore`, queue event semantics, the daemon's
+`TicketExecutor` seam), the invariants a replacement must preserve (append
+atomicity, global idempotency, per-run sequence monotonicity, lease/heartbeat/
+abandoned-lease recovery, reconcile-before-drain, pause fold immunity), and
+the contract test suite (`packages/core/test/events/event-store-contract.ts`)
+that any replacement backend must pass unchanged.
 
 ## Calling The Cloud Factory
 
@@ -168,7 +211,10 @@ header/API-key auth, which talks to `/mcp` and the HTTP API directly.
   an operator surface, not a public product.
 - Rotate `SF_OPERATOR_TOKEN` after sharing logs or screen recordings that expose
   environment values.
-- Use one instance. JSONL append ordering is process-local today.
-- For multi-user or horizontally scaled cloud, replace the filesystem event
-  store with Postgres/SQLite-over-volume plus advisory locking, then add a queue
-  for worker execution.
+- Use one instance. JSONL append ordering is process-local today — see
+  "Scaling Limits And The Migration Seam" above before changing instance
+  counts.
+- For multi-user or horizontally scaled cloud, implement the database-backed
+  event store and durable queue behind the migration seam documented in
+  ARCHITECTURE.md ("Hosted Scale Migration Seam") — the interfaces are stable
+  and the contract tests already exist.

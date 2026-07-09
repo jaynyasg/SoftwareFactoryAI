@@ -10,6 +10,7 @@ import {
   type EventStoreOptions,
   type FileSystemEventStoreOptions,
 } from '../../src/index';
+import { describeEventStoreContract } from './event-store-contract';
 
 function deterministic(): Required<EventStoreOptions> {
   let id = 0;
@@ -142,4 +143,25 @@ describe('event store (in-memory)', () => {
     expect(dupSecond.deduplicated).toBe(true);
     expect(dupSecond.event.eventId).toBe(dupFirst.event.eventId);
   });
+});
+
+/* ----------------------------------------------------------------------------
+ * U11 — EventStore contract suite (the database migration seam, executable).
+ *
+ * Both shipping implementations must pass the identical contract; a future
+ * database-backed store (e.g. Postgres) is added HERE with its own harness and
+ * must pass unchanged. `reopen` simulates a single-instance cloud restart over
+ * the same persisted state; the in-memory store has no persistence, so its
+ * restart/replay section is skipped by the contract.
+ * ------------------------------------------------------------------------- */
+describeEventStoreContract({
+  name: 'filesystem (JSONL)',
+  create: () => fsStore(),
+  // A NEW instance over the same baseDir — the restart path cloud mode takes.
+  reopen: () => fsStore(),
+});
+
+describeEventStoreContract({
+  name: 'in-memory',
+  create: () => createInMemoryEventStore(deterministic()),
 });
