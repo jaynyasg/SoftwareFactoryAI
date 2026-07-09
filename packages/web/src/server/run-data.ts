@@ -23,9 +23,10 @@ import {
   projectTickets,
 } from '@software-factory/core';
 import type { FactoryEvent, RunProjection } from '@software-factory/core';
-import { getApp } from './instance';
+import { getApp, getStore } from './instance';
 import type { ApiResponse } from './app';
 import { filterInterventions, projectInterventions } from './execution/interventions';
+import type { InterventionView } from './execution/interventions';
 import { executionJobId, projectExecutionQueue } from './execution/queue';
 import { projectPreflight } from './execution/preflight';
 import {
@@ -122,24 +123,42 @@ export async function loadRunAggregate(
 }
 
 /**
- * Load the cross-run operator intervention queue (X4) through the same
- * read-only route the client polls, so the initial render and every poll see
- * the identical projection.
+ * Typed mapping from the server projection to the client-safe wire item. The
+ * shapes are intentionally identical (InterventionItem mirrors
+ * InterventionView), so this is a field-by-field copy the compiler checks —
+ * no cast that could silently drift from the wire contract.
+ */
+function toInterventionItem(view: InterventionView): InterventionItem {
+  return {
+    interventionId: view.interventionId,
+    runId: view.runId,
+    ticketId: view.ticketId,
+    kind: view.kind,
+    severity: view.severity,
+    blockingStage: view.blockingStage,
+    reason: view.reason,
+    requiredAction: view.requiredAction,
+    raisedAt: view.raisedAt,
+    sequence: view.sequence,
+    status: view.status,
+    resolution: view.resolution,
+    resolutionNote: view.resolutionNote,
+    resolvedAt: view.resolvedAt,
+  };
+}
+
+/**
+ * Load the cross-run operator intervention queue (X4) with the SAME pure
+ * projection the `/api/interventions` route folds (projectInterventions over
+ * the store), so the initial render and every poll see identical state —
+ * without a JSON round-trip through `handle()` (and its untyped body cast) or
+ * a duplicate `readAll` on the SSR path.
  */
 export async function loadInterventionQueue(): Promise<InterventionQueueSnapshot> {
-  const res = await getApp().handle({
-    method: 'GET',
-    path: '/api/interventions',
-    query: {},
-    headers: {},
-  });
-  if (res.status !== 200) {
-    return { interventions: [], openCount: 0 };
-  }
-  const body = bodyOf(res);
+  const projection = projectInterventions(await getStore().readAll());
   return {
-    interventions: (body.interventions as InterventionItem[] | undefined) ?? [],
-    openCount: typeof body.openCount === 'number' ? body.openCount : 0,
+    interventions: projection.interventions.map(toInterventionItem),
+    openCount: projection.open.length,
   };
 }
 

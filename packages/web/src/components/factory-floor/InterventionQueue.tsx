@@ -9,7 +9,7 @@
  * The empty queue is a designed feature state — the factory running clean is
  * information, not an absence.
  */
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import type { EventSeverity } from '@software-factory/core';
 import type { InterventionItem, InterventionQueueSnapshot } from '../../lib/types';
@@ -127,6 +127,15 @@ export function InterventionQueue({
     () => [...new Set(snapshot.interventions.map((item) => item.blockingStage))],
     [snapshot.interventions],
   );
+
+  // A run filter must never outlive its run: when the filtered run disappears
+  // from the polled snapshot, a stale filter would silently hide every item.
+  // Reset to 'all' so the queue stays honest.
+  useEffect(() => {
+    if (runFilter !== 'all' && !runIds.includes(runFilter)) {
+      setRunFilter('all');
+    }
+  }, [runFilter, runIds]);
 
   const items = filterInterventionItems(snapshot.interventions, {
     runId: runFilter === 'all' ? undefined : runFilter,

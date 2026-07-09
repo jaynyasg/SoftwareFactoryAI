@@ -87,11 +87,7 @@ import type {
 import type { ExecutorGateStages } from './gate-stages';
 import type { ExecutorCompletionStage } from './completion-stage';
 import type { TicketExecutionContext, TicketExecutionResult, TicketExecutor } from './daemon';
-import {
-  filterInterventions,
-  projectInterventions,
-  resolveIntervention,
-} from './interventions';
+import { filterInterventions, projectInterventions, resolveIntervention } from './interventions';
 import { highestTicketRisk } from '../../lib/run-view';
 import { resolveGenomeDir } from '../planner';
 import { DEFAULT_EXECUTION_RUNTIME_CONFIG, resolveWorkspaceRuntimeConfig } from '../runtime';

@@ -161,7 +161,9 @@ function FocusedBlueprint({
     );
   }
   if (fetched === null) {
-    return <StateBlock variant="loading" title={`Loading run ${runId}…`} />;
+    return (
+      <StateBlock variant="loading" title={`Loading run ${runId}…`} testId="blueprint-loading" />
+    );
   }
   return <LiveBlueprint key={runId} runId={runId} initial={fetched} />;
 }
@@ -226,7 +228,9 @@ export function FactoryFloor({
       {/* 2 — the focused run's blueprint: lanes + contract/preflight handoff. */}
       <section className="factory-screen__blueprint" aria-label="Blueprint region">
         {focusedRunId !== null ? (
-          <FocusedBlueprint runId={focusedRunId} latest={latest} />
+          // Keyed by run id: switching focus must remount FocusedBlueprint so
+          // the previous run's fetched/error state can never flash through.
+          <FocusedBlueprint key={focusedRunId} runId={focusedRunId} latest={latest} />
         ) : (
           <StateBlock
             variant="empty"

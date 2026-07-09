@@ -11,6 +11,14 @@
  * rest of the projected snapshot. A failed tick flips `reconnecting` true and
  * keeps the last good data on screen until the next tick recovers — honest
  * reconnect behavior, never a frozen-but-pretending UI (DESIGN.md §6).
+ *
+ * RUN IDENTITY INVARIANT: the accumulated rows and the `last_sequence` cursor
+ * are PER RUN — sequences are run-relative, so rows from two runs must never
+ * meet in one accumulator. Callers typically remount the owning component with
+ * `key={runId}` (see FactoryFloor), but the hook does NOT rely on that: when
+ * `runId` changes across renders it resets the snapshot, rows, and cursor to
+ * the new `initial` before polling, so a reused instance can never poll with
+ * the previous run's cursor or mix ledger rows across runs.
  */
 import { useEffect, useRef, useState } from 'react';
 import type { LedgerRow } from '@software-factory/core';
@@ -44,10 +52,29 @@ export function useRunAggregate(runId: string, initial: RunAggregate): LiveRun {
   const [nonce, setNonce] = useState(0);
   const lastSequence = useRef<number>(initial.lastSequence);
 
+  // Run-identity reset (see the module header): if the hook instance is reused
+  // for a different run (no key remount), drop the previous run's accumulated
+  // rows and cursor BEFORE the next poll — sequences are run-relative, so the
+  // old cursor/rows would cross-contaminate the new run's ledger. Adjusting
+  // state during render is React's documented derived-state pattern; the
+  // render restarts immediately with the reset values.
+  const boundRunId = useRef(runId);
+  if (boundRunId.current !== runId) {
+    boundRunId.current = runId;
+    lastSequence.current = initial.lastSequence;
+    setSnapshot(initial);
+    setRows(initial.run.ledger);
+    setReconnecting(false);
+    setNonce(0);
+  }
+
   useEffect(
     () =>
       startPollLoop({
         intervalMs: POLL_INTERVAL_MS,
+        // A refresh() restart confirms a just-issued command: poll right away
+        // instead of letting the confirmation lag one full interval.
+        immediateFirst: nonce > 0,
         tick: async (isActive) => {
           const aggregate = await fetchAggregate(runId, lastSequence.current);
           if (!isActive()) {

@@ -449,18 +449,16 @@ async function getExecution(ctx: RouteContext): Promise<ApiResponse> {
   };
 }
 
-function interventionKind(value: string | undefined): InterventionKind | undefined {
-  return (INTERVENTION_KINDS as readonly string[]).includes(value ?? '')
-    ? (value as InterventionKind)
-    : undefined;
+/** Type guard: is this query value one of the closed intervention kinds? */
+function isInterventionKind(value: unknown): value is InterventionKind {
+  return typeof value === 'string' && (INTERVENTION_KINDS as readonly string[]).includes(value);
 }
 
 const SEVERITY_VALUES: readonly EventSeverity[] = ['info', 'success', 'warn', 'error', 'critical'];
 
-function severity(value: string | undefined): EventSeverity | undefined {
-  return (SEVERITY_VALUES as readonly string[]).includes(value ?? '')
-    ? (value as EventSeverity)
-    : undefined;
+/** Type guard: is this query value one of the event severities? */
+function isEventSeverity(value: unknown): value is EventSeverity {
+  return typeof value === 'string' && (SEVERITY_VALUES as readonly string[]).includes(value);
 }
 
 async function listInterventions(ctx: RouteContext): Promise<ApiResponse> {
@@ -468,8 +466,8 @@ async function listInterventions(ctx: RouteContext): Promise<ApiResponse> {
   const projection = projectInterventions(await ctx.reader.readAll());
   const interventions = filterInterventions(projection, {
     runId: str(query.runId),
-    kind: interventionKind(query.kind),
-    severity: severity(query.severity),
+    kind: isInterventionKind(query.kind) ? query.kind : undefined,
+    severity: isEventSeverity(query.severity) ? query.severity : undefined,
     blockingStage: str(query.blockingStage) ?? str(query.stage),
     requiredActionText: str(query.action),
     openOnly: query.open === '1' || query.open === 'true',

@@ -116,6 +116,25 @@ export interface ReviewInput {
   readonly mode?: ReviewMode;
 }
 
+/**
+ * Stage-resume outcome attached to an approved review (typed mirror of the
+ * server's `StageResumeResult`): which blocked stage the approval resumed,
+ * which interventions it resolved, and whether the stage's job was re-queued.
+ */
+export interface ReviewResumeResult {
+  readonly stage: string;
+  readonly resolvedInterventions: readonly string[];
+  readonly queued: boolean;
+  readonly note?: string;
+}
+
+export interface ReviewResult {
+  readonly runId: string;
+  readonly run: RunProjection;
+  /** Present when an approval resumed a blocked stage (absent otherwise). */
+  readonly resumed?: ReviewResumeResult;
+}
+
 /* Execution controls (full-factory U5). Commands enqueue/mutate queue state on
  * the backend and return projected state — the CLI never waits for workers. */
 
@@ -214,7 +233,7 @@ export interface ApiClient {
   getRun(runId: string): Promise<RunProjection>;
   getEvents(runId: string, options?: GetEventsOptions): Promise<GetEventsResult>;
   cancelRun(runId: string, input: CancelRunInput): Promise<{ runId: string; run: RunProjection }>;
-  review(runId: string, input: ReviewInput): Promise<{ runId: string; run: RunProjection }>;
+  review(runId: string, input: ReviewInput): Promise<ReviewResult>;
   getSetup(): Promise<SetupResult>;
   /** Preflight + enqueue execution for a planned run (U5). */
   startRun(runId: string, input?: ExecutionCommandInput): Promise<ExecutionCommandResult>;
@@ -237,6 +256,124 @@ function trimBase(url: string): string {
 
 function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {};
+}
+
+/* ----------------------------------------------------------------------------
+ * Response-shape extraction. Every method destructures the safe fields it
+ * documents from the parsed `Record<string, unknown>` body (the createRun
+ * pattern) instead of whole-record `as` casts, so a drifting server payload
+ * degrades to absent optional fields rather than lying types.
+ * ------------------------------------------------------------------------- */
+
+function optStr(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
+function optBool(value: unknown): boolean | undefined {
+  return typeof value === 'boolean' ? value : undefined;
+}
+
+function optNum(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function toExecutionSummary(value: unknown): ExecutionSummary | undefined {
+  if (typeof value !== 'object' || value === null) {
+    return undefined;
+  }
+  const record = asRecord(value);
+  const state = optStr(record.state);
+  return state === undefined ? undefined : { state, reason: optStr(record.reason) };
+}
+
+function toQueueJobSummary(value: unknown): QueueJobSummary | undefined {
+  if (typeof value !== 'object' || value === null) {
+    return undefined;
+  }
+  const record = asRecord(value);
+  const jobId = optStr(record.jobId);
+  const jobKind = optStr(record.jobKind);
+  const attempt = optNum(record.attempt);
+  const status = optStr(record.status);
+  if (
+    jobId === undefined ||
+    jobKind === undefined ||
+    attempt === undefined ||
+    status === undefined
+  ) {
+    return undefined;
+  }
+  return { jobId, jobKind, attempt, status, reason: optStr(record.reason) };
+}
+
+function toExecutionCommandResult(
+  runId: string,
+  body: Record<string, unknown>,
+): ExecutionCommandResult {
+  return {
+    runId: optStr(body.runId) ?? runId,
+    queued: optBool(body.queued),
+    alreadyQueued: optBool(body.alreadyQueued),
+    paused: optBool(body.paused),
+    resumed: optBool(body.resumed),
+    execution: toExecutionSummary(body.execution),
+    job: toQueueJobSummary(body.job),
+    run: body.run !== undefined ? (body.run as RunProjection) : undefined,
+  };
+}
+
+function toInterventionSummary(value: unknown): InterventionSummary | undefined {
+  if (typeof value !== 'object' || value === null) {
+    return undefined;
+  }
+  const record = asRecord(value);
+  const interventionId = optStr(record.interventionId);
+  const runId = optStr(record.runId);
+  const kind = optStr(record.kind);
+  const severity = optStr(record.severity);
+  const blockingStage = optStr(record.blockingStage);
+  const reason = optStr(record.reason);
+  const requiredAction = optStr(record.requiredAction);
+  const status = optStr(record.status);
+  if (
+    interventionId === undefined ||
+    runId === undefined ||
+    kind === undefined ||
+    severity === undefined ||
+    blockingStage === undefined ||
+    reason === undefined ||
+    requiredAction === undefined ||
+    status === undefined
+  ) {
+    return undefined;
+  }
+  return {
+    interventionId,
+    runId,
+    kind,
+    severity,
+    blockingStage,
+    reason,
+    requiredAction,
+    status,
+    resolution: optStr(record.resolution),
+  };
+}
+
+function toReviewResume(value: unknown): ReviewResumeResult | undefined {
+  if (typeof value !== 'object' || value === null) {
+    return undefined;
+  }
+  const record = asRecord(value);
+  const stage = optStr(record.stage);
+  const queued = optBool(record.queued);
+  if (stage === undefined || queued === undefined) {
+    return undefined;
+  }
+  const resolvedInterventions = Array.isArray(record.resolvedInterventions)
+    ? record.resolvedInterventions.filter((item): item is string => typeof item === 'string')
+    : [];
+  return { stage, resolvedInterventions, queued, note: optStr(record.note) };
 }
 
 export function createApiClient(options: ApiClientOptions): ApiClient {
@@ -360,7 +497,13 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
         rationale: input.rationale,
         mode: input.mode,
       });
-      return { runId: String(body.runId ?? runId), run: body.run as RunProjection };
+      return {
+        runId: String(body.runId ?? runId),
+        run: body.run as RunProjection,
+        // Present when an approval resumed a blocked stage (`resumed: null`
+        // otherwise) — surfaced so callers can report what the approval did.
+        resumed: toReviewResume(body.resumed),
+      };
     },
     async getSetup() {
       const body = await get('/api/setup');
@@ -371,21 +514,21 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
         expectedVersion: input.expectedVersion,
         reason: input.reason,
       });
-      return body as unknown as ExecutionCommandResult;
+      return toExecutionCommandResult(runId, body);
     },
     async pauseRun(runId, input = {}) {
       const body = await mutate(`/api/runs/${encodeURIComponent(runId)}/pause`, {
         expectedVersion: input.expectedVersion,
         reason: input.reason,
       });
-      return body as unknown as ExecutionCommandResult;
+      return toExecutionCommandResult(runId, body);
     },
     async resumeRun(runId, input = {}) {
       const body = await mutate(`/api/runs/${encodeURIComponent(runId)}/resume`, {
         expectedVersion: input.expectedVersion,
         reason: input.reason,
       });
-      return body as unknown as ExecutionCommandResult;
+      return toExecutionCommandResult(runId, body);
     },
     async retryRun(runId, input = {}) {
       const body = await mutate(`/api/runs/${encodeURIComponent(runId)}/retry`, {
@@ -393,14 +536,14 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
         reason: input.reason,
         ticketId: input.ticketId,
       });
-      return body as unknown as ExecutionCommandResult;
+      return toExecutionCommandResult(runId, body);
     },
     async rerunGates(runId, input = {}) {
       const body = await mutate(`/api/runs/${encodeURIComponent(runId)}/gates/rerun`, {
         expectedVersion: input.expectedVersion,
         reason: input.reason,
       });
-      return body as unknown as ExecutionCommandResult;
+      return toExecutionCommandResult(runId, body);
     },
     async getExecution(runId) {
       return get(`/api/runs/${encodeURIComponent(runId)}/execution`);
@@ -424,7 +567,10 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
       }
       const suffix = params.size > 0 ? `?${params.toString()}` : '';
       const body = await get(`/api/interventions${suffix}`);
-      return body as unknown as ListInterventionsResult;
+      const interventions = (Array.isArray(body.interventions) ? body.interventions : [])
+        .map(toInterventionSummary)
+        .filter((item): item is InterventionSummary => item !== undefined);
+      return { interventions, openCount: optNum(body.openCount) ?? 0 };
     },
     async resolveIntervention(interventionId, input) {
       const body = await mutate(
@@ -435,7 +581,10 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
           expectedVersion: input.expectedVersion,
         },
       );
-      return body as unknown as ResolveInterventionResult;
+      return {
+        alreadyResolved: optBool(body.alreadyResolved),
+        intervention: toInterventionSummary(body.intervention),
+      };
     },
   };
 }

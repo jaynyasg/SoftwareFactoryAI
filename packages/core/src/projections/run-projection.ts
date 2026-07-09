@@ -441,8 +441,13 @@ export function projectRun(raw: readonly unknown[], runId?: string): RunProjecti
                 executionReason = event.payload.reason;
               }
               break;
-            default:
+            default: {
+              // Exhaustiveness: adding a QueueReleaseOutcome member must fail
+              // compile here until this fold handles it.
+              const exhaustive: never = event.payload.outcome;
+              void exhaustive;
               break;
+            }
           }
         }
         break;

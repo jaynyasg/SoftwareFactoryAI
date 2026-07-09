@@ -173,4 +173,239 @@ describe('createApiClient', () => {
     expect(setup.operatorToken.present).toBe(true);
     expect(setup.deploy.status).toBe('required');
   });
+
+  it('review surfaces the stage-resume outcome of an approval (and drops junk)', async () => {
+    const { fetchImpl } = mockFetch(() => ({
+      status: 200,
+      body: {
+        runId: 'run-1',
+        run: { runId: 'run-1', status: 'running' },
+        resumed: {
+          stage: 'gates',
+          resolvedInterventions: ['i-1', 42, 'i-2'],
+          queued: true,
+          extra: 'ignored',
+        },
+      },
+    }));
+    const client = createApiClient({ baseUrl: 'http://x', operatorToken: 'tok', fetchImpl });
+    const result = await client.review('run-1', {
+      decision: 'approved',
+      riskTier: 'low',
+      expectedVersion: 7,
+    });
+    expect(result.resumed).toEqual({
+      stage: 'gates',
+      resolvedInterventions: ['i-1', 'i-2'],
+      queued: true,
+    });
+  });
+
+  it('review leaves resumed absent when the server resumed nothing (null)', async () => {
+    const { fetchImpl } = mockFetch(() => ({
+      status: 200,
+      body: { runId: 'run-1', run: {}, resumed: null },
+    }));
+    const client = createApiClient({ baseUrl: 'http://x', operatorToken: 'tok', fetchImpl });
+    const result = await client.review('run-1', {
+      decision: 'rejected',
+      riskTier: 'low',
+      expectedVersion: 7,
+    });
+    expect(result.resumed).toBeUndefined();
+  });
+});
+
+describe('execution command extraction', () => {
+  const CANNED_BODY = {
+    runId: 'run-9',
+    queued: true,
+    alreadyQueued: false,
+    execution: { state: 'queued', reason: 'preflight passed' },
+    job: {
+      jobId: 'run-9:execution',
+      jobKind: 'run-execution',
+      attempt: 2,
+      status: 'queued',
+      reason: 'retry',
+    },
+    run: { runId: 'run-9', status: 'running' },
+    unexpected: 'must not leak into the typed result',
+  };
+
+  it('startRun destructures the documented fields and drops unknown ones', async () => {
+    const { fetchImpl, calls } = mockFetch(() => ({ status: 202, body: CANNED_BODY }));
+    const client = createApiClient({ baseUrl: 'http://x', operatorToken: 'tok', fetchImpl });
+
+    const result = await client.startRun('run-9', { expectedVersion: 4, reason: 'go' });
+    expect(calls[0].url).toBe('http://x/api/runs/run-9/start');
+    expect(calls[0].body).toEqual({ expectedVersion: 4, reason: 'go' });
+    expect(result.runId).toBe('run-9');
+    expect(result.queued).toBe(true);
+    expect(result.alreadyQueued).toBe(false);
+    expect(result.execution).toEqual({ state: 'queued', reason: 'preflight passed' });
+    expect(result.job).toEqual({
+      jobId: 'run-9:execution',
+      jobKind: 'run-execution',
+      attempt: 2,
+      status: 'queued',
+      reason: 'retry',
+    });
+    expect('unexpected' in result).toBe(false);
+  });
+
+  it('pauseRun/resumeRun map their booleans and degrade malformed sub-shapes', async () => {
+    const { fetchImpl, calls } = mockFetch((call) => ({
+      status: 200,
+      body: call.url.endsWith('/pause')
+        ? { runId: 'run-2', paused: true, execution: { state: 'paused' } }
+        : { resumed: true, execution: 'not-an-object', job: { jobId: 'missing-fields' } },
+    }));
+    const client = createApiClient({ baseUrl: 'http://x', operatorToken: 'tok', fetchImpl });
+
+    const paused = await client.pauseRun('run-2');
+    expect(paused).toMatchObject({ runId: 'run-2', paused: true, execution: { state: 'paused' } });
+
+    const resumed = await client.resumeRun('run-2');
+    // No runId in the body: falls back to the requested run id.
+    expect(resumed.runId).toBe('run-2');
+    expect(resumed.resumed).toBe(true);
+    // Malformed nested shapes degrade to absent, not lying types.
+    expect(resumed.execution).toBeUndefined();
+    expect(resumed.job).toBeUndefined();
+    expect(calls.map((call) => call.url)).toEqual([
+      'http://x/api/runs/run-2/pause',
+      'http://x/api/runs/run-2/resume',
+    ]);
+  });
+
+  it('retryRun forwards ticketId and rerunGates hits the gates endpoint', async () => {
+    const { fetchImpl, calls } = mockFetch(() => ({
+      status: 202,
+      body: { runId: 'run-3', queued: true },
+    }));
+    const client = createApiClient({ baseUrl: 'http://x', operatorToken: 'tok', fetchImpl });
+
+    const retried = await client.retryRun('run-3', { ticketId: 't-1', reason: 'fix data model' });
+    expect(calls[0].url).toBe('http://x/api/runs/run-3/retry');
+    expect(calls[0].body).toEqual({ ticketId: 't-1', reason: 'fix data model' });
+    expect(retried).toMatchObject({ runId: 'run-3', queued: true });
+
+    const gates = await client.rerunGates('run-3');
+    expect(calls[1].url).toBe('http://x/api/runs/run-3/gates/rerun');
+    expect(gates).toMatchObject({ runId: 'run-3', queued: true });
+  });
+
+  it('surfaces execution-command denials as typed ApiError (stale guard)', async () => {
+    const { fetchImpl } = mockFetch(() => ({
+      status: 409,
+      body: { error: 'stale_subject_version', message: 'stale' },
+    }));
+    const client = createApiClient({ baseUrl: 'http://x', operatorToken: 'tok', fetchImpl });
+    try {
+      await client.startRun('run-4', { expectedVersion: 1 });
+      expect.unreachable('should have thrown');
+    } catch (error) {
+      expect(error).toBeInstanceOf(ApiError);
+      expect((error as ApiError).isStale).toBe(true);
+    }
+  });
+});
+
+describe('intervention extraction', () => {
+  const GOOD_ITEM = {
+    interventionId: 'i-1',
+    runId: 'run-1',
+    kind: 'missing_credentials',
+    severity: 'warn',
+    blockingStage: 'deploy',
+    reason: 'needs credentials',
+    requiredAction: 'add the render credentials',
+    status: 'open',
+  };
+
+  it('listInterventions builds the query string and validates item shapes', async () => {
+    const { fetchImpl, calls } = mockFetch(() => ({
+      status: 200,
+      body: {
+        interventions: [GOOD_ITEM, { interventionId: 'broken-only-id' }, 'junk', null],
+        openCount: 1,
+      },
+    }));
+    const client = createApiClient({ baseUrl: 'http://x', fetchImpl });
+
+    const result = await client.listInterventions({
+      runId: 'run-1',
+      kind: 'missing_credentials',
+      severity: 'warn',
+      blockingStage: 'deploy',
+      open: true,
+    });
+    expect(calls[0].url).toBe(
+      'http://x/api/interventions?runId=run-1&kind=missing_credentials&severity=warn&blockingStage=deploy&open=1',
+    );
+    // Malformed rows are dropped instead of surfacing undefined fields.
+    expect(result.interventions).toEqual([GOOD_ITEM]);
+    expect(result.openCount).toBe(1);
+  });
+
+  it('listInterventions degrades a malformed body to an empty result', async () => {
+    const { fetchImpl } = mockFetch(() => ({
+      status: 200,
+      body: { interventions: 'nope', openCount: 'many' },
+    }));
+    const client = createApiClient({ baseUrl: 'http://x', fetchImpl });
+    await expect(client.listInterventions()).resolves.toEqual({
+      interventions: [],
+      openCount: 0,
+    });
+  });
+
+  it('resolveIntervention posts the resolution and extracts the summary', async () => {
+    const resolvedItem = { ...GOOD_ITEM, status: 'resolved', resolution: 'credentials added' };
+    const { fetchImpl, calls } = mockFetch(() => ({
+      status: 200,
+      body: { alreadyResolved: false, intervention: resolvedItem, junk: true },
+    }));
+    const client = createApiClient({ baseUrl: 'http://x', operatorToken: 'tok', fetchImpl });
+
+    const result = await client.resolveIntervention('i-1', {
+      resolution: 'credentials added',
+      note: 'render token rotated',
+      expectedVersion: 3,
+    });
+    expect(calls[0].url).toBe('http://x/api/interventions/i-1/resolve');
+    expect(calls[0].body).toEqual({
+      resolution: 'credentials added',
+      note: 'render token rotated',
+      expectedVersion: 3,
+    });
+    expect(result.alreadyResolved).toBe(false);
+    expect(result.intervention).toEqual(resolvedItem);
+  });
+
+  it('resolveIntervention degrades malformed fields and raises typed errors', async () => {
+    const { fetchImpl } = mockFetch(() => ({
+      status: 200,
+      body: { alreadyResolved: 'yes', intervention: { interventionId: 1 } },
+    }));
+    const client = createApiClient({ baseUrl: 'http://x', operatorToken: 'tok', fetchImpl });
+    const result = await client.resolveIntervention('i-9', { resolution: 'done' });
+    expect(result.alreadyResolved).toBeUndefined();
+    expect(result.intervention).toBeUndefined();
+
+    const { fetchImpl: failImpl } = mockFetch(() => ({
+      status: 404,
+      body: { error: 'intervention_not_found', message: 'nope' },
+    }));
+    const failing = createApiClient({
+      baseUrl: 'http://x',
+      operatorToken: 'tok',
+      fetchImpl: failImpl,
+    });
+    await expect(failing.resolveIntervention('i-x', { resolution: 'r' })).rejects.toMatchObject({
+      status: 404,
+      code: 'intervention_not_found',
+    });
+  });
 });

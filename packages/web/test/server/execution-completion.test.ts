@@ -498,12 +498,10 @@ describe('U8: hosted health failure + retry without duplicate packaging', () => 
     // Operator resolves the first entry (e.g. after investigating), then
     // retries the deploy — which fails AGAIN.
     const resolved = await app.handle(
-      req(
-        'POST',
-        `/api/interventions/${encodeURIComponent(firstId)}/resolve`,
-        authedHeaders(),
-        { resolution: 'investigated', note: 'suspected flaky health check' },
-      ),
+      req('POST', `/api/interventions/${encodeURIComponent(firstId)}/resolve`, authedHeaders(), {
+        resolution: 'investigated',
+        note: 'suspected flaky health check',
+      }),
     );
     expect(resolved.status).toBe(200);
     await app.handle(req('POST', `/api/runs/${runId}/retry`, authedHeaders(), {}));

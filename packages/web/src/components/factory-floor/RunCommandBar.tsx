@@ -10,7 +10,7 @@
  * preflight-blocked start explains WHICH checks failed instead of pretending
  * to run.
  */
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { RunExecutionState, RunStatus } from '@software-factory/core';
 import type { DeployView, PreviewView } from '../../lib/run-view';
 import { useSession } from '../session-context';
@@ -61,6 +61,17 @@ export function RunCommandBar({
   const [phase, setPhase] = useState<Phase>({ kind: 'idle' });
   const busy = phase.kind === 'busy';
 
+  // Cancellation guard: an in-flight command that settles after unmount must
+  // not set state or trigger the parent refresh (reset on mount so StrictMode's
+  // mount/cleanup/mount cycle leaves the flag false).
+  const cancelledRef = useRef(false);
+  useEffect(() => {
+    cancelledRef.current = false;
+    return () => {
+      cancelledRef.current = true;
+    };
+  }, []);
+
   const canStart =
     status === 'planned' && (executionState === 'not_requested' || executionState === 'pending');
   const canPause = executionState === 'queued' || executionState === 'started';
@@ -77,6 +88,9 @@ export function RunCommandBar({
     setPhase({ kind: 'busy', action });
     try {
       const result = await request();
+      if (cancelledRef.current) {
+        return;
+      }
       if (result.ok) {
         setPhase({ kind: 'idle' });
         onChanged?.();
@@ -90,6 +104,9 @@ export function RunCommandBar({
         message: result.message ?? `${action} was not accepted (${result.error}).`,
       });
     } catch (error) {
+      if (cancelledRef.current) {
+        return;
+      }
       const message = error instanceof Error ? error.message : `Network error during ${action}.`;
       setPhase({ kind: 'error', message });
     }

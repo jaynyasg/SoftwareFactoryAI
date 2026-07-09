@@ -9,36 +9,17 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import type { ReactElement, ReactNode } from 'react';
-import { fireEvent, render, screen, within } from '@testing-library/react';
-import {
-  canReviewUnblock,
-  projectArtifacts,
-  projectOperator,
-  projectResearch,
-  projectRun,
-  projectTickets,
-} from '@software-factory/core';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { projectRun } from '@software-factory/core';
 import type { FactoryEvent } from '@software-factory/core';
 import {
   buildFullFactoryRunEvents,
   buildMarketplaceRunEvents,
 } from '../../../../tests/fixtures/marketplace-run';
-import { executionJobId, projectExecutionQueue } from '../../src/server/execution/queue';
-import { projectPreflight } from '../../src/server/execution/preflight';
-import {
-  filterInterventions,
-  projectInterventions,
-} from '../../src/server/execution/interventions';
-import {
-  deriveBlueprintLanes,
-  deriveDeploy,
-  deriveFactoryPulse,
-  deriveGateOutcomes,
-  derivePackage,
-  derivePreview,
-  deriveRepairSummaries,
-  deriveReviews,
-} from '../../src/lib/run-view';
+import { aggregateFromEvents } from '../_helpers/aggregate';
+import { projectInterventions } from '../../src/server/execution/interventions';
+import { deriveBlueprintLanes, deriveFactoryPulse } from '../../src/lib/run-view';
+import { useInterventionQueue } from '../../src/lib/use-intervention-queue';
 import type {
   InterventionItem,
   InterventionQueueSnapshot,
@@ -80,39 +61,6 @@ vi.mock('next/link', () => ({
     </a>
   ),
 }));
-
-function aggregateFromEvents(events: readonly FactoryEvent[], runId: string): RunAggregate {
-  const run = projectRun(events, runId);
-  return {
-    run,
-    tickets: projectTickets(events, runId).tickets,
-    artifacts: projectArtifacts(events, runId).artifacts,
-    operator: projectOperator(events, runId),
-    research: projectResearch(events, runId),
-    preflight: projectPreflight(events, runId),
-    executionJob: projectExecutionQueue(events, runId).byJobId[executionJobId(runId)] ?? null,
-    preview: derivePreview(events),
-    deploy: deriveDeploy(events),
-    packageView: derivePackage(events),
-    reviews: deriveReviews(events),
-    gates: deriveGateOutcomes(events),
-    repairs: deriveRepairSummaries(events),
-    interventions: filterInterventions(projectInterventions(events), {
-      runId,
-      openOnly: true,
-    }).map((item) => ({
-      interventionId: item.interventionId,
-      kind: item.kind,
-      blockingStage: item.blockingStage,
-      severity: item.severity,
-      reason: item.reason,
-      requiredAction: item.requiredAction,
-      approvable: canReviewUnblock(item.kind),
-    })),
-    lastSequence: run.lastSequence,
-    tail: run.ledger,
-  };
-}
 
 function buildAggregate(runId = 'run-test'): { aggregate: RunAggregate } {
   return { aggregate: aggregateFromEvents(buildMarketplaceRunEvents(runId), runId) };
@@ -670,6 +618,47 @@ describe('RunCommandBar (U9)', () => {
     expect(screen.getByRole('button', { name: /retry execution/i })).toBeEnabled();
     expect(screen.getByTestId('execution-reason')).toHaveTextContent(/preflight failed/);
   });
+
+  it('ignores a command that settles after unmount (no onChanged, no state update)', async () => {
+    let settle: (response: Response) => void = () => {};
+    const pending = new Promise<Response>((resolve) => {
+      settle = resolve;
+    });
+    const fetchMock = vi.fn(() => pending);
+    vi.stubGlobal('fetch', fetchMock);
+    const onChanged = vi.fn();
+    try {
+      const { unmount } = render(
+        withSession(
+          <RunCommandBar
+            runId="run-gone"
+            status="planned"
+            executionState="not_requested"
+            lastSequence={3}
+            onChanged={onChanged}
+          />,
+        ),
+      );
+      fireEvent.click(screen.getByRole('button', { name: /start execution/i }));
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      // The screen navigates away while the command is in flight…
+      unmount();
+      await act(async () => {
+        settle(
+          new Response(JSON.stringify({ runId: 'run-gone', queued: true }), {
+            status: 202,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      });
+
+      // …so the late result must not trigger the parent refresh (or setState).
+      expect(onChanged).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });
 
 describe('InterventionQueue (U9/X4)', () => {
@@ -753,6 +742,75 @@ describe('InterventionQueue (U9/X4)', () => {
     fireEvent.click(within(items[0]).getByRole('button', { name: /resolve intervention/i }));
     fireEvent.click(screen.getByRole('button', { name: 'Record' }));
     expect(screen.getByRole('alert')).toHaveTextContent(/state how this was resolved/i);
+  });
+
+  it('resets the run filter to all when the filtered run leaves the snapshot', async () => {
+    const alpha = interventionItemsOf(buildFullFactoryRunEvents('run-alpha'));
+    const onlyAlpha: InterventionQueueSnapshot = { interventions: alpha, openCount: alpha.length };
+
+    const { rerender } = render(withSession(<InterventionQueue snapshot={twoRunQueue()} />));
+    const runFilter = screen.getByLabelText('Filter interventions by run');
+    fireEvent.change(runFilter, { target: { value: 'run-beta' } });
+    expect(screen.getByTestId('intervention-item')).toHaveAttribute('data-run-id', 'run-beta');
+
+    // run-beta disappears from the polled snapshot: a stale filter must not
+    // silently hide every remaining item — it resets to 'all'.
+    rerender(withSession(<InterventionQueue snapshot={onlyAlpha} />));
+    await waitFor(() =>
+      expect(screen.getByLabelText('Filter interventions by run')).toHaveValue('all'),
+    );
+    expect(screen.getByTestId('intervention-item')).toHaveAttribute('data-run-id', 'run-alpha');
+  });
+
+  /** Live wiring exactly as FactoryFloor uses it: hook snapshot + refresh. */
+  function LiveQueueHarness({ initial }: { readonly initial: InterventionQueueSnapshot }) {
+    const queue = useInterventionQueue(initial);
+    return <InterventionQueue snapshot={queue.snapshot} onResolved={queue.refresh} />;
+  }
+
+  it('flips a resolved item within one round trip — never waiting a full poll interval', async () => {
+    vi.useFakeTimers();
+    try {
+      const items = interventionItemsOf(buildFullFactoryRunEvents('run-live'));
+      const open: InterventionQueueSnapshot = { interventions: items, openCount: items.length };
+      const resolved: InterventionQueueSnapshot = {
+        interventions: items.map((item) => ({
+          ...item,
+          status: 'resolved' as const,
+          resolution: 'credentials added',
+        })),
+        openCount: 0,
+      };
+      const fetchMock = vi.fn((input: RequestInfo | URL) =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify(
+              String(input).includes('/resolve') ? { alreadyResolved: false } : resolved,
+            ),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          ),
+        ),
+      );
+      vi.stubGlobal('fetch', fetchMock);
+
+      render(withSession(<LiveQueueHarness initial={open} />));
+      fireEvent.click(screen.getByRole('button', { name: /resolve intervention/i }));
+      fireEvent.change(screen.getByLabelText(/^Resolution for /), {
+        target: { value: 'added the render credentials' },
+      });
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Record' }));
+      });
+      // Flush the immediate refresh poll — the fake 1.5s interval NEVER advances.
+      await act(async () => {});
+
+      expect(fetchMock).toHaveBeenCalledWith('/api/interventions', expect.anything());
+      expect(screen.queryByRole('button', { name: /resolve intervention/i })).toBeNull();
+      expect(screen.getByTestId('interventions-empty')).toHaveTextContent(/nothing matches/i);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -838,5 +896,49 @@ describe('FactoryFloor blueprint-first hierarchy (U9/KTD7)', () => {
     // Focus (and the lanes) survive the clear — KTD7.
     expect(screen.getByLabelText('Factory blueprint')).toBeInTheDocument();
     expect(screen.getByTestId('blueprint-run')).toHaveTextContent(/run-floor/);
+  });
+
+  it('switching focus remounts the blueprint: the loading state shows, never the previous run', async () => {
+    const runA = 'run-key-a';
+    const runB = 'run-key-b';
+    const aggregateA = aggregateFromEvents(buildFullFactoryRunEvents(runA), runA);
+    const runProjectionB = projectRun(buildMarketplaceRunEvents(runB), runB);
+
+    // Neither run is the server-provided latest, so each focus fetches its
+    // aggregate: run A's fetch resolves; run B's stays pending forever.
+    const fetchMock = vi.fn((input: RequestInfo | URL) =>
+      String(input).includes(`/data/runs/${runA}`)
+        ? Promise.resolve(
+            new Response(JSON.stringify(aggregateA), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            }),
+          )
+        : new Promise<Response>(() => {}),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      render(
+        withSession(
+          <FactoryFloor
+            initialRuns={[aggregateA.run, runProjectionB]}
+            setup={setup}
+            latest={null}
+          />,
+        ),
+      );
+      expect(await screen.findByTestId('blueprint-run')).toHaveTextContent(/run-key-a/);
+
+      fireEvent.click(
+        within(screen.getByLabelText('Runs')).getByRole('button', { name: `Focus run ${runB}` }),
+      );
+
+      // key={focusedRunId}: the previous run's fetched blueprint can never
+      // flash through — the keyed remount shows the honest loading state.
+      expect(screen.queryByTestId('blueprint-run')).toBeNull();
+      expect(screen.getByTestId('blueprint-loading')).toHaveTextContent(/Loading run run-key-b/);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

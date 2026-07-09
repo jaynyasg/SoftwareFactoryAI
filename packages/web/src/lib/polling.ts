@@ -14,13 +14,20 @@
  * (an in-flight fetch that resolves post-unmount must not set state).
  * `onSettled(ok)` reports each completed tick while still active. Returns the
  * cleanup function for the owning effect.
+ *
+ * `immediateFirst` fires the first tick right away instead of waiting one
+ * interval — used by the hooks' `refresh()` restarts so a successful command's
+ * confirmation arrives within one round trip rather than lagging a full poll
+ * interval. Ticks never overlap either way: the next tick is only scheduled
+ * after the current one settles.
  */
 export function startPollLoop(options: {
   readonly intervalMs: number;
+  readonly immediateFirst?: boolean;
   readonly tick: (isActive: () => boolean) => Promise<void>;
   readonly onSettled: (ok: boolean) => void;
 }): () => void {
-  const { intervalMs, tick, onSettled } = options;
+  const { intervalMs, immediateFirst = false, tick, onSettled } = options;
   let active = true;
   let timer: ReturnType<typeof setTimeout> | undefined;
 
@@ -41,7 +48,11 @@ export function startPollLoop(options: {
     }
   }
 
-  timer = setTimeout(() => void poll(), intervalMs);
+  if (immediateFirst) {
+    void poll();
+  } else {
+    timer = setTimeout(() => void poll(), intervalMs);
+  }
   return () => {
     active = false;
     if (timer !== undefined) {

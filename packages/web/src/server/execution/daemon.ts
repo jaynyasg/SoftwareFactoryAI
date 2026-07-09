@@ -317,8 +317,7 @@ export function createExecutionDaemon(options: ExecutionDaemonOptions): Executio
           jobId: job.jobId,
           jobKind: job.jobKind,
           attempt: job.attempt + 1,
-          reason:
-            'Recovered a safely-yielded job whose follow-up re-enqueue was lost to a crash.',
+          reason: 'Recovered a safely-yielded job whose follow-up re-enqueue was lost to a crash.',
           ticketId: job.ticketId,
         });
         counters.requeued += 1;

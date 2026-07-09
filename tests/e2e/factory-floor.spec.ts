@@ -33,6 +33,9 @@ async function focusRun(page: Page, runId: string): Promise<void> {
       .getByRole('button', { name: `Focus run ${runId}` })
       .click();
   }
+  // A non-latest run fetches its aggregate first; wait out the loading state
+  // so slow CI never races FocusedBlueprint's fetch (hidden = absent or gone).
+  await expect(page.getByTestId('blueprint-loading')).toBeHidden({ timeout: 10_000 });
   await expect(marker).toBeVisible({ timeout: 10_000 });
 }
 

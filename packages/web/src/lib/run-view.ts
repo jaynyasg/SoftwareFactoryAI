@@ -578,8 +578,17 @@ function researchLane(research: ResearchProjection): BlueprintLane {
         metric: `${research.findings.length} findings · ${research.sourceCount} sources · ${research.unresolvedGapCount} open gaps`,
         detail: research.briefSummary,
       };
-    default:
-      return { ...base, status: research.status, severity: 'info' };
+    default: {
+      // Exhaustiveness: adding a ResearchStatus member must fail compile here
+      // until it gets a designed lane label; the runtime fallback stays honest.
+      const exhaustive: never = research.status;
+      return {
+        ...base,
+        status: 'unknown',
+        severity: 'info',
+        detail: `Unrecognized research status: ${String(exhaustive)}`,
+      };
+    }
   }
 }
 

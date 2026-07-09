@@ -124,15 +124,18 @@ export function StateBlock({
   title,
   children,
   action,
+  testId,
 }: {
   readonly variant: 'loading' | 'empty' | 'error';
   readonly title: string;
   readonly children?: ReactNode;
   readonly action?: ReactNode;
+  /** Optional test hook so async states (e.g. loading) can be awaited in e2e. */
+  readonly testId?: string;
 }) {
   if (variant === 'loading') {
     return (
-      <div className="state-block" role="status" aria-live="polite">
+      <div className="state-block" role="status" aria-live="polite" data-testid={testId}>
         <span className="state-block__title">{title}</span>
         <span className="skeleton" style={{ width: '70%', alignSelf: 'center' }} />
         <span className="skeleton" style={{ width: '45%', alignSelf: 'center' }} />
@@ -143,6 +146,7 @@ export function StateBlock({
     <div
       className={`state-block${variant === 'error' ? ' state-block--error' : ''}`}
       role={variant === 'error' ? 'alert' : undefined}
+      data-testid={testId}
     >
       <span className="state-block__title">{title}</span>
       {children ? <div className="muted">{children}</div> : null}

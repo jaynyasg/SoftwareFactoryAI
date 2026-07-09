@@ -30,6 +30,10 @@ export function useInterventionQueue(initial: InterventionQueueSnapshot): LiveIn
     () =>
       startPollLoop({
         intervalMs: POLL_INTERVAL_MS,
+        // A refresh() restart confirms a just-resolved intervention: poll right
+        // away so the item flips/disappears within one round trip instead of
+        // lagging one full interval.
+        immediateFirst: nonce > 0,
         tick: async (isActive) => {
           const next = await fetchInterventions();
           if (isActive()) {

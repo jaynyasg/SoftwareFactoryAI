@@ -8,7 +8,14 @@
  * 409 the caller can recover from. The browser supplies the `Origin` header
  * automatically; tokens therefore never leave loopback.
  */
-import type { ReviewDecision, ReviewMode, RiskTier, RunProjection } from '@software-factory/core';
+import type {
+  EventSeverity,
+  InterventionKind,
+  ReviewDecision,
+  ReviewMode,
+  RiskTier,
+  RunProjection,
+} from '@software-factory/core';
 import type { InterventionItem, InterventionQueueSnapshot, RunAggregate } from './types';
 import type { LocalSession } from './session';
 
@@ -108,11 +115,25 @@ export interface SubmitReviewInput {
   readonly mode?: ReviewMode;
 }
 
+/**
+ * Stage-resume outcome attached to an approved review (typed mirror of the
+ * server's `StageResumeResult`): which blocked stage the approval resumed,
+ * which interventions it resolved, and whether the stage's job was re-queued.
+ */
+export interface ReviewResumeResult {
+  readonly stage: 'gates' | 'execution';
+  readonly resolvedInterventions: readonly string[];
+  readonly queued: boolean;
+  readonly note?: string;
+}
+
 export interface SubmitReviewResult {
   readonly decision: ReviewDecision;
   readonly riskTier: RiskTier;
   readonly requiredApprovals: number;
   readonly run: RunProjection;
+  /** `null` unless an approval resumed a blocked stage (server-computed). */
+  readonly resumed?: ReviewResumeResult | null;
 }
 
 export function submitReview(
@@ -192,6 +213,63 @@ export function rerunGates(
  * Operator intervention queue (X4)
  * ------------------------------------------------------------------------- */
 
+/**
+ * Item-level shape check for one wire intervention: every field the UI renders
+ * is validated structurally; malformed rows are dropped instead of rendering
+ * `undefined` into the queue. `kind`/`severity` are validated as strings and
+ * then narrowed — the browser bundle must not import core's runtime member
+ * lists, and an unrecognized-but-string value degrades to a labeled badge
+ * rather than a dropped intervention.
+ */
+function toInterventionItem(value: unknown): InterventionItem | null {
+  if (typeof value !== 'object' || value === null) {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  const {
+    interventionId,
+    runId,
+    kind,
+    severity,
+    blockingStage,
+    reason,
+    requiredAction,
+    raisedAt,
+    sequence,
+    status,
+  } = record;
+  if (
+    typeof interventionId !== 'string' ||
+    typeof runId !== 'string' ||
+    typeof kind !== 'string' ||
+    typeof severity !== 'string' ||
+    typeof blockingStage !== 'string' ||
+    typeof reason !== 'string' ||
+    typeof requiredAction !== 'string' ||
+    typeof raisedAt !== 'number' ||
+    typeof sequence !== 'number' ||
+    (status !== 'open' && status !== 'resolved')
+  ) {
+    return null;
+  }
+  return {
+    interventionId,
+    runId,
+    ticketId: typeof record.ticketId === 'string' ? record.ticketId : undefined,
+    kind: kind as InterventionKind,
+    severity: severity as EventSeverity,
+    blockingStage,
+    reason,
+    requiredAction,
+    raisedAt,
+    sequence,
+    status,
+    resolution: typeof record.resolution === 'string' ? record.resolution : undefined,
+    resolutionNote: typeof record.resolutionNote === 'string' ? record.resolutionNote : undefined,
+    resolvedAt: typeof record.resolvedAt === 'number' ? record.resolvedAt : undefined,
+  };
+}
+
 /** Poll the cross-run operator intervention queue (read-only, no token). */
 export async function fetchInterventions(): Promise<InterventionQueueSnapshot> {
   const res = await fetch('/api/interventions', {
@@ -201,11 +279,14 @@ export async function fetchInterventions(): Promise<InterventionQueueSnapshot> {
   if (!res.ok) {
     throw new Error(`interventions_fetch_failed:${res.status}`);
   }
-  const body = (await res.json()) as {
-    interventions?: InterventionItem[];
-    openCount?: number;
+  const body = await readJson(res);
+  const interventions = (Array.isArray(body.interventions) ? body.interventions : [])
+    .map(toInterventionItem)
+    .filter((item): item is InterventionItem => item !== null);
+  return {
+    interventions,
+    openCount: typeof body.openCount === 'number' ? body.openCount : 0,
   };
-  return { interventions: body.interventions ?? [], openCount: body.openCount ?? 0 };
 }
 
 export function resolveInterventionItem(
