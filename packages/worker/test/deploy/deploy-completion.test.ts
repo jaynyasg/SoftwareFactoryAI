@@ -9,7 +9,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { createInMemoryEventStore } from '@software-factory/core';
-import type { AppendableEvent, EventStore } from '@software-factory/core';
+import type { EventStore } from '@software-factory/core';
 import { completeRunDeploy, deriveDeployPreconditions } from '../../src/index';
 import type {
   CompleteRunDeployParams,
@@ -18,21 +18,11 @@ import type {
   RenderClient,
   RenderDeployStatus,
 } from '../../src/index';
+import { runEventAppender } from '../_helpers/events';
 
 const RUN_ID = 'run-deploy-completion';
 
-async function append(
-  store: EventStore,
-  partial: Partial<AppendableEvent> & Pick<AppendableEvent, 'type' | 'payload'>,
-): Promise<void> {
-  await store.append({
-    runId: RUN_ID,
-    actor: { kind: 'system', id: 'test' },
-    subject: { kind: 'run', id: RUN_ID },
-    severity: 'info',
-    ...partial,
-  } as AppendableEvent);
-}
+const append = runEventAppender(RUN_ID);
 
 function readyPreconditions(): DeployPreconditions {
   return {

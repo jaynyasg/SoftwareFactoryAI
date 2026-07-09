@@ -447,6 +447,24 @@ function internalRequest(
   };
 }
 
+/** `/api/runs/:id` (plus an optional subpath), with the run id URL-encoded. */
+function runPath(runId: string, subpath?: string): string {
+  return `/api/runs/${encodeURIComponent(runId)}${subpath !== undefined ? `/${subpath}` : ''}`;
+}
+
+/** The standard error result for a run-scoped tool invoked without a runId. */
+function missingRunId(): Record<string, unknown> {
+  return toolResult({ error: 'runId is required.' }, true);
+}
+
+/** Run-scoped read tools that are plain GETs over the matching route. */
+const RUN_READ_SUBPATH: Readonly<Record<string, string | undefined>> = {
+  software_factory_get_run: undefined,
+  software_factory_get_execution: 'execution',
+  software_factory_get_research: 'research',
+  software_factory_get_outputs: 'outputs',
+};
+
 async function callFactoryTool(
   name: string,
   args: Record<string, unknown>,
@@ -466,24 +484,25 @@ async function callFactoryTool(
       case 'software_factory_list_runs':
         response = await deps.app.handle(internalRequest('GET', '/api/runs', session));
         break;
-      case 'software_factory_get_run': {
+      case 'software_factory_get_run':
+      case 'software_factory_get_execution':
+      case 'software_factory_get_research':
+      case 'software_factory_get_outputs': {
         const runId = str(args.runId);
         if (runId === undefined) {
-          return toolResult({ error: 'runId is required.' }, true);
+          return missingRunId();
         }
         response = await deps.app.handle(
-          internalRequest('GET', `/api/runs/${encodeURIComponent(runId)}`, session),
+          internalRequest('GET', runPath(runId, RUN_READ_SUBPATH[name]), session),
         );
         break;
       }
       case 'software_factory_get_events': {
         const runId = str(args.runId);
         if (runId === undefined) {
-          return toolResult({ error: 'runId is required.' }, true);
+          return missingRunId();
         }
-        response = await deps.app.handle(
-          internalRequest('GET', `/api/runs/${encodeURIComponent(runId)}/events`, session),
-        );
+        response = await deps.app.handle(internalRequest('GET', runPath(runId, 'events'), session));
         const since = num(args.sinceSequence) ?? 0;
         if (response.status === 200 && since > 0) {
           const body = asRecord(response.body);
@@ -502,10 +521,10 @@ async function callFactoryTool(
       case 'software_factory_cancel_run': {
         const runId = str(args.runId);
         if (runId === undefined) {
-          return toolResult({ error: 'runId is required.' }, true);
+          return missingRunId();
         }
         response = await deps.app.handle(
-          internalRequest('POST', `/api/runs/${encodeURIComponent(runId)}/cancel`, session, {
+          internalRequest('POST', runPath(runId, 'cancel'), session, {
             expectedVersion: num(args.expectedVersion),
             reason: str(args.reason),
           }),
@@ -519,7 +538,7 @@ async function callFactoryTool(
       case 'software_factory_rerun_gates': {
         const runId = str(args.runId);
         if (runId === undefined) {
-          return toolResult({ error: 'runId is required.' }, true);
+          return missingRunId();
         }
         const subpath = {
           software_factory_start_run: 'start',
@@ -529,21 +548,11 @@ async function callFactoryTool(
           software_factory_rerun_gates: 'gates/rerun',
         }[name];
         response = await deps.app.handle(
-          internalRequest('POST', `/api/runs/${encodeURIComponent(runId)}/${subpath}`, session, {
+          internalRequest('POST', runPath(runId, subpath), session, {
             expectedVersion: num(args.expectedVersion),
             reason: str(args.reason),
             ...(name === 'software_factory_retry_run' ? { ticketId: str(args.ticketId) } : {}),
           }),
-        );
-        break;
-      }
-      case 'software_factory_get_execution': {
-        const runId = str(args.runId);
-        if (runId === undefined) {
-          return toolResult({ error: 'runId is required.' }, true);
-        }
-        response = await deps.app.handle(
-          internalRequest('GET', `/api/runs/${encodeURIComponent(runId)}/execution`, session),
         );
         break;
       }
@@ -582,11 +591,11 @@ async function callFactoryTool(
       case 'software_factory_trigger_research': {
         const runId = str(args.runId);
         if (runId === undefined) {
-          return toolResult({ error: 'runId is required.' }, true);
+          return missingRunId();
         }
         const budget = asRecord(args.budget);
         response = await deps.app.handle(
-          internalRequest('POST', `/api/runs/${encodeURIComponent(runId)}/research`, session, {
+          internalRequest('POST', runPath(runId, 'research'), session, {
             objective: str(args.objective),
             force: args.force === true,
             budget: {
@@ -598,26 +607,14 @@ async function callFactoryTool(
         );
         break;
       }
-      case 'software_factory_get_research': {
-        const runId = str(args.runId);
-        if (runId === undefined) {
-          return toolResult({ error: 'runId is required.' }, true);
-        }
-        response = await deps.app.handle(
-          internalRequest('GET', `/api/runs/${encodeURIComponent(runId)}/research`, session),
-        );
-        break;
-      }
       case 'software_factory_get_contract': {
         // Thin read over the run projection: the contract is replayed from
         // `contract.generated` ledger events, never invented here.
         const runId = str(args.runId);
         if (runId === undefined) {
-          return toolResult({ error: 'runId is required.' }, true);
+          return missingRunId();
         }
-        const runResponse = await deps.app.handle(
-          internalRequest('GET', `/api/runs/${encodeURIComponent(runId)}`, session),
-        );
+        const runResponse = await deps.app.handle(internalRequest('GET', runPath(runId), session));
         if (runResponse.status !== 200) {
           response = runResponse;
           break;
@@ -646,10 +643,10 @@ async function callFactoryTool(
         // rehearsal outcome plus the interventions blocking the start.
         const runId = str(args.runId);
         if (runId === undefined) {
-          return toolResult({ error: 'runId is required.' }, true);
+          return missingRunId();
         }
         const executionResponse = await deps.app.handle(
-          internalRequest('GET', `/api/runs/${encodeURIComponent(runId)}/execution`, session),
+          internalRequest('GET', runPath(runId, 'execution'), session),
         );
         if (executionResponse.status !== 200) {
           response = executionResponse;
@@ -663,16 +660,6 @@ async function callFactoryTool(
           status: 200,
           body: { runId, preflight: body.preflight, execution: body.execution, interventions },
         };
-        break;
-      }
-      case 'software_factory_get_outputs': {
-        const runId = str(args.runId);
-        if (runId === undefined) {
-          return toolResult({ error: 'runId is required.' }, true);
-        }
-        response = await deps.app.handle(
-          internalRequest('GET', `/api/runs/${encodeURIComponent(runId)}/outputs`, session),
-        );
         break;
       }
       case 'software_factory_get_setup':

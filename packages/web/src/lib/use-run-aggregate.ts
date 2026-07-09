@@ -15,9 +15,8 @@
 import { useEffect, useRef, useState } from 'react';
 import type { LedgerRow } from '@software-factory/core';
 import { fetchAggregate } from './api-client';
+import { POLL_INTERVAL_MS, startPollLoop } from './polling';
 import type { RunAggregate } from './types';
-
-const POLL_INTERVAL_MS = 1500;
 
 function mergeRows(prev: readonly LedgerRow[], tail: readonly LedgerRow[]): LedgerRow[] {
   const bySequence = new Map<number, LedgerRow>();
@@ -45,41 +44,25 @@ export function useRunAggregate(runId: string, initial: RunAggregate): LiveRun {
   const [nonce, setNonce] = useState(0);
   const lastSequence = useRef<number>(initial.lastSequence);
 
-  useEffect(() => {
-    let active = true;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-
-    async function poll(): Promise<void> {
-      try {
-        const aggregate = await fetchAggregate(runId, lastSequence.current);
-        if (!active) {
-          return;
-        }
-        setSnapshot(aggregate);
-        if (aggregate.tail.length > 0) {
-          setRows((prev) => mergeRows(prev, aggregate.tail));
-        }
-        lastSequence.current = Math.max(lastSequence.current, aggregate.lastSequence);
-        setReconnecting(false);
-      } catch {
-        if (active) {
-          setReconnecting(true);
-        }
-      } finally {
-        if (active) {
-          timer = setTimeout(() => void poll(), POLL_INTERVAL_MS);
-        }
-      }
-    }
-
-    timer = setTimeout(() => void poll(), POLL_INTERVAL_MS);
-    return () => {
-      active = false;
-      if (timer !== undefined) {
-        clearTimeout(timer);
-      }
-    };
-  }, [runId, nonce]);
+  useEffect(
+    () =>
+      startPollLoop({
+        intervalMs: POLL_INTERVAL_MS,
+        tick: async (isActive) => {
+          const aggregate = await fetchAggregate(runId, lastSequence.current);
+          if (!isActive()) {
+            return;
+          }
+          setSnapshot(aggregate);
+          if (aggregate.tail.length > 0) {
+            setRows((prev) => mergeRows(prev, aggregate.tail));
+          }
+          lastSequence.current = Math.max(lastSequence.current, aggregate.lastSequence);
+        },
+        onSettled: (ok) => setReconnecting(!ok),
+      }),
+    [runId, nonce],
+  );
 
   return { snapshot, rows, reconnecting, refresh: () => setNonce((n) => n + 1) };
 }

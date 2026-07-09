@@ -28,10 +28,10 @@ import {
   projectTickets,
   resolveReview,
 } from '@software-factory/core';
-import type { ReviewDecision, ReviewMode, RiskTier, TicketView } from '@software-factory/core';
+import type { ReviewDecision, ReviewMode, RiskTier } from '@software-factory/core';
 import type { ApiResponse, RouteContext, RouteDef } from '../app';
 import { asRecord, num, str } from './parse';
-import { deriveReviews } from '../../lib/run-view';
+import { deriveReviews, highestTicketRisk } from '../../lib/run-view';
 import {
   enqueueJob,
   gateRerunJobId,
@@ -51,23 +51,6 @@ function isRiskTier(value: unknown): value is RiskTier {
 
 function isDecision(value: unknown): value is ReviewDecision {
   return value === 'approved' || value === 'rejected';
-}
-
-const RISK_RANK: Readonly<Record<RiskTier, number>> = { low: 0, medium: 1, high: 2 };
-
-/** The highest risk tier across a run's projected tickets, if any carry one. */
-function highestTicketRisk(tickets: readonly TicketView[]): RiskTier | undefined {
-  let highest: RiskTier | undefined;
-  for (const ticket of tickets) {
-    const tier = ticket.riskTier;
-    if (tier === undefined) {
-      continue;
-    }
-    if (highest === undefined || RISK_RANK[tier] > RISK_RANK[highest]) {
-      highest = tier;
-    }
-  }
-  return highest;
 }
 
 /** Outcome of a stage resume attempted by an approved review decision. */

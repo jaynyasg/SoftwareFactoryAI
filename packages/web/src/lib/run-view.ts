@@ -51,6 +51,23 @@ export function riskClass(tier: RiskTier): string {
   return `risk-${tier}`;
 }
 
+const RISK_RANK: Readonly<Record<RiskTier, number>> = { low: 0, medium: 1, high: 2 };
+
+/** The highest risk tier across a run's projected tickets, if any carry one. */
+export function highestTicketRisk(tickets: readonly TicketView[]): RiskTier | undefined {
+  let highest: RiskTier | undefined;
+  for (const ticket of tickets) {
+    const tier = ticket.riskTier;
+    if (tier === undefined) {
+      continue;
+    }
+    if (highest === undefined || RISK_RANK[tier] > RISK_RANK[highest]) {
+      highest = tier;
+    }
+  }
+  return highest;
+}
+
 export function riskLabel(tier: RiskTier): string {
   switch (tier) {
     case 'low':
@@ -502,17 +519,27 @@ export interface BlueprintInputs {
   readonly operator: OperatorProjection;
 }
 
-const DEPLOY_LANE: Readonly<
-  Record<DeployStatusValue, { status: string; severity: EventSeverity }>
-> = {
-  idle: { status: 'not started', severity: 'info' },
-  setup_required: { status: 'setup required', severity: 'warn' },
-  config_invalid: { status: 'config invalid', severity: 'error' },
-  provider_failed: { status: 'provider failed', severity: 'error' },
-  migration_failed: { status: 'migration failed', severity: 'error' },
-  health_pending: { status: 'health pending', severity: 'warn' },
-  health_failed: { status: 'health failed', severity: 'error' },
-  hosted_ready: { status: 'hosted · healthy', severity: 'success' },
+/** Severity per deploy status — shared by the blueprint lane and DeployStatus. */
+export const DEPLOY_STATUS_SEVERITY: Readonly<Record<DeployStatusValue, EventSeverity>> = {
+  idle: 'info',
+  setup_required: 'warn',
+  config_invalid: 'error',
+  provider_failed: 'error',
+  migration_failed: 'error',
+  health_pending: 'warn',
+  health_failed: 'error',
+  hosted_ready: 'success',
+};
+
+const DEPLOY_LANE_STATUS: Readonly<Record<DeployStatusValue, string>> = {
+  idle: 'not started',
+  setup_required: 'setup required',
+  config_invalid: 'config invalid',
+  provider_failed: 'provider failed',
+  migration_failed: 'migration failed',
+  health_pending: 'health pending',
+  health_failed: 'health failed',
+  hosted_ready: 'hosted · healthy',
 };
 
 function researchLane(research: ResearchProjection): BlueprintLane {
@@ -674,12 +701,11 @@ export function deriveBlueprintLanes(inputs: BlueprintInputs): BlueprintLane[] {
     detail: packageView.summary,
   };
 
-  const deployMeta = DEPLOY_LANE[deploy.status];
   const deployLane: BlueprintLane = {
     id: 'deploy',
     label: 'Deploy',
-    status: deployMeta.status,
-    severity: deployMeta.severity,
+    status: DEPLOY_LANE_STATUS[deploy.status],
+    severity: DEPLOY_STATUS_SEVERITY[deploy.status],
     detail:
       deploy.reason ?? deploy.action ?? (deploy.status === 'hosted_ready' ? deploy.url : undefined),
   };

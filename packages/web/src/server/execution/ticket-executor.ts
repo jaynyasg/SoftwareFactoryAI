@@ -68,7 +68,6 @@ import type {
   EventStore,
   ExecutionSchedulePlan,
   ModuleRegistry,
-  RiskTier,
   RunProjection,
   TicketProjection,
 } from '@software-factory/core';
@@ -88,6 +87,7 @@ import type {
 import type { ExecutorGateStages } from './gate-stages';
 import type { ExecutorCompletionStage } from './completion-stage';
 import type { TicketExecutionContext, TicketExecutionResult, TicketExecutor } from './daemon';
+import { highestTicketRisk } from '../../lib/run-view';
 import { resolveGenomeDir } from '../planner';
 import { DEFAULT_EXECUTION_RUNTIME_CONFIG, resolveWorkspaceRuntimeConfig } from '../runtime';
 import type { RuntimeConfig } from '../runtime';
@@ -156,19 +156,6 @@ function gateFailureEvidence(failure: GateFailureContext | undefined): EventEvid
     ref: item.command ?? item.ref,
     note: item.outputExcerpt ?? item.detail,
   }));
-}
-
-const RISK_RANK: Readonly<Record<RiskTier, number>> = { low: 0, medium: 1, high: 2 };
-
-/** Highest projected ticket risk tier (review metadata for stage reviews). */
-function highestTicketRisk(tickets: TicketProjection): RiskTier {
-  let highest: RiskTier = 'low';
-  for (const ticket of tickets.tickets) {
-    if (ticket.riskTier !== undefined && RISK_RANK[ticket.riskTier] > RISK_RANK[highest]) {
-      highest = ticket.riskTier;
-    }
-  }
-  return highest;
 }
 
 async function defaultEnsureDir(path: string): Promise<void> {
@@ -361,7 +348,7 @@ export function createSchedulerTicketExecutor(
         timestamp: clock?.(),
         idempotencyKey: `${ctx.jobId}:review.requested:${ctx.attempt}`,
         evidence,
-        payload: { riskTier: highestTicketRisk(tickets), summary, stage },
+        payload: { riskTier: highestTicketRisk(tickets.tickets) ?? 'low', summary, stage },
       });
     };
 
@@ -448,6 +435,22 @@ export function createSchedulerTicketExecutor(
     const withNotes = (summary: string, notes: readonly string[]): string =>
       notes.length > 0 ? `${summary} ${notes.join(' ')}` : summary;
 
+    /**
+     * Finish a run whose tickets and post-run gates all passed: run the U8
+     * completion stage, join its notes into the summary, emit `run.completed`
+     * (idempotent), and resolve the completed executor result. A failed or
+     * yielded completion stage resolves that result instead.
+     */
+    const finishRun = async (baseSummary: string): Promise<TicketExecutionResult> => {
+      const completion = await runCompletionStage();
+      if (!('notes' in completion)) {
+        return completion;
+      }
+      const summary = withNotes(baseSummary, completion.notes);
+      await emitRunCompleted(summary);
+      return { status: 'completed', summary };
+    };
+
     /* ------------------------------------------------------------------
      * Gate re-run jobs (U7): re-run the post-run gate stage for REAL.
      * ---------------------------------------------------------------- */
@@ -471,16 +474,9 @@ export function createSchedulerTicketExecutor(
       if (allDone) {
         // U8: gates finally passed — the completion stage (package/provenance/
         // deploy) still runs before run.completed, idempotently.
-        const completion = await runCompletionStage();
-        if (!('notes' in completion)) {
-          return completion;
-        }
-        const summary = withNotes(
+        return finishRun(
           `Post-run gates passed on re-run; all ${after.tickets.length} ticket(s) complete.`,
-          completion.notes,
         );
-        await emitRunCompleted(summary);
-        return { status: 'completed', summary };
       }
       return {
         status: 'completed',
@@ -534,16 +530,9 @@ export function createSchedulerTicketExecutor(
       if (stageResult !== null) {
         return stageResult;
       }
-      const completion = await runCompletionStage();
-      if (!('notes' in completion)) {
-        return completion;
-      }
-      const summary = withNotes(
+      return finishRun(
         `All ${plan.nodes.length} ticket(s) were already completed on a previous attempt.`,
-        completion.notes,
       );
-      await emitRunCompleted(summary);
-      return { status: 'completed', summary };
     }
 
     // Post-ticket gates + bounded repair loop (U7): wrap the plain ticket
@@ -700,15 +689,8 @@ export function createSchedulerTicketExecutor(
     // U8: preview/package/provenance/deploy run here — after post-run gates
     // pass and before run.completed is emitted. Deploy pauses/failures add
     // notes + interventions without failing the locally-successful run.
-    const completion = await runCompletionStage();
-    if (!('notes' in completion)) {
-      return completion;
-    }
-    const summary = withNotes(
+    return finishRun(
       `${result.completed.length}/${plan.nodes.length} ticket(s) completed via adapter "${adapter.id}".`,
-      completion.notes,
     );
-    await emitRunCompleted(summary);
-    return { status: 'completed', summary };
   };
 }

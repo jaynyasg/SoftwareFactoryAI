@@ -5,33 +5,31 @@
  * a rescue affordance (DESIGN.md §5/§6; plan R10/R14).
  */
 import type { DeployView, DeployStatusValue } from '../../lib/run-view';
+import { DEPLOY_STATUS_SEVERITY } from '../../lib/run-view';
 import { Mono } from './primitives';
 
-interface PhaseMeta {
-  readonly label: string;
-  readonly severity: 'info' | 'success' | 'warn' | 'error';
-}
-
-const PHASES: Readonly<Record<DeployStatusValue, PhaseMeta>> = {
-  idle: { label: 'Not started', severity: 'info' },
-  setup_required: { label: 'Setup required', severity: 'warn' },
-  config_invalid: { label: 'Config invalid', severity: 'error' },
-  provider_failed: { label: 'Provider failed', severity: 'error' },
-  migration_failed: { label: 'Migration failed', severity: 'error' },
-  health_pending: { label: 'Hosted health pending', severity: 'warn' },
-  health_failed: { label: 'Hosted health failed', severity: 'error' },
-  hosted_ready: { label: 'Hosted & healthy', severity: 'success' },
+const PHASE_LABELS: Readonly<Record<DeployStatusValue, string>> = {
+  idle: 'Not started',
+  setup_required: 'Setup required',
+  config_invalid: 'Config invalid',
+  provider_failed: 'Provider failed',
+  migration_failed: 'Migration failed',
+  health_pending: 'Hosted health pending',
+  health_failed: 'Hosted health failed',
+  hosted_ready: 'Hosted & healthy',
 };
 
 export function DeployStatus({ deploy }: { readonly deploy: DeployView }) {
-  const phase = PHASES[deploy.status];
   return (
     <section className="panel" aria-label="Deploy status">
       <header className="panel__header">
         <h2 className="panel__title">Deploy</h2>
-        <span className={`badge sev-${phase.severity}`} data-testid="deploy-phase">
+        <span
+          className={`badge sev-${DEPLOY_STATUS_SEVERITY[deploy.status]}`}
+          data-testid="deploy-phase"
+        >
           <span className="badge__dot" aria-hidden="true" />
-          {phase.label}
+          {PHASE_LABELS[deploy.status]}
         </span>
       </header>
       <div className="panel__body">

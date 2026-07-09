@@ -10,29 +10,13 @@
  */
 import { describe, expect, it } from 'vitest';
 import { createInMemoryEventStore, projectRun, projectTickets } from '@software-factory/core';
-import type { AppendableEvent, EventStore, FactoryEvent } from '@software-factory/core';
+import type { EventStore, FactoryEvent } from '@software-factory/core';
 import { deriveRunProvenance } from '../../src/index';
+import { deterministic, runEventAppender } from '../_helpers/events';
 
 const RUN_ID = 'run-prov';
 
-function deterministic(): { idGenerator: () => string; clock: () => number } {
-  let id = 0;
-  let now = 1_700_000_000_000;
-  return { idGenerator: () => `evt-${(id += 1)}`, clock: () => (now += 1000) };
-}
-
-async function append(
-  store: EventStore,
-  partial: Partial<AppendableEvent> & Pick<AppendableEvent, 'type' | 'payload'>,
-): Promise<void> {
-  await store.append({
-    runId: RUN_ID,
-    actor: { kind: 'system', id: 'test' },
-    subject: { kind: 'run', id: RUN_ID },
-    severity: 'info',
-    ...partial,
-  } as AppendableEvent);
-}
+const append = runEventAppender(RUN_ID);
 
 async function seedBaseRun(store: EventStore): Promise<void> {
   await append(store, {

@@ -24,17 +24,9 @@ import type {
   WorkspaceMaterializationRequest,
   WorkspaceMaterializerDeps,
 } from '../../src/index';
+import { deterministic } from '../_helpers/events';
 
 const SECRET_TOKEN = 'ghp_SuperSecretCheckoutToken1234';
-
-function deterministic(): { idGenerator: () => string; clock: () => number } {
-  let id = 0;
-  let now = 1_700_000_000_000;
-  return {
-    idGenerator: () => `evt-${(id += 1)}`,
-    clock: () => (now += 1000),
-  };
-}
 
 function makeStore(): EventStore {
   return createInMemoryEventStore(deterministic());

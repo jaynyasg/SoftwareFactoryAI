@@ -17,18 +17,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createInMemoryEventStore, projectRun, projectTickets } from '@software-factory/core';
-import type { AppendableEvent, EventStore, FactoryEvent } from '@software-factory/core';
+import type { EventStore, FactoryEvent } from '@software-factory/core';
 import { packageCompletedRun } from '../../src/index';
+import { deterministic, runEventAppender } from '../_helpers/events';
 import { createFakeRunner } from '../_helpers/fake-runner';
 
 const RUN_ID = 'run-pack';
 const COMMIT = 'fedcba9876543210fedcba9876543210fedcba98';
-
-function deterministic(): { idGenerator: () => string; clock: () => number } {
-  let id = 0;
-  let now = 1_700_000_000_000;
-  return { idGenerator: () => `evt-${(id += 1)}`, clock: () => (now += 1000) };
-}
 
 function gitRunner() {
   return createFakeRunner({
@@ -37,18 +32,7 @@ function gitRunner() {
   });
 }
 
-async function append(
-  store: EventStore,
-  partial: Partial<AppendableEvent> & Pick<AppendableEvent, 'type' | 'payload'>,
-): Promise<void> {
-  await store.append({
-    runId: RUN_ID,
-    actor: { kind: 'system', id: 'test' },
-    subject: { kind: 'run', id: RUN_ID },
-    severity: 'info',
-    ...partial,
-  } as AppendableEvent);
-}
+const append = runEventAppender(RUN_ID);
 
 async function seedCompletedRun(store: EventStore): Promise<void> {
   await append(store, {

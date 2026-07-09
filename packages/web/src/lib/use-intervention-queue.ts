@@ -11,9 +11,8 @@
  */
 import { useEffect, useState } from 'react';
 import { fetchInterventions } from './api-client';
+import { POLL_INTERVAL_MS, startPollLoop } from './polling';
 import type { InterventionQueueSnapshot } from './types';
-
-const POLL_INTERVAL_MS = 1500;
 
 export interface LiveInterventionQueue {
   readonly snapshot: InterventionQueueSnapshot;
@@ -27,37 +26,20 @@ export function useInterventionQueue(initial: InterventionQueueSnapshot): LiveIn
   const [reconnecting, setReconnecting] = useState(false);
   const [nonce, setNonce] = useState(0);
 
-  useEffect(() => {
-    let active = true;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-
-    async function poll(): Promise<void> {
-      try {
-        const next = await fetchInterventions();
-        if (!active) {
-          return;
-        }
-        setSnapshot(next);
-        setReconnecting(false);
-      } catch {
-        if (active) {
-          setReconnecting(true);
-        }
-      } finally {
-        if (active) {
-          timer = setTimeout(() => void poll(), POLL_INTERVAL_MS);
-        }
-      }
-    }
-
-    timer = setTimeout(() => void poll(), POLL_INTERVAL_MS);
-    return () => {
-      active = false;
-      if (timer !== undefined) {
-        clearTimeout(timer);
-      }
-    };
-  }, [nonce]);
+  useEffect(
+    () =>
+      startPollLoop({
+        intervalMs: POLL_INTERVAL_MS,
+        tick: async (isActive) => {
+          const next = await fetchInterventions();
+          if (isActive()) {
+            setSnapshot(next);
+          }
+        },
+        onSettled: (ok) => setReconnecting(!ok),
+      }),
+    [nonce],
+  );
 
   return { snapshot, reconnecting, refresh: () => setNonce((n) => n + 1) };
 }
