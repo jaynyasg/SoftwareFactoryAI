@@ -175,7 +175,9 @@ export function ReviewStudio({
                   {gate.attempts > 1 ? (
                     <span className="badge">{gate.attempts} attempts</span>
                   ) : null}
-                  {gate.detail ? <span className="muted gate-list__detail">{gate.detail}</span> : null}
+                  {gate.detail ? (
+                    <span className="muted gate-list__detail">{gate.detail}</span>
+                  ) : null}
                 </li>
               ))}
             </ul>

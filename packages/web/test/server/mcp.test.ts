@@ -240,12 +240,7 @@ describe('remote MCP bridge', () => {
 
   it('rejects tools/call with an invalid token before creating a run', async () => {
     const ctx = makeMcp();
-    const res = await callTool(
-      ctx,
-      'software_factory_create_run',
-      { prompt: 'x' },
-      'wrong-token',
-    );
+    const res = await callTool(ctx, 'software_factory_create_run', { prompt: 'x' }, 'wrong-token');
 
     expect(res.isError).toBe(true);
     expect(JSON.stringify(res.body)).toContain('Operator token is invalid');

@@ -212,8 +212,16 @@ function convergedWorkspace(
     return undefined;
   }
   const ws = existing.workspace;
-  if (ws.kind === 'local_folder' && request.runtimeMode === 'local' && request.localFolder !== undefined) {
-    const resolution = resolveLocalWorkspacePath(request.localPolicy ?? {}, request.localFolder, kit);
+  if (
+    ws.kind === 'local_folder' &&
+    request.runtimeMode === 'local' &&
+    request.localFolder !== undefined
+  ) {
+    const resolution = resolveLocalWorkspacePath(
+      request.localPolicy ?? {},
+      request.localFolder,
+      kit,
+    );
     if (resolution.ok && resolution.resolved === ws.path) {
       return ws;
     }

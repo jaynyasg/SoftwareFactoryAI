@@ -337,7 +337,10 @@ async function pauseRun(ctx: RouteContext): Promise<ApiResponse> {
     payload: { reason: str(asRecord(ctx.request.body).reason) },
   });
   const after = projectRun(await ctx.reader.readRun(runId), runId);
-  return { status: 200, body: { runId, paused: true, execution: executionSummary(after), run: after } };
+  return {
+    status: 200,
+    body: { runId, paused: true, execution: executionSummary(after), run: after },
+  };
 }
 
 async function resumeRun(ctx: RouteContext): Promise<ApiResponse> {
@@ -525,6 +528,10 @@ export function executionRoutes(): RouteDef[] {
     { method: 'POST', pattern: '/api/runs/:id/gates/rerun', handler: rerunGates },
     { method: 'GET', pattern: '/api/runs/:id/execution', handler: getExecution },
     { method: 'GET', pattern: '/api/interventions', handler: listInterventions },
-    { method: 'POST', pattern: '/api/interventions/:id/resolve', handler: resolveInterventionRoute },
+    {
+      method: 'POST',
+      pattern: '/api/interventions/:id/resolve',
+      handler: resolveInterventionRoute,
+    },
   ];
 }

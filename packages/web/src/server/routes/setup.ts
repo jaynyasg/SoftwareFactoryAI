@@ -48,7 +48,10 @@ import type { ApiResponse, RouteContext, RouteDef } from '../app';
  * Real deploy readiness from the deploy runtime config (U8). Reports only
  * presence/ids — never credential values (E5).
  */
-function deploySetup(deploy: DeployRuntimeConfig): { status: 'ready' | 'required'; missing: string[] } {
+function deploySetup(deploy: DeployRuntimeConfig): {
+  status: 'ready' | 'required';
+  missing: string[];
+} {
   const missing: string[] = [];
   if (!deploy.renderApiKeyPresent) {
     missing.push('Render API key (RENDER_API_KEY or SF_RENDER_API_KEY)');

@@ -31,8 +31,8 @@ function PreflightRows({ preflight }: { readonly preflight: PreflightSnapshot })
   if (preflight.status === 'none') {
     return (
       <p className="muted" style={{ fontSize: 'var(--fs-2xs)' }}>
-        Not rehearsed yet — the dry-run rehearsal runs automatically before any start
-        may enqueue execution.
+        Not rehearsed yet — the dry-run rehearsal runs automatically before any start may enqueue
+        execution.
       </p>
     );
   }
@@ -88,8 +88,8 @@ export function ContractHandoff({
 
         {contract === undefined ? (
           <p className="muted" data-testid="contract-empty">
-            No build contract yet — it is generated from research + planning when a
-            planned run starts, and must exist before workers may mutate files.
+            No build contract yet — it is generated from research + planning when a planned run
+            starts, and must exist before workers may mutate files.
           </p>
         ) : (
           <div className="stack contract__rows" data-testid="build-contract">
@@ -166,7 +166,10 @@ export function ContractHandoff({
               ) : (
                 <span className="badge">no research inputs</span>
               )}
-              <span className="badge mono" title="contract digest (stable unless plan/research change)">
+              <span
+                className="badge mono"
+                title="contract digest (stable unless plan/research change)"
+              >
                 {contract.contractDigest.slice(0, 12)}
               </span>
             </div>

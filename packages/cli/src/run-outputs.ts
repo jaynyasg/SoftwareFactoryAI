@@ -14,7 +14,13 @@
  * (e.g. a completed run), the same builder surfaces them.
  */
 import { projectArtifacts, projectRun, projectTickets } from '@software-factory/core';
-import type { CallerFamily, FactoryEvent, ReviewMode, RiskTier, RunStatus } from '@software-factory/core';
+import type {
+  CallerFamily,
+  FactoryEvent,
+  ReviewMode,
+  RiskTier,
+  RunStatus,
+} from '@software-factory/core';
 
 export interface TicketOutput {
   readonly id: string;
@@ -125,16 +131,32 @@ function deriveLifecycle(events: readonly FactoryEvent[]): DerivedLifecycle {
         derived.previewUrl = undefined;
         break;
       case 'deploy.setup_required':
-        derived.deploy = { status: 'setup_required', action: event.payload.action, retryable: true };
+        derived.deploy = {
+          status: 'setup_required',
+          action: event.payload.action,
+          retryable: true,
+        };
         break;
       case 'deploy.config_invalid':
-        derived.deploy = { status: 'config_invalid', reason: event.payload.reason, retryable: true };
+        derived.deploy = {
+          status: 'config_invalid',
+          reason: event.payload.reason,
+          retryable: true,
+        };
         break;
       case 'deploy.provider_failed':
-        derived.deploy = { status: 'provider_failed', reason: event.payload.reason, retryable: true };
+        derived.deploy = {
+          status: 'provider_failed',
+          reason: event.payload.reason,
+          retryable: true,
+        };
         break;
       case 'deploy.migration_failed':
-        derived.deploy = { status: 'migration_failed', reason: event.payload.reason, retryable: true };
+        derived.deploy = {
+          status: 'migration_failed',
+          reason: event.payload.reason,
+          retryable: true,
+        };
         break;
       case 'deploy.health_pending':
         derived.deploy = { status: 'health_pending', retryable: true };
@@ -161,10 +183,18 @@ function deriveLifecycle(events: readonly FactoryEvent[]): DerivedLifecycle {
         }
         break;
       case 'gate.passed':
-        derived.gates.push({ gate: event.payload.gate, status: 'passed', detail: event.payload.summary });
+        derived.gates.push({
+          gate: event.payload.gate,
+          status: 'passed',
+          detail: event.payload.summary,
+        });
         break;
       case 'gate.failed':
-        derived.gates.push({ gate: event.payload.gate, status: 'failed', detail: event.payload.reason });
+        derived.gates.push({
+          gate: event.payload.gate,
+          status: 'failed',
+          detail: event.payload.reason,
+        });
         break;
       default:
         break;

@@ -46,13 +46,13 @@ and deploy. The THREE credential surfaces stay separate (hardening E5), and
 every credential is reported by PRESENCE only — secret values never appear in
 the response or in ledger evidence:
 
-| Section                                          | Surface                                                       | Setup env                                          |
-| ------------------------------------------------ | ------------------------------------------------------------- | -------------------------------------------------- |
-| `workspace.materialization.checkoutCredentials`  | Source checkout (private GitHub repo materialization)         | `SF_GIT_CHECKOUT_TOKEN`                            |
-| `deploy`                                         | Deploy provider (`status` + named `missing` pieces)           | `SF_RENDER_API_KEY`, `SF_RENDER_SERVICE_ID`, `SF_RENDER_HOSTED_URL`, `SF_DEPLOY_GITHUB_OWNER/REPO` |
-| `research.searchCredentials`                     | Research web-search provider                                  | `SF_RESEARCH_SEARCH_PROVIDER`, `SF_RESEARCH_SEARCH_API_KEY` |
-| `storage`                                        | Persistent JSONL ledger (single-instance)                     | `SF_FACTORY_DIR` on a mounted persistent disk      |
-| `queue`                                          | Execution queue mode + single-instance scaling warning        | none — informational (see scaling section below)   |
+| Section                                         | Surface                                                | Setup env                                                                                          |
+| ----------------------------------------------- | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------- |
+| `workspace.materialization.checkoutCredentials` | Source checkout (private GitHub repo materialization)  | `SF_GIT_CHECKOUT_TOKEN`                                                                            |
+| `deploy`                                        | Deploy provider (`status` + named `missing` pieces)    | `SF_RENDER_API_KEY`, `SF_RENDER_SERVICE_ID`, `SF_RENDER_HOSTED_URL`, `SF_DEPLOY_GITHUB_OWNER/REPO` |
+| `research.searchCredentials`                    | Research web-search provider                           | `SF_RESEARCH_SEARCH_PROVIDER`, `SF_RESEARCH_SEARCH_API_KEY`                                        |
+| `storage`                                       | Persistent JSONL ledger (single-instance)              | `SF_FACTORY_DIR` on a mounted persistent disk                                                      |
+| `queue`                                         | Execution queue mode + single-instance scaling warning | none — informational (see scaling section below)                                                   |
 
 `storage.status` is `attention` on a cloud instance that has not set
 `SF_FACTORY_DIR` explicitly: without a persistent disk the ledger (and a

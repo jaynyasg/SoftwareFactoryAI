@@ -79,8 +79,7 @@ export async function loadRunAggregate(
   const operator = projectOperator(events, runId);
   const research = projectResearch(events, runId);
   const preflight = projectPreflight(events, runId);
-  const executionJob =
-    projectExecutionQueue(events, runId).byJobId[executionJobId(runId)] ?? null;
+  const executionJob = projectExecutionQueue(events, runId).byJobId[executionJobId(runId)] ?? null;
   const preview = derivePreview(events);
   const deploy = deriveDeploy(events);
   const packageView = derivePackage(events);

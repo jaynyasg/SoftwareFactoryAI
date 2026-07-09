@@ -62,15 +62,12 @@ export function RunCommandBar({
   const busy = phase.kind === 'busy';
 
   const canStart =
-    status === 'planned' &&
-    (executionState === 'not_requested' || executionState === 'pending');
+    status === 'planned' && (executionState === 'not_requested' || executionState === 'pending');
   const canPause = executionState === 'queued' || executionState === 'started';
   const canResume = executionState === 'paused';
   const canRetry = executionState === 'failed' || executionState === 'blocked';
   const canRerunGates =
-    executionState === 'completed' ||
-    executionState === 'failed' ||
-    executionState === 'blocked';
+    executionState === 'completed' || executionState === 'failed' || executionState === 'blocked';
   const canCancel = status === 'created' || status === 'planned' || status === 'running';
 
   async function perform(
@@ -93,8 +90,7 @@ export function RunCommandBar({
         message: result.message ?? `${action} was not accepted (${result.error}).`,
       });
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : `Network error during ${action}.`;
+      const message = error instanceof Error ? error.message : `Network error during ${action}.`;
       setPhase({ kind: 'error', message });
     }
   }
@@ -163,9 +159,7 @@ export function RunCommandBar({
             className="btn btn--sm btn--danger"
             disabled={busy}
             onClick={() =>
-              void perform('cancel', () =>
-                cancelRun(session, runId, lastSequence, 'operator stop'),
-              )
+              void perform('cancel', () => cancelRun(session, runId, lastSequence, 'operator stop'))
             }
             aria-label={`Cancel run ${runId}`}
           >
@@ -185,7 +179,7 @@ export function RunCommandBar({
         </p>
       ) : null}
 
-      {(preview !== undefined || deploy !== undefined) ? (
+      {preview !== undefined || deploy !== undefined ? (
         <div className="row" style={{ gap: 'var(--space-8)' }}>
           {preview !== undefined ? (
             <>

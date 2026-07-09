@@ -144,8 +144,16 @@ describe('deriveDeployPreconditions', () => {
   it('reports unmet readiness: failed gate, no preview, pending review, no package', async () => {
     const store = createInMemoryEventStore();
     await append(store, { type: 'run.created', payload: { prompt: 'x marketplace' } });
-    await append(store, { type: 'gate.failed', severity: 'error', payload: { gate: 'unit-test', reason: 'red' } });
-    await append(store, { type: 'review.requested', severity: 'warn', payload: { riskTier: 'high' } });
+    await append(store, {
+      type: 'gate.failed',
+      severity: 'error',
+      payload: { gate: 'unit-test', reason: 'red' },
+    });
+    await append(store, {
+      type: 'review.requested',
+      severity: 'warn',
+      payload: { riskTier: 'high' },
+    });
 
     const preconditions = deriveDeployPreconditions(await store.readRun(RUN_ID));
     expect(preconditions.gatesPassed).toBe(false);
@@ -158,10 +166,21 @@ describe('deriveDeployPreconditions', () => {
   it('a repaired gate (latest pass) and a decided review count as satisfied', async () => {
     const store = createInMemoryEventStore();
     await append(store, { type: 'run.created', payload: { prompt: 'x marketplace' } });
-    await append(store, { type: 'gate.failed', severity: 'error', payload: { gate: 'unit-test', reason: 'red' } });
+    await append(store, {
+      type: 'gate.failed',
+      severity: 'error',
+      payload: { gate: 'unit-test', reason: 'red' },
+    });
     await append(store, { type: 'gate.passed', payload: { gate: 'unit-test', stage: 'post_run' } });
-    await append(store, { type: 'review.requested', severity: 'warn', payload: { riskTier: 'high' } });
-    await append(store, { type: 'review.decided', payload: { riskTier: 'high', decision: 'approved' } });
+    await append(store, {
+      type: 'review.requested',
+      severity: 'warn',
+      payload: { riskTier: 'high' },
+    });
+    await append(store, {
+      type: 'review.decided',
+      payload: { riskTier: 'high', decision: 'approved' },
+    });
 
     const preconditions = deriveDeployPreconditions(await store.readRun(RUN_ID));
     expect(preconditions.gatesPassed).toBe(true);
@@ -245,7 +264,10 @@ describe('completeRunDeploy — hosted-ready ordering and failure classes', () =
     const git = fakeGitClient();
     const { outcome, gitDestination } = await completeRunDeploy(baseParams(), {
       store,
-      renderClient: fakeRenderClient({ pollStatuses: ['build_in_progress', 'live'], health: [false, true] }),
+      renderClient: fakeRenderClient({
+        pollStatuses: ['build_in_progress', 'live'],
+        health: [false, true],
+      }),
       gitClient: git.client,
       sleep: noSleep,
     });

@@ -135,7 +135,12 @@ function controllableGate(name: string, passing = true): ControllableGate {
       run(): Promise<GateResult> {
         runs += 1;
         if (pass) {
-          return Promise.resolve({ gate: name, passed: true, summary: `${name} clean`, evidence: [] });
+          return Promise.resolve({
+            gate: name,
+            passed: true,
+            summary: `${name} clean`,
+            evidence: [],
+          });
         }
         return Promise.resolve({
           gate: name,
@@ -469,10 +474,7 @@ describe('U7: repair loops and retry-budget escalation', () => {
 
 describe('U7: policy blocks stay blocked through review approval (KTD6)', () => {
   it('an autonomous-mode approval resolves nothing and re-queues nothing on a policy block', async () => {
-    const { app, store, daemon } = makeHarness(
-      immediateAdapter(),
-      fakeGateStages({ postRun: [] }),
-    );
+    const { app, store, daemon } = makeHarness(immediateAdapter(), fakeGateStages({ postRun: [] }));
     // Underspecified prompt -> triage plan (policy block), autonomous mode.
     const res = await app.handle(
       req('POST', '/api/runs', authedHeaders(), { prompt: 'hi', reviewMode: 'autonomous' }),

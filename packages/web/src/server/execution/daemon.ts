@@ -217,8 +217,7 @@ export function createExecutionDaemon(options: ExecutionDaemonOptions): Executio
   const executor = options.executor ?? deferredTicketExecutor;
   const config: ExecutionRuntimeConfig = { ...DEFAULT_EXECUTION_QUEUE_CONFIG, ...options.config };
   const clock = options.clock ?? Date.now;
-  const idGenerator =
-    options.idGenerator ?? (() => `lease-${Math.random().toString(36).slice(2)}`);
+  const idGenerator = options.idGenerator ?? (() => `lease-${Math.random().toString(36).slice(2)}`);
   const ownerId =
     options.ownerId ?? `daemon-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
   const timers = options.timers ?? defaultTimers;
@@ -239,10 +238,7 @@ export function createExecutionDaemon(options: ExecutionDaemonOptions): Executio
     return result;
   }
 
-  async function reconcileJob(
-    job: QueueJobView,
-    counters: { abandoned: number },
-  ): Promise<void> {
+  async function reconcileJob(job: QueueJobView, counters: { abandoned: number }): Promise<void> {
     if (job.status !== 'leased' || inFlight.has(job.jobId)) {
       return;
     }

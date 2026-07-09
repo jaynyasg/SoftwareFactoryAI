@@ -67,8 +67,7 @@ function readyFakeAdapter(id = 'fake-ready'): ExecutionAdapter {
   return {
     id,
     family: 'codex',
-    detectSetup: () =>
-      Promise.resolve({ available: true, authenticated: true, capacity: 4 }),
+    detectSetup: () => Promise.resolve({ available: true, authenticated: true, capacity: 4 }),
     execute: () =>
       Promise.resolve({ ok: false as const, error: AdapterError.unavailable('not used') }),
     reportCapacity: () => 4,
@@ -334,9 +333,7 @@ describe('pause, resume, and cancel', () => {
     expect(tickWhilePaused.claimed).toBe(0);
     expect(executed).toBe(0);
 
-    const resumed = await app.handle(
-      req('POST', `/api/runs/${runId}/resume`, authedHeaders(), {}),
-    );
+    const resumed = await app.handle(req('POST', `/api/runs/${runId}/resume`, authedHeaders(), {}));
     expect(resumed.status).toBe(200);
 
     const tickAfterResume = await daemon.tick();
@@ -402,9 +399,9 @@ describe('pause, resume, and cancel', () => {
     const events = await store.readRun(runId);
     const releases = events.filter((e) => e.type === 'queue.released');
     expect(releases.length).toBeGreaterThan(0);
-    expect(
-      releases.some((e) => (e.payload as { outcome?: string }).outcome === 'cancelled'),
-    ).toBe(true);
+    expect(releases.some((e) => (e.payload as { outcome?: string }).outcome === 'cancelled')).toBe(
+      true,
+    );
     expect(projectRun(events, runId).executionState).toBe('cancelled');
   });
 });
@@ -554,9 +551,7 @@ describe('intervention queue routes', () => {
     const runId = await createPlannedRun(app, { githubRepo: 'octo/app' });
     await app.handle(req('POST', `/api/runs/${runId}/start`, authedHeaders(), {}));
 
-    const list = await app.handle(
-      req('GET', '/api/interventions', {}, undefined),
-    );
+    const list = await app.handle(req('GET', '/api/interventions', {}, undefined));
     expect(list.status).toBe(200);
     const all = record(list).interventions as { interventionId: string; runId: string }[];
     expect(all.length).toBeGreaterThan(0);
@@ -703,9 +698,7 @@ describe('MCP execution tools', () => {
       expectedVersion: run.lastSequence,
     });
     expect(cancelled.isError).toBe(false);
-    expect(
-      projectRun(await store.readRun(runId), runId).executionState,
-    ).toBe('cancelled');
+    expect(projectRun(await store.readRun(runId), runId).executionState).toBe('cancelled');
   });
 
   it('rejects unauthorized execution commands before side effects', async () => {

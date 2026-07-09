@@ -15,10 +15,7 @@ export function PackageHandoff({ pkg }: { readonly pkg: PackageView }) {
     <section className="panel" aria-label="Package and handoff">
       <header className="panel__header">
         <h2 className="panel__title">Package &amp; handoff</h2>
-        <span
-          className={`badge sev-${packaged ? 'success' : 'info'}`}
-          data-testid="package-status"
-        >
+        <span className={`badge sev-${packaged ? 'success' : 'info'}`} data-testid="package-status">
           <span className="badge__dot" aria-hidden="true" />
           {packaged ? 'Packaged' : 'Not packaged'}
         </span>

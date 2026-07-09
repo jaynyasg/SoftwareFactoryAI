@@ -657,9 +657,7 @@ async function callFactoryTool(
         }
         const body = asRecord(executionResponse.body);
         const interventions = Array.isArray(body.interventions)
-          ? body.interventions.filter(
-              (entry) => asRecord(entry).blockingStage === 'preflight',
-            )
+          ? body.interventions.filter((entry) => asRecord(entry).blockingStage === 'preflight')
           : [];
         response = {
           status: 200,

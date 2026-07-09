@@ -273,7 +273,9 @@ describe('POST /api/runs/:id/workspace', () => {
     const { app, store } = makeApp({ mode: 'cloud', git });
     const runId = await createRun(app, { prompt: 'x', githubRepo: 'octo/fixture' });
 
-    const first = await app.handle(req('POST', `/api/runs/${runId}/workspace`, authedHeaders(), {}));
+    const first = await app.handle(
+      req('POST', `/api/runs/${runId}/workspace`, authedHeaders(), {}),
+    );
     const before = (await store.readRun(runId)).length;
     const second = await app.handle(
       req('POST', `/api/runs/${runId}/workspace`, authedHeaders(), {}),
@@ -291,23 +293,23 @@ describe('POST /api/runs/:id/workspace', () => {
     const { app, store } = makeApp({ mode: 'cloud', git });
     const runId = await createRun(app, { prompt: 'x', githubRepo: 'octo/fixture' });
 
-    const failed = await app.handle(req('POST', `/api/runs/${runId}/workspace`, authedHeaders(), {}));
+    const failed = await app.handle(
+      req('POST', `/api/runs/${runId}/workspace`, authedHeaders(), {}),
+    );
     expect(workspaceOf(failed).status).toBe('failed');
     // E5: the sanitized failure carries no credential value.
     expect(JSON.stringify(failed.body)).not.toContain(SECRET);
 
     git.fix();
-    const fixed = await app.handle(req('POST', `/api/runs/${runId}/workspace`, authedHeaders(), {}));
+    const fixed = await app.handle(
+      req('POST', `/api/runs/${runId}/workspace`, authedHeaders(), {}),
+    );
     expect(workspaceOf(fixed).status).toBe('ready');
     expect(workspaceOf(fixed).attempts).toBe(2);
 
     const ledger = await store.readRun(runId);
-    expect(
-      types(ledger).filter((type) => type === 'workspace.checkout_failed'),
-    ).toHaveLength(1);
-    expect(
-      types(ledger).filter((type) => type === 'workspace.checkout_completed'),
-    ).toHaveLength(1);
+    expect(types(ledger).filter((type) => type === 'workspace.checkout_failed')).toHaveLength(1);
+    expect(types(ledger).filter((type) => type === 'workspace.checkout_completed')).toHaveLength(1);
     expect(JSON.stringify(ledger)).not.toContain(SECRET);
   });
 
@@ -315,7 +317,9 @@ describe('POST /api/runs/:id/workspace', () => {
     const { app, store } = makeApp({ mode: 'local' });
     const runId = await createRun(app, { prompt: 'x', githubRepo: 'octo/fixture' });
 
-    const res = await app.handle(req('POST', `/api/runs/${runId}/workspace`, { origin: ORIGIN }, {}));
+    const res = await app.handle(
+      req('POST', `/api/runs/${runId}/workspace`, { origin: ORIGIN }, {}),
+    );
     expect(res.status).toBe(401);
     const ledger = await store.readRun(runId);
     expect(ledger.filter((event) => event.type === 'security.block')).toHaveLength(1);

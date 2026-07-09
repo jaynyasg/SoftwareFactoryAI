@@ -189,9 +189,7 @@ export async function runScheduler<TNode extends ScheduleNode = ScheduleNode>(
     }
     runToken.dispose();
     const failedDag = input.dag ?? buildDag(input.tickets);
-    const preSettled = new Set(
-      (input.completed ?? []).filter((id) => failedDag.byId.has(id)),
-    );
+    const preSettled = new Set((input.completed ?? []).filter((id) => failedDag.byId.has(id)));
     return {
       runId,
       completed: [...preSettled],

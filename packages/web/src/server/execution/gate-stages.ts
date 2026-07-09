@@ -98,7 +98,11 @@ export function gatesForExpectations(expectations: readonly string[]): Gate[] {
     if (factory === null || factory === undefined) {
       continue;
     }
-    if (expectation === 'lint' || expectation === 'typecheck' || expectation === 'unit and smoke tests') {
+    if (
+      expectation === 'lint' ||
+      expectation === 'typecheck' ||
+      expectation === 'unit and smoke tests'
+    ) {
       needsInstall = true;
     }
     gates.push(factory());
@@ -122,7 +126,9 @@ export interface RuntimeGateStagesOptions {
  * contract, a cheap secret scan after every ticket, and sandboxed command
  * execution (Docker preferred; policy-gated reduced-trust fallback otherwise).
  */
-export function createRuntimeGateStages(options: RuntimeGateStagesOptions = {}): ExecutorGateStages {
+export function createRuntimeGateStages(
+  options: RuntimeGateStagesOptions = {},
+): ExecutorGateStages {
   const runner = createNodeCommandRunner();
   // One sandbox per (run, workspace): selection probes Docker once per key.
   const sandboxes = new Map<string, Promise<Sandbox>>();

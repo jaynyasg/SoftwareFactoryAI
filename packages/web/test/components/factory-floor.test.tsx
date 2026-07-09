@@ -23,10 +23,7 @@ import {
   buildFullFactoryRunEvents,
   buildMarketplaceRunEvents,
 } from '../../../../tests/fixtures/marketplace-run';
-import {
-  executionJobId,
-  projectExecutionQueue,
-} from '../../src/server/execution/queue';
+import { executionJobId, projectExecutionQueue } from '../../src/server/execution/queue';
 import { projectPreflight } from '../../src/server/execution/preflight';
 import {
   filterInterventions,
@@ -514,9 +511,7 @@ describe('BlueprintLanes (U9)', () => {
     ).toBeVisible();
     expect(within(screen.getByTestId('lane-gates')).getByText('failing')).toBeVisible();
     expect(within(screen.getByTestId('lane-deploy')).getByText('setup required')).toBeVisible();
-    expect(
-      within(screen.getByTestId('lane-workers')).getByText(/capacity 3\/5/),
-    ).toBeVisible();
+    expect(within(screen.getByTestId('lane-workers')).getByText(/capacity 3\/5/)).toBeVisible();
   });
 
   it('shows research findings and source evidence without raw JSON', () => {
@@ -531,9 +526,7 @@ describe('BlueprintLanes (U9)', () => {
     ).toBeInTheDocument();
     expect(screen.getByText('verified fact')).toBeInTheDocument();
     // Source evidence: locator rendered as machine data, not a JSON dump.
-    expect(
-      screen.getByText('generated/ai-services-marketplace/apps/web'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('generated/ai-services-marketplace/apps/web')).toBeInTheDocument();
     expect(screen.getByText(/which payment provider/i)).toBeInTheDocument();
     expect(researchLane.textContent).not.toContain('{');
   });
@@ -579,16 +572,14 @@ describe('ContractHandoff (U9)', () => {
     );
 
     const contract = screen.getByTestId('build-contract');
-    expect(within(contract).getByText(/12 tickets from scaffold through hosted deploy/)).toBeVisible();
     expect(
-      within(contract).getByTitle('generated/ai-services-marketplace/**'),
-    ).toBeInTheDocument();
+      within(contract).getByText(/12 tickets from scaffold through hosted deploy/),
+    ).toBeVisible();
+    expect(within(contract).getByTitle('generated/ai-services-marketplace/**')).toBeInTheDocument();
     expect(within(contract).getByText(/deploy ticket is high-risk/)).toBeVisible();
     expect(within(contract).getByText('secret-scan')).toBeVisible();
     expect(within(contract).getByText('render:ai-services-marketplace')).toBeVisible();
-    expect(
-      within(contract).getByText(/High-risk deploy requires 2 approvals/),
-    ).toBeVisible();
+    expect(within(contract).getByText(/High-risk deploy requires 2 approvals/)).toBeVisible();
     expect(within(contract).getByText('research-backed')).toBeVisible();
     expect(contract.textContent).not.toContain('"scope"');
   });
@@ -696,9 +687,10 @@ describe('InterventionQueue (U9/X4)', () => {
     expect(items).toHaveLength(2);
     expect(items[0]).toHaveAttribute('data-run-id', 'run-alpha');
     expect(items[1]).toHaveAttribute('data-run-id', 'run-beta');
-    expect(
-      within(items[0]).getByRole('link', { name: /open ledger evidence/i }),
-    ).toHaveAttribute('href', '/runs/run-alpha');
+    expect(within(items[0]).getByRole('link', { name: /open ledger evidence/i })).toHaveAttribute(
+      'href',
+      '/runs/run-alpha',
+    );
     expect(within(items[0]).getByText(/seq \d+/)).toBeInTheDocument();
   });
 

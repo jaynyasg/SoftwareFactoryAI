@@ -27,14 +27,14 @@ fresh generated workspace when execution starts (U5/U6).
 
 ## Event families
 
-| Event                          | Meaning                                                                    |
-| ------------------------------ | -------------------------------------------------------------------------- |
-| `workspace.local_bound`        | Local folder bound (resolved path, boundary rule, dirty-state policy)      |
+| Event                          | Meaning                                                                   |
+| ------------------------------ | ------------------------------------------------------------------------- |
+| `workspace.local_bound`        | Local folder bound (resolved path, boundary rule, dirty-state policy)     |
 | `workspace.checkout_started`   | Repo checkout attempt started (repo, requested branch, path, attempt #)   |
-| `workspace.ref_resolved`       | Branch + commit resolved for the checkout (evidence)                       |
+| `workspace.ref_resolved`       | Branch + commit resolved for the checkout (evidence)                      |
 | `workspace.checkout_completed` | Checkout complete (repo, branch, commit, checkout path, dirty policy)     |
-| `workspace.checkout_failed`    | Checkout attempt failed — sanitized reason, retryable                      |
-| `workspace.unavailable`        | The source cannot back a workspace on this runtime — `requiredAction` set  |
+| `workspace.checkout_failed`    | Checkout attempt failed — sanitized reason, retryable                     |
+| `workspace.unavailable`        | The source cannot back a workspace on this runtime — `requiredAction` set |
 
 Boundary/traversal rejections additionally record `security.block` (the same
 fail-closed class as sandbox path escapes). See

@@ -329,10 +329,7 @@ async function enqueueDirectly(store: EventStore, runId: string, attempt = 1): P
 }
 
 /** Release gated work in waves until a pending daemon tick settles. */
-async function drainTick(
-  adapter: GatedRecordingAdapter,
-  tick: Promise<unknown>,
-): Promise<void> {
+async function drainTick(adapter: GatedRecordingAdapter, tick: Promise<unknown>): Promise<void> {
   let done = false;
   void tick.then(() => {
     done = true;

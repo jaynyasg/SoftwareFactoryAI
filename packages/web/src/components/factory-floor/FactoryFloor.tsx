@@ -151,11 +151,7 @@ function FocusedBlueprint({
         variant="error"
         title="Could not load the focused run"
         action={
-          <button
-            type="button"
-            className="btn btn--sm"
-            onClick={() => setAttempt((n) => n + 1)}
-          >
+          <button type="button" className="btn btn--sm" onClick={() => setAttempt((n) => n + 1)}>
             Retry
           </button>
         }
@@ -237,8 +233,8 @@ export function FactoryFloor({
             title="No active run"
             action={<span className="muted">Start a run from the control panel below.</span>}
           >
-            The blueprint lights up lane by lane — research, planning, workers, gates,
-            package, deploy — as soon as a run exists. No progress is implied until events say so.
+            The blueprint lights up lane by lane — research, planning, workers, gates, package,
+            deploy — as soon as a run exists. No progress is implied until events say so.
           </StateBlock>
         )}
       </section>

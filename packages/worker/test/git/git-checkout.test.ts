@@ -56,7 +56,9 @@ describe('parseGitHubRepo', () => {
 describe('sanitizeCheckoutDetail', () => {
   it('strips URL userinfo credentials', () => {
     expect(
-      sanitizeCheckoutDetail(`fatal: could not read https://x-access-token:${TOKEN}@github.com/o/r.git`),
+      sanitizeCheckoutDetail(
+        `fatal: could not read https://x-access-token:${TOKEN}@github.com/o/r.git`,
+      ),
     ).not.toContain(TOKEN);
   });
 
@@ -89,7 +91,9 @@ describe('createCommandGitCheckoutClient', () => {
     await rm(join(dest, '..'), { recursive: true, force: true });
   });
 
-  function runner(overrides: Record<string, { code: number; stdout: string; stderr: string }> = {}) {
+  function runner(
+    overrides: Record<string, { code: number; stdout: string; stderr: string }> = {},
+  ) {
     return createFakeRunner({
       responses: {
         'git clone': { code: 0, stdout: '', stderr: '' },

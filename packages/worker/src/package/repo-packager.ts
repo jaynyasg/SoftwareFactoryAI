@@ -95,7 +95,8 @@ const DEFAULT_BRANCH = 'main';
 
 function packagingReadme(params: RepoPackagerParams): string {
   const dest = params.provenance.gitDestination;
-  const ownership = dest === undefined ? 'unset' : dest.temporary ? 'factory-owned temporary' : 'user-provided';
+  const ownership =
+    dest === undefined ? 'unset' : dest.temporary ? 'factory-owned temporary' : 'user-provided';
   return [
     `# Packaged by the Software Factory`,
     '',
@@ -202,8 +203,7 @@ export async function packageRepo(
     payload: {
       repoPath: params.repoDir,
       handoffRef: 'HANDOFF.md',
-      summary:
-        params.summary ?? `Packaged ${params.artifactId} as a git repo at commit ${commit}.`,
+      summary: params.summary ?? `Packaged ${params.artifactId} as a git repo at commit ${commit}.`,
       artifactId: params.artifactId,
       commit,
       provenanceRef: 'PROVENANCE.json',

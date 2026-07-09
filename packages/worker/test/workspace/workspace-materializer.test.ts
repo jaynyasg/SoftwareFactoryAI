@@ -17,11 +17,7 @@ import { posix, win32 } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { createInMemoryEventStore } from '@software-factory/core';
 import type { EventStore, FactoryEvent } from '@software-factory/core';
-import {
-  materializeWorkspace,
-  projectWorkspace,
-  workspaceContractEvidence,
-} from '../../src/index';
+import { materializeWorkspace, projectWorkspace, workspaceContractEvidence } from '../../src/index';
 import type {
   GitCheckoutArgs,
   GitCheckoutClient,
@@ -76,7 +72,10 @@ const BASE_LOCAL: Omit<WorkspaceMaterializationRequest, 'runId'> = {
   checkoutRoot: '/home/op/.factory/workspaces',
 };
 
-function deps(store: EventStore, overrides: Partial<WorkspaceMaterializerDeps> = {}): WorkspaceMaterializerDeps {
+function deps(
+  store: EventStore,
+  overrides: Partial<WorkspaceMaterializerDeps> = {},
+): WorkspaceMaterializerDeps {
   return {
     store,
     pathKit: posix,
@@ -260,7 +259,12 @@ describe('materializeWorkspace — repository checkout', () => {
     const store = makeStore();
     const git = okGit();
     const result = await materializeWorkspace(
-      { runId: 'run-repo', runtimeMode: 'local', githubRepo: 'octo/marketplace', checkoutRoot: '/tmp/ws' },
+      {
+        runId: 'run-repo',
+        runtimeMode: 'local',
+        githubRepo: 'octo/marketplace',
+        checkoutRoot: '/tmp/ws',
+      },
       deps(store, { git }),
     );
 
@@ -321,7 +325,9 @@ describe('materializeWorkspace — repository checkout', () => {
     const store = makeStore();
     const git = fakeGit(() =>
       Promise.reject(
-        new Error(`git clone https://x-access-token:${SECRET_TOKEN}@github.com/octo/app.git failed: auth`),
+        new Error(
+          `git clone https://x-access-token:${SECRET_TOKEN}@github.com/octo/app.git failed: auth`,
+        ),
       ),
     );
     const result = await materializeWorkspace(
@@ -344,7 +350,12 @@ describe('materializeWorkspace — repository checkout', () => {
   it('records an unparseable repo reference as unavailable with a required action', async () => {
     const store = makeStore();
     const result = await materializeWorkspace(
-      { runId: 'run-bad', runtimeMode: 'cloud', githubRepo: 'not a repo!!', checkoutRoot: '/tmp/ws' },
+      {
+        runId: 'run-bad',
+        runtimeMode: 'cloud',
+        githubRepo: 'not a repo!!',
+        checkoutRoot: '/tmp/ws',
+      },
       deps(store, { git: okGit() }),
     );
     expect(result.ok).toBe(false);

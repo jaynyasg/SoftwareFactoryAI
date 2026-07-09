@@ -191,8 +191,7 @@ function scriptedDeployer(healthScript: boolean[]): CompletionDeployer {
   return (params, deps) => {
     const client: RenderClient = {
       createDeploy: () => Promise.resolve({ id: 'dep-1', status: 'queued' }),
-      getDeploy: () =>
-        Promise.resolve({ id: 'dep-1', status: 'live' as RenderDeployStatus }),
+      getDeploy: () => Promise.resolve({ id: 'dep-1', status: 'live' as RenderDeployStatus }),
       checkHealth: () => {
         const healthy = healthScript.length > 0 ? (healthScript.shift() as boolean) : false;
         return Promise.resolve({ healthy, status: healthy ? 200 : 503 });

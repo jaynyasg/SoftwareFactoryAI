@@ -117,86 +117,86 @@ const MARKETPLACE_PLAN: ReadonlyArray<{
   dependsOn: readonly string[];
   riskTier: 'low' | 'medium' | 'high';
 }> = [
-    {
-      id: 'scaffold',
-      title: 'Scaffold the marketplace app',
-      moduleId: 'scaffold-app',
-      dependsOn: [],
-      riskTier: 'low',
-    },
-    {
-      id: 'data-model',
-      title: 'Define the data model and migrations',
-      moduleId: 'data-model',
-      dependsOn: ['scaffold'],
-      riskTier: 'medium',
-    },
-    {
-      id: 'api-contract',
-      title: 'Define the API contract',
-      moduleId: 'api-contract',
-      dependsOn: ['data-model'],
-      riskTier: 'low',
-    },
-    {
-      id: 'marketplace-ui',
-      title: 'Build the marketplace request flow (UI)',
-      moduleId: 'marketplace-ui',
-      dependsOn: ['api-contract'],
-      riskTier: 'low',
-    },
-    {
-      id: 'ai-brief',
-      title: 'Generate the AI brief',
-      moduleId: 'ai-brief',
-      dependsOn: ['api-contract'],
-      riskTier: 'medium',
-    },
-    {
-      id: 'provider-proposals',
-      title: 'Implement provider proposals',
-      moduleId: 'provider-proposals',
-      dependsOn: ['api-contract'],
-      riskTier: 'low',
-    },
-    {
-      id: 'review-acceptance',
-      title: 'Implement proposal review and acceptance',
-      dependsOn: ['marketplace-ui', 'provider-proposals'],
-      riskTier: 'low',
-    },
-    {
-      id: 'admin-status',
-      title: 'Build admin and status dashboards',
-      dependsOn: ['marketplace-ui', 'ai-brief', 'provider-proposals'],
-      riskTier: 'low',
-    },
-    {
-      id: 'tests',
-      title: 'Author and run quality gates',
-      moduleId: 'qa-gates',
-      dependsOn: ['marketplace-ui', 'ai-brief', 'provider-proposals'],
-      riskTier: 'low',
-    },
-    {
-      id: 'preview',
-      title: 'Run the local preview and health check',
-      dependsOn: ['tests'],
-      riskTier: 'low',
-    },
-    {
-      id: 'package',
-      title: 'Package the repo with provenance',
-      dependsOn: ['preview'],
-      riskTier: 'low',
-    },
-    {
-      id: 'deploy',
-      title: 'Deploy to the hosted target',
-      dependsOn: ['package'],
-      riskTier: 'high',
-    },
-  ];
+  {
+    id: 'scaffold',
+    title: 'Scaffold the marketplace app',
+    moduleId: 'scaffold-app',
+    dependsOn: [],
+    riskTier: 'low',
+  },
+  {
+    id: 'data-model',
+    title: 'Define the data model and migrations',
+    moduleId: 'data-model',
+    dependsOn: ['scaffold'],
+    riskTier: 'medium',
+  },
+  {
+    id: 'api-contract',
+    title: 'Define the API contract',
+    moduleId: 'api-contract',
+    dependsOn: ['data-model'],
+    riskTier: 'low',
+  },
+  {
+    id: 'marketplace-ui',
+    title: 'Build the marketplace request flow (UI)',
+    moduleId: 'marketplace-ui',
+    dependsOn: ['api-contract'],
+    riskTier: 'low',
+  },
+  {
+    id: 'ai-brief',
+    title: 'Generate the AI brief',
+    moduleId: 'ai-brief',
+    dependsOn: ['api-contract'],
+    riskTier: 'medium',
+  },
+  {
+    id: 'provider-proposals',
+    title: 'Implement provider proposals',
+    moduleId: 'provider-proposals',
+    dependsOn: ['api-contract'],
+    riskTier: 'low',
+  },
+  {
+    id: 'review-acceptance',
+    title: 'Implement proposal review and acceptance',
+    dependsOn: ['marketplace-ui', 'provider-proposals'],
+    riskTier: 'low',
+  },
+  {
+    id: 'admin-status',
+    title: 'Build admin and status dashboards',
+    dependsOn: ['marketplace-ui', 'ai-brief', 'provider-proposals'],
+    riskTier: 'low',
+  },
+  {
+    id: 'tests',
+    title: 'Author and run quality gates',
+    moduleId: 'qa-gates',
+    dependsOn: ['marketplace-ui', 'ai-brief', 'provider-proposals'],
+    riskTier: 'low',
+  },
+  {
+    id: 'preview',
+    title: 'Run the local preview and health check',
+    dependsOn: ['tests'],
+    riskTier: 'low',
+  },
+  {
+    id: 'package',
+    title: 'Package the repo with provenance',
+    dependsOn: ['preview'],
+    riskTier: 'low',
+  },
+  {
+    id: 'deploy',
+    title: 'Deploy to the hosted target',
+    dependsOn: ['package'],
+    riskTier: 'high',
+  },
+];
 
 /** Supervisor decisions + the 12-ticket DAG + `run.planned` (shared body). */
 function addSupervisorPlan({ add, ticket }: EventLogBuilder): void {
@@ -573,7 +573,8 @@ export function buildFullFactoryRunEvents(runId: string): FactoryEvent[] {
       kind: 'deploy_setup',
       blockingStage: 'deploy',
       reason: 'Render deploy credentials are not configured for this factory.',
-      requiredAction: 'Connect the GitHub destination and Render credentials, then re-run the deploy stage.',
+      requiredAction:
+        'Connect the GitHub destination and Render credentials, then re-run the deploy stage.',
     },
     { actor: DAEMON, subject: { kind: 'intervention', id: `${runId}:deploy:setup:1` } },
   );

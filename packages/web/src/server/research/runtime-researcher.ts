@@ -118,8 +118,7 @@ export function createRuntimeResearcher(options: RuntimeResearcherOptions = {}):
     // Materialized workspace state (U4): a completed checkout / bound folder
     // lets research scan the REAL workspace instead of reporting unavailable.
     const workspaceState = projectWorkspace(events, runId);
-    const materialized =
-      workspaceState.status === 'ready' ? workspaceState.workspace : undefined;
+    const materialized = workspaceState.status === 'ready' ? workspaceState.workspace : undefined;
 
     // Local folder: readable only in local mode, and only as its own boundary.
     // A U4-bound folder scans the resolved bound path (boundary-checked at

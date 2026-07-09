@@ -35,10 +35,7 @@ export interface WorkspaceLocalPolicy {
 }
 
 /** Why a local path was rejected. */
-export type LocalPathRejection =
-  | 'no_boundary_configured'
-  | 'outside_boundary'
-  | 'path_traversal';
+export type LocalPathRejection = 'no_boundary_configured' | 'outside_boundary' | 'path_traversal';
 
 /** The outcome of resolving a local folder against the policy. */
 export type LocalWorkspaceResolution =
@@ -67,9 +64,7 @@ function isContained(kit: PathKit, root: string, candidate: string): boolean {
 
 /** Whether the raw request contains a `..` traversal segment. */
 function hasTraversalSegment(requested: string): boolean {
-  return requested
-    .split(/[\\/]/)
-    .some((segment) => segment === '..');
+  return requested.split(/[\\/]/).some((segment) => segment === '..');
 }
 
 /**

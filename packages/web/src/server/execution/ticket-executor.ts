@@ -87,11 +87,7 @@ import type {
 } from '@software-factory/worker';
 import type { ExecutorGateStages } from './gate-stages';
 import type { ExecutorCompletionStage } from './completion-stage';
-import type {
-  TicketExecutionContext,
-  TicketExecutionResult,
-  TicketExecutor,
-} from './daemon';
+import type { TicketExecutionContext, TicketExecutionResult, TicketExecutor } from './daemon';
 import { resolveGenomeDir } from '../planner';
 import { DEFAULT_EXECUTION_RUNTIME_CONFIG, resolveWorkspaceRuntimeConfig } from '../runtime';
 import type { RuntimeConfig } from '../runtime';
@@ -223,8 +219,7 @@ async function recordAdapterSelectionFailure(
     timestamp: clock?.(),
     idempotencyKey: `${ctx.jobId}:adapter.selection:${ctx.attempt}`,
     payload: {
-      action:
-        selection.requiredAction ?? 'Configure an execution adapter on this instance.',
+      action: selection.requiredAction ?? 'Configure an execution adapter on this instance.',
       reason: selection.reason,
     },
   });
@@ -644,9 +639,7 @@ export function createSchedulerTicketExecutor(
       // blind retries. Retry counters are ledger-derived (`repair.started`
       // counts), so this stays true across restarts.
       const repairState = projectGateRepair(afterEvents, ctx.runId);
-      const exhausted = result.failed.filter((id) =>
-        repairState.exhaustedTickets.includes(id),
-      );
+      const exhausted = result.failed.filter((id) => repairState.exhaustedTickets.includes(id));
       if (exhausted.length > 0) {
         const details = exhausted.map((id) => {
           const repair = repairState.repairs[id];

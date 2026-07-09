@@ -140,10 +140,7 @@ export function createGatedTicketRunner(options: GatedTicketRunnerOptions): Tick
         payload: { attempt, gate, reason },
       });
 
-    const emitTicketState = (
-      state: 'retrying' | 'failed',
-      reason: string,
-    ): Promise<unknown> =>
+    const emitTicketState = (state: 'retrying' | 'failed', reason: string): Promise<unknown> =>
       deps.store.append({
         runId: params.runId,
         ticketId,

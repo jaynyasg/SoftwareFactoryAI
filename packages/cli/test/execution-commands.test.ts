@@ -64,7 +64,12 @@ function makeFakeClient(): { client: ApiClient; calls: RecordedCall[] } {
         queued: true,
         alreadyQueued: false,
         execution: { state: 'queued' },
-        job: { jobId: `${runId}:execution`, jobKind: 'run-execution', attempt: 1, status: 'queued' },
+        job: {
+          jobId: `${runId}:execution`,
+          jobKind: 'run-execution',
+          attempt: 1,
+          status: 'queued',
+        },
       });
     },
     pauseRun(runId, input) {
@@ -80,7 +85,12 @@ function makeFakeClient(): { client: ApiClient; calls: RecordedCall[] } {
       return Promise.resolve({
         runId,
         queued: true,
-        job: { jobId: `${runId}:execution`, jobKind: 'run-execution', attempt: 2, status: 'queued' },
+        job: {
+          jobId: `${runId}:execution`,
+          jobKind: 'run-execution',
+          attempt: 2,
+          status: 'queued',
+        },
       });
     },
     rerunGates(runId, input) {

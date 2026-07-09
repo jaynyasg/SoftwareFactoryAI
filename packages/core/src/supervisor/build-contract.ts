@@ -126,7 +126,9 @@ function operatorApprovalsFor(
   }
   for (const gap of research.gaps) {
     if (gap.blocking && !gap.resolved) {
-      approvals.push(`Resolve blocking research gap before execution: ${gap.question} (${gap.gapId})`);
+      approvals.push(
+        `Resolve blocking research gap before execution: ${gap.question} (${gap.gapId})`,
+      );
     }
   }
   if (run.mode === 'research-plan-and-start') {
@@ -160,7 +162,10 @@ export function deriveBuildContract(
   // Materialization evidence (U4) supersedes the payload-derived description.
   const { workspace, boundaries } =
     workspaceEvidence !== undefined
-      ? { workspace: workspaceEvidence.workspace, boundaries: [...workspaceEvidence.writeBoundaries] }
+      ? {
+          workspace: workspaceEvidence.workspace,
+          boundaries: [...workspaceEvidence.writeBoundaries],
+        }
       : describeWorkspace(run);
   const risks = elevatedRisks(ticketViews);
   for (const gap of research.gaps) {

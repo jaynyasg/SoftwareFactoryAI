@@ -70,8 +70,12 @@ export async function artifactsCommand(
   }
   for (const artifact of result.artifacts) {
     const confidence =
-      artifact.confidence !== undefined ? ` (${Math.round(artifact.confidence * 100)}% confidence)` : '';
-    io.out(`  - ${artifact.artifactId} [${artifact.kind ?? 'artifact'}]${confidence} ${artifact.path ?? ''}`);
+      artifact.confidence !== undefined
+        ? ` (${Math.round(artifact.confidence * 100)}% confidence)`
+        : '';
+    io.out(
+      `  - ${artifact.artifactId} [${artifact.kind ?? 'artifact'}]${confidence} ${artifact.path ?? ''}`,
+    );
   }
   io.out(`  repo path:   ${result.repoPath ?? '(pending)'}`);
   io.out(`  handoff:     ${result.handoffRef ?? '(pending)'}`);

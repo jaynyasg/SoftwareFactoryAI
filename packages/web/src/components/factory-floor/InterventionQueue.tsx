@@ -130,8 +130,7 @@ export function InterventionQueue({
 
   const items = filterInterventionItems(snapshot.interventions, {
     runId: runFilter === 'all' ? undefined : runFilter,
-    severity:
-      severityFilter === 'all' ? undefined : (severityFilter as EventSeverity),
+    severity: severityFilter === 'all' ? undefined : (severityFilter as EventSeverity),
     blockingStage: stageFilter === 'all' ? undefined : stageFilter,
     actionText: actionFilter,
     openOnly: !showResolved,

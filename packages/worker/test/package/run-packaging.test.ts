@@ -16,11 +16,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import {
-  createInMemoryEventStore,
-  projectRun,
-  projectTickets,
-} from '@software-factory/core';
+import { createInMemoryEventStore, projectRun, projectTickets } from '@software-factory/core';
 import type { AppendableEvent, EventStore, FactoryEvent } from '@software-factory/core';
 import { packageCompletedRun } from '../../src/index';
 import { createFakeRunner } from '../_helpers/fake-runner';
@@ -65,7 +61,10 @@ async function seedCompletedRun(store: EventStore): Promise<void> {
     subject: { kind: 'ticket', id: 'scaffold' },
     payload: { title: 'Scaffold', riskTier: 'low' },
   });
-  await append(store, { type: 'gate.passed', payload: { gate: 'unit-test', summary: 'green', stage: 'post_run' } });
+  await append(store, {
+    type: 'gate.passed',
+    payload: { gate: 'unit-test', summary: 'green', stage: 'post_run' },
+  });
   await append(store, { type: 'preview.ready', payload: { url: 'http://127.0.0.1:4311' } });
 }
 
@@ -130,9 +129,7 @@ describe('packageCompletedRun', () => {
     expect(artifact?.payload).toMatchObject({ artifactId: 'app', kind: 'repo', path: dir });
     const confidence = events.find((e) => e.type === 'artifact.confidence_computed');
     expect(confidence?.payload).toMatchObject({ artifactId: 'app' });
-    expect(
-      (confidence?.payload as { confidence: number }).confidence,
-    ).toBeGreaterThan(0);
+    expect((confidence?.payload as { confidence: number }).confidence).toBeGreaterThan(0);
   });
 
   it('is idempotent: a second call skips packaging with ZERO git calls and no duplicate events', async () => {

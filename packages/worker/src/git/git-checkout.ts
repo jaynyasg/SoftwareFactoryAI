@@ -41,9 +41,8 @@ export function parseGitHubRepo(input: string): GitHubRepoRef | null {
     return null;
   }
   let ownerRepo: string | undefined;
-  const httpsMatch = /^https?:\/\/(?:[^@/\s]+@)?github\.com\/([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/i.exec(
-    trimmed,
-  );
+  const httpsMatch =
+    /^https?:\/\/(?:[^@/\s]+@)?github\.com\/([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/i.exec(trimmed);
   const sshMatch = /^git@github\.com:([^/\s]+)\/([^/\s]+?)(?:\.git)?$/i.exec(trimmed);
   const bareMatch = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?$/.exec(trimmed);
   if (httpsMatch !== null) {

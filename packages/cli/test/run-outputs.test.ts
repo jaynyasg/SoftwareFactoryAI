@@ -46,7 +46,11 @@ function buildEvents(specs: readonly EventSpec[]): FactoryEvent[] {
 const BASE: readonly EventSpec[] = [
   { type: 'run.created', payload: { prompt: 'Build an AI services marketplace' } },
   { type: 'ticket.created', ticketId: 'scaffold', payload: { title: 'Scaffold' } },
-  { type: 'gate.passed', payload: { gate: 'unit-test', summary: 'green', stage: 'post_run' }, severity: 'success' },
+  {
+    type: 'gate.passed',
+    payload: { gate: 'unit-test', summary: 'green', stage: 'post_run' },
+    severity: 'success',
+  },
   { type: 'preview.ready', payload: { url: 'http://127.0.0.1:4311' }, severity: 'success' },
   {
     type: 'package.created',
@@ -60,7 +64,10 @@ const BASE: readonly EventSpec[] = [
       summary: 'Packaged app as a git repo at commit abc123.',
     },
   },
-  { type: 'artifact.created', payload: { artifactId: 'app', kind: 'repo', path: 'C:/factory/workspaces/run-outputs-u8' } },
+  {
+    type: 'artifact.created',
+    payload: { artifactId: 'app', kind: 'repo', path: 'C:/factory/workspaces/run-outputs-u8' },
+  },
   {
     type: 'artifact.confidence_computed',
     payload: { artifactId: 'app', confidence: 0.87, factors: { gatePassRate: 1 } },
@@ -77,8 +84,16 @@ describe('buildRunOutputs (U8 package/provenance/deploy)', () => {
     expect(outputs.handoffSummary).toContain('Packaged app');
     expect(outputs.previewUrl).toBe('http://127.0.0.1:4311');
     expect(outputs.tests.passed).toBe(1);
-    expect(outputs.tests.gates[0]).toEqual({ gate: 'unit-test', status: 'passed', detail: 'green' });
-    expect(outputs.artifacts[0]).toMatchObject({ artifactId: 'app', kind: 'repo', confidence: 0.87 });
+    expect(outputs.tests.gates[0]).toEqual({
+      gate: 'unit-test',
+      status: 'passed',
+      detail: 'green',
+    });
+    expect(outputs.artifacts[0]).toMatchObject({
+      artifactId: 'app',
+      kind: 'repo',
+      confidence: 0.87,
+    });
   });
 
   it('keeps the hosted URL ABSENT until deploy.hosted_ready and marks failures retryable', () => {
@@ -209,7 +224,11 @@ describe('artifacts command (U8 surface)', () => {
     const { io, lines } = fakeIo();
     const events = buildEvents([
       ...BASE,
-      { type: 'deploy.hosted_ready', severity: 'success', payload: { url: 'https://app.onrender.com' } },
+      {
+        type: 'deploy.hosted_ready',
+        severity: 'success',
+        payload: { url: 'https://app.onrender.com' },
+      },
     ]);
     const result = await artifactsCommand(
       { runId: RUN_ID, json: true },

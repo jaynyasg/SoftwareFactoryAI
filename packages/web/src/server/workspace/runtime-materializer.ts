@@ -15,10 +15,7 @@
 import { createNodeCommandRunner } from '@software-factory/core';
 import type { EventStore, RunCreatedPayload } from '@software-factory/core';
 import { createCommandGitCheckoutClient, materializeWorkspace } from '@software-factory/worker';
-import type {
-  GitCheckoutClient,
-  WorkspaceMaterializationResult,
-} from '@software-factory/worker';
+import type { GitCheckoutClient, WorkspaceMaterializationResult } from '@software-factory/worker';
 import { runCreatedPayload } from '../run-created';
 import { resolveWorkspaceRuntimeConfig } from '../runtime';
 import type { RuntimeConfig } from '../runtime';

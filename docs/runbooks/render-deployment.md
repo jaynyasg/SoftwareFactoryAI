@@ -39,7 +39,7 @@ Key behaviors:
   still completes locally; a `retry_choice` intervention on the `deploy` stage
   points at the recorded evidence.
 - **Retry re-enters the completion stage idempotently.** `POST
-  /api/runs/:id/retry` (allowed for locally-complete runs) re-runs the
+/api/runs/:id/retry` (allowed for locally-complete runs) re-runs the
   executor: packaging is skipped (the existing `package.created`
   short-circuits — no duplicate git commits or events) and the deploy is
   re-attempted. `run.completed` stays idempotent on `<runId>:run.completed`.
@@ -150,7 +150,7 @@ factory operator environment. Only credential **presence** enters config and
 evidence — never values (hardening E5).
 
 | Variable                    | Purpose                                                                     |
-| --------------------------- | ---------------------------------------------------------------------------- |
+| --------------------------- | --------------------------------------------------------------------------- |
 | `SF_RENDER_API_KEY`         | Render API key (alias; `RENDER_API_KEY` also works).                        |
 | `SF_RENDER_SERVICE_ID`      | The target Render web service id (`srv-…`).                                 |
 | `SF_RENDER_HOSTED_URL`      | The hosted URL post-deploy health checks probe (required for hosted-ready). |

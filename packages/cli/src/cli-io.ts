@@ -93,7 +93,9 @@ export function formatRunOutputs(outputs: RunOutputs): string {
     lines.push('  artifacts:');
     for (const artifact of outputs.artifacts) {
       const confidence =
-        artifact.confidence !== undefined ? ` (${Math.round(artifact.confidence * 100)}% confidence)` : '';
+        artifact.confidence !== undefined
+          ? ` (${Math.round(artifact.confidence * 100)}% confidence)`
+          : '';
       lines.push(`    - ${artifact.artifactId} [${artifact.kind ?? 'artifact'}]${confidence}`);
     }
   }

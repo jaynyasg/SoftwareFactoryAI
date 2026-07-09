@@ -220,7 +220,11 @@ function probeWriteScopes(ctx: PreflightProbeContext): PreflightCheckOutcome {
 
 function probeCredentials(ctx: PreflightProbeContext): PreflightCheckOutcome {
   const wantsRepo = ctx.run.githubRepo !== undefined && ctx.run.githubRepo.length > 0;
-  if (wantsRepo && ctx.workspace.status !== 'ready' && !ctx.workspaceConfig.checkoutCredentialsPresent) {
+  if (
+    wantsRepo &&
+    ctx.workspace.status !== 'ready' &&
+    !ctx.workspaceConfig.checkoutCredentialsPresent
+  ) {
     return fail(
       'credentials',
       `Repository ${ctx.run.githubRepo} requires checkout credentials, but none are configured.`,

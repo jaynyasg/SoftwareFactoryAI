@@ -40,11 +40,7 @@ import {
   projectRun,
   projectTickets,
 } from '@software-factory/core';
-import type {
-  EventStore,
-  ProvenanceDeployConfig,
-  TicketProjection,
-} from '@software-factory/core';
+import type { EventStore, ProvenanceDeployConfig, TicketProjection } from '@software-factory/core';
 import {
   completeRunDeploy,
   createCommandGitRemoteClient,

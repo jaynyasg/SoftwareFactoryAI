@@ -226,30 +226,30 @@ versioned envelope with actor, subject, severity, evidence, and payload fields.
 
 Important event families:
 
-| Family     | Examples                                                                          |
-| ---------- | --------------------------------------------------------------------------------- |
-| Run        | `run.created`, `run.planned`, `run.completed`, `run.cancelled`                    |
-| Research   | `research.requested`, `research.finding_recorded`, `research.brief_completed`     |
-| Knowledge  | `knowledge.entry_recorded`, `knowledge.entry_redacted`                            |
-| Supervisor | `supervisor.decision`                                                             |
-| Contract   | `contract.generated`                                                              |
-| Workspace  | `workspace.local_bound`, `workspace.checkout_completed`, `workspace.unavailable`  |
-| Execution  | `execution.paused`, `execution.blocked`, `execution.completed`                    |
-| Preflight  | `preflight.started`, `preflight.check_failed`, `preflight.passed`                 |
-| Queue      | `queue.enqueued`, `queue.claimed`, `queue.heartbeat`, `queue.lease_abandoned`     |
-| Intervention | `intervention.raised`, `intervention.resolved`                                  |
-| Ticket     | `ticket.created`, `ticket.queued`, `ticket.state_changed`, `ticket.dead_lettered` |
-| Worker     | `worker.started`, `worker.progress`, `worker.retry`, `worker.completed`           |
-| Adapter    | `adapter.selected`, `adapter.setup_required`, `adapter.capacity_changed`          |
-| Sandbox    | `sandbox.started`, `sandbox.fallback`, `sandbox.error`                            |
-| Gate       | `gate.started`, `gate.passed`, `gate.failed`                                      |
-| Repair     | `repair.started`, `repair.succeeded`, `repair.failed`                             |
-| Review     | `review.requested`, `review.decided`                                              |
-| Artifact   | `artifact.created`, `artifact.confidence_computed`                                |
-| Package    | `package.created`                                                                 |
-| Deploy     | `deploy.setup_required`, `deploy.health_pending`, `deploy.hosted_ready`           |
-| Security   | `security.block`, `security.command_rejected`                                     |
-| Operator   | `operator.health_sample`                                                          |
+| Family       | Examples                                                                          |
+| ------------ | --------------------------------------------------------------------------------- |
+| Run          | `run.created`, `run.planned`, `run.completed`, `run.cancelled`                    |
+| Research     | `research.requested`, `research.finding_recorded`, `research.brief_completed`     |
+| Knowledge    | `knowledge.entry_recorded`, `knowledge.entry_redacted`                            |
+| Supervisor   | `supervisor.decision`                                                             |
+| Contract     | `contract.generated`                                                              |
+| Workspace    | `workspace.local_bound`, `workspace.checkout_completed`, `workspace.unavailable`  |
+| Execution    | `execution.paused`, `execution.blocked`, `execution.completed`                    |
+| Preflight    | `preflight.started`, `preflight.check_failed`, `preflight.passed`                 |
+| Queue        | `queue.enqueued`, `queue.claimed`, `queue.heartbeat`, `queue.lease_abandoned`     |
+| Intervention | `intervention.raised`, `intervention.resolved`                                    |
+| Ticket       | `ticket.created`, `ticket.queued`, `ticket.state_changed`, `ticket.dead_lettered` |
+| Worker       | `worker.started`, `worker.progress`, `worker.retry`, `worker.completed`           |
+| Adapter      | `adapter.selected`, `adapter.setup_required`, `adapter.capacity_changed`          |
+| Sandbox      | `sandbox.started`, `sandbox.fallback`, `sandbox.error`                            |
+| Gate         | `gate.started`, `gate.passed`, `gate.failed`                                      |
+| Repair       | `repair.started`, `repair.succeeded`, `repair.failed`                             |
+| Review       | `review.requested`, `review.decided`                                              |
+| Artifact     | `artifact.created`, `artifact.confidence_computed`                                |
+| Package      | `package.created`                                                                 |
+| Deploy       | `deploy.setup_required`, `deploy.health_pending`, `deploy.hosted_ready`           |
+| Security     | `security.block`, `security.command_rejected`                                     |
+| Operator     | `operator.health_sample`                                                          |
 
 Projections fold events into read models:
 
@@ -380,7 +380,7 @@ Operational diagnostics state this limit instead of hiding it:
   warning).
 - Cloud entry points log one `[software-factory] scale-safety:` warning line
   at startup (`mode=cloud storage=jsonl queue=ledger
-  horizontal-scaling=unsafe ...`).
+horizontal-scaling=unsafe ...`).
 - `render.yaml` pins `numInstances: 1`.
 
 ### What stays stable across the migration
@@ -388,14 +388,14 @@ Operational diagnostics state this limit instead of hiding it:
 Replacing JSONL with a database is a storage/queue swap behind existing
 interfaces, not a redesign. These contracts do not change:
 
-| Seam                          | Stable contract                                                                                                    |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `EventStore`                  | `append` / `readRun` / `readAll` / `listRuns` plus `AppendResult` (`packages/core/src/events/event-store.ts`)      |
-| `EventReader` / `EventWriter` | Thin facades over `EventStore`; consumers never see the backend                                                    |
+| Seam                          | Stable contract                                                                                                                                                                 |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `EventStore`                  | `append` / `readRun` / `readAll` / `listRuns` plus `AppendResult` (`packages/core/src/events/event-store.ts`)                                                                   |
+| `EventReader` / `EventWriter` | Thin facades over `EventStore`; consumers never see the backend                                                                                                                 |
 | Queue event semantics         | `queue.enqueued` -> `queue.claimed` -> `queue.heartbeat` -> `queue.released` / `queue.lease_abandoned`, idempotent per `(jobId, attempt)` and folded by `projectExecutionQueue` |
-| Execution daemon seam         | `createExecutionDaemon` with the injectable `TicketExecutor` (`packages/web/src/server/execution/daemon.ts`)       |
-| Projections                   | Pure functions over sequence-ordered events; no backend awareness                                                  |
-| Stale-version guard           | The command guard compares client `expectedVersion` against the run projection's `lastSequence` — ledger-derived   |
+| Execution daemon seam         | `createExecutionDaemon` with the injectable `TicketExecutor` (`packages/web/src/server/execution/daemon.ts`)                                                                    |
+| Projections                   | Pure functions over sequence-ordered events; no backend awareness                                                                                                               |
+| Stale-version guard           | The command guard compares client `expectedVersion` against the run projection's `lastSequence` — ledger-derived                                                                |
 
 A database-backed `EventStore` plugs in at exactly two construction sites,
 both of which call `createFileSystemEventStore` today:

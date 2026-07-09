@@ -22,9 +22,7 @@ export interface LiveInterventionQueue {
   readonly refresh: () => void;
 }
 
-export function useInterventionQueue(
-  initial: InterventionQueueSnapshot,
-): LiveInterventionQueue {
+export function useInterventionQueue(initial: InterventionQueueSnapshot): LiveInterventionQueue {
   const [snapshot, setSnapshot] = useState<InterventionQueueSnapshot>(initial);
   const [reconnecting, setReconnecting] = useState(false);
   const [nonce, setNonce] = useState(0);

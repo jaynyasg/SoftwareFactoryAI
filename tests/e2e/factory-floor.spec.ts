@@ -28,7 +28,10 @@ async function focusRun(page: Page, runId: string): Promise<void> {
   const marker = page.getByTestId('blueprint-run').locator(`[data-full="${runId}"]`);
   if ((await marker.count()) === 0) {
     // Not already focused (another spec's run may be the latest) — focus ours.
-    await page.getByLabel('Runs').getByRole('button', { name: `Focus run ${runId}` }).click();
+    await page
+      .getByLabel('Runs')
+      .getByRole('button', { name: `Focus run ${runId}` })
+      .click();
   }
   await expect(marker).toBeVisible({ timeout: 10_000 });
 }
@@ -183,9 +186,7 @@ test('blueprint lanes, contract/preflight handoff, and command bar fit at 1440x9
 
   // Research findings + source evidence readable without raw JSON.
   await page.getByTestId('lane-research').getByText('evidence').click();
-  await expect(
-    page.getByText(/repo already contains a provider\/request scaffold/),
-  ).toBeVisible();
+  await expect(page.getByText(/repo already contains a provider\/request scaffold/)).toBeVisible();
   await expect(page.getByText('generated/ai-services-marketplace/apps/web')).toBeVisible();
 
   // Contract handoff: structured rows + preflight checks + adjacent commands.
@@ -259,9 +260,9 @@ test('intervention queue spans runs, filters, focuses, and links to ledger evide
   // Focus run B first so run A's item definitely offers a Focus action.
   await focusRun(page, runB);
   await itemA.getByRole('button', { name: `Focus run ${runA}` }).click();
-  await expect(
-    page.getByTestId('blueprint-run').locator(`[data-full="${runA}"]`),
-  ).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByTestId('blueprint-run').locator(`[data-full="${runA}"]`)).toBeVisible({
+    timeout: 10_000,
+  });
   // Cross-run: the OTHER run's intervention stays visible after focusing.
   await expect(itemB).toBeVisible();
 
@@ -270,9 +271,7 @@ test('intervention queue spans runs, filters, focuses, and links to ledger evide
   await expect(itemB).toHaveCount(0);
   await expect(itemA).toBeVisible();
   await queue.getByLabel('Filter interventions by run').selectOption('all');
-  await queue
-    .getByLabel('Filter interventions by required action')
-    .fill('render credentials');
+  await queue.getByLabel('Filter interventions by required action').fill('render credentials');
   await expect(itemA).toBeVisible();
   await expect(itemB).toBeVisible();
 
@@ -298,20 +297,14 @@ test('focus run switches the blueprint and clear view preserves focus', async ({
   // Clearing run history hides the list but never drops the focused blueprint.
   await page.getByRole('button', { name: 'Clear view' }).click();
   await expect(page.getByText(/Run history is hidden for this screen/)).toBeVisible();
-  await expect(
-    page.getByTestId('blueprint-run').locator(`[data-full="${runB}"]`),
-  ).toBeVisible();
+  await expect(page.getByTestId('blueprint-run').locator(`[data-full="${runB}"]`)).toBeVisible();
 
   // Restoring the history brings the list back, focus still intact.
   await page.getByRole('button', { name: 'Show history' }).click();
-  await expect(
-    page.getByTestId('blueprint-run').locator(`[data-full="${runB}"]`),
-  ).toBeVisible();
+  await expect(page.getByTestId('blueprint-run').locator(`[data-full="${runB}"]`)).toBeVisible();
 });
 
-test('mobile 390x844: interventions first, lanes stack, no horizontal scroll', async ({
-  page,
-}) => {
+test('mobile 390x844: interventions first, lanes stack, no horizontal scroll', async ({ page }) => {
   const runId = await seedFullFactoryRun(page.request, 'e2e-mobile');
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/');

@@ -23,11 +23,7 @@ import type {
   RunStatus,
   TicketView,
 } from '@software-factory/core';
-import type {
-  ExecutionJobSnapshot,
-  InterventionItem,
-  PreflightSnapshot,
-} from './types';
+import type { ExecutionJobSnapshot, InterventionItem, PreflightSnapshot } from './types';
 
 /* -------------------------------------------------------------------------- */
 /* Severity / risk -> CSS token classes                                       */
@@ -506,23 +502,29 @@ export interface BlueprintInputs {
   readonly operator: OperatorProjection;
 }
 
-const DEPLOY_LANE: Readonly<Record<DeployStatusValue, { status: string; severity: EventSeverity }>> =
-  {
-    idle: { status: 'not started', severity: 'info' },
-    setup_required: { status: 'setup required', severity: 'warn' },
-    config_invalid: { status: 'config invalid', severity: 'error' },
-    provider_failed: { status: 'provider failed', severity: 'error' },
-    migration_failed: { status: 'migration failed', severity: 'error' },
-    health_pending: { status: 'health pending', severity: 'warn' },
-    health_failed: { status: 'health failed', severity: 'error' },
-    hosted_ready: { status: 'hosted · healthy', severity: 'success' },
-  };
+const DEPLOY_LANE: Readonly<
+  Record<DeployStatusValue, { status: string; severity: EventSeverity }>
+> = {
+  idle: { status: 'not started', severity: 'info' },
+  setup_required: { status: 'setup required', severity: 'warn' },
+  config_invalid: { status: 'config invalid', severity: 'error' },
+  provider_failed: { status: 'provider failed', severity: 'error' },
+  migration_failed: { status: 'migration failed', severity: 'error' },
+  health_pending: { status: 'health pending', severity: 'warn' },
+  health_failed: { status: 'health failed', severity: 'error' },
+  hosted_ready: { status: 'hosted · healthy', severity: 'success' },
+};
 
 function researchLane(research: ResearchProjection): BlueprintLane {
   const base = { id: 'research' as const, label: 'Research' };
   switch (research.status) {
     case 'none':
-      return { ...base, status: 'not requested', severity: 'info', detail: 'No research events recorded for this run.' };
+      return {
+        ...base,
+        status: 'not requested',
+        severity: 'info',
+        detail: 'No research events recorded for this run.',
+      };
     case 'requested':
       return { ...base, status: 'requested', severity: 'info', detail: research.objective };
     case 'in_progress':
@@ -558,7 +560,12 @@ function planningLane(run: RunProjection, tickets: readonly TicketView[]): Bluep
   const base = { id: 'planning' as const, label: 'Planning' };
   const decisions = run.supervisorDecisions.length;
   if (run.status === 'created') {
-    return { ...base, status: 'planning', severity: 'info', detail: 'Supervisor has not planned this run yet.' };
+    return {
+      ...base,
+      status: 'planning',
+      severity: 'info',
+      detail: 'Supervisor has not planned this run yet.',
+    };
   }
   if (run.status === 'unknown') {
     return { ...base, status: 'no plan', severity: 'info' };
@@ -587,8 +594,7 @@ export function deriveBlueprintLanes(inputs: BlueprintInputs): BlueprintLane[] {
   const queueLane: BlueprintLane = {
     id: 'queue',
     label: 'Queued',
-    status:
-      board.queued.length > 0 ? 'waiting' : board.active.length > 0 ? 'drained' : 'empty',
+    status: board.queued.length > 0 ? 'waiting' : board.active.length > 0 ? 'drained' : 'empty',
     severity: 'info',
     metric: `${board.queued.length} queued`,
     detail: queueDetail,
@@ -625,7 +631,10 @@ export function deriveBlueprintLanes(inputs: BlueprintInputs): BlueprintLane[] {
       gates.length === 0
         ? undefined
         : `${passedGates.length} passed · ${failedGates.length} failed`,
-    detail: failedGates[0] !== undefined ? `${failedGates[0].gate}: ${failedGates[0].detail ?? 'failed'}` : undefined,
+    detail:
+      failedGates[0] !== undefined
+        ? `${failedGates[0].gate}: ${failedGates[0].detail ?? 'failed'}`
+        : undefined,
   };
 
   const exhausted = repairs.filter((r) => r.status === 'exhausted');
@@ -641,7 +650,14 @@ export function deriveBlueprintLanes(inputs: BlueprintInputs): BlueprintLane[] {
           : repairing.length > 0
             ? 'repairing'
             : 'recovered',
-    severity: exhausted.length > 0 ? 'error' : repairing.length > 0 ? 'warn' : repairs.length > 0 ? 'success' : 'info',
+    severity:
+      exhausted.length > 0
+        ? 'error'
+        : repairing.length > 0
+          ? 'warn'
+          : repairs.length > 0
+            ? 'success'
+            : 'info',
     metric: repairs.length > 0 ? `${repairs.length} ticket(s) in repair` : undefined,
     detail: exhausted[0]?.reason ?? repairing[0]?.reason,
   };
@@ -664,7 +680,8 @@ export function deriveBlueprintLanes(inputs: BlueprintInputs): BlueprintLane[] {
     label: 'Deploy',
     status: deployMeta.status,
     severity: deployMeta.severity,
-    detail: deploy.reason ?? deploy.action ?? (deploy.status === 'hosted_ready' ? deploy.url : undefined),
+    detail:
+      deploy.reason ?? deploy.action ?? (deploy.status === 'hosted_ready' ? deploy.url : undefined),
   };
 
   return [
