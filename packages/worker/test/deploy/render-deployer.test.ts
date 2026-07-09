@@ -221,7 +221,9 @@ describe('deployToRender — failure classes attach logs + allow retry', () => {
       expect(outcome.logs.length).toBeGreaterThan(0);
       expect(outcome.retryable).toBe(true);
     }
-    const failed = (await store.readRun('run-deploy')).find((e) => e.type === 'deploy.provider_failed');
+    const failed = (await store.readRun('run-deploy')).find(
+      (e) => e.type === 'deploy.provider_failed',
+    );
     expect(failed?.evidence?.[0].note).toContain('build error');
     expect(await types(store)).not.toContain('deploy.hosted_ready');
   });
@@ -239,7 +241,9 @@ describe('deployToRender — failure classes attach logs + allow retry', () => {
       expect(outcome.logs.join('\n')).toMatch(/migrate/i);
       expect(outcome.retryable).toBe(true);
     }
-    const failed = (await store.readRun('run-deploy')).find((e) => e.type === 'deploy.migration_failed');
+    const failed = (await store.readRun('run-deploy')).find(
+      (e) => e.type === 'deploy.migration_failed',
+    );
     expect(failed).toBeDefined();
     expect(failed?.evidence?.[0].note).toMatch(/migrate/i);
   });
@@ -261,7 +265,9 @@ describe('deployToRender — failure classes attach logs + allow retry', () => {
       expect(outcome.retryable).toBe(true);
     }
     // Timeout surfaces as a provider_failed event (no dedicated timeout event type).
-    const failed = (await store.readRun('run-deploy')).find((e) => e.type === 'deploy.provider_failed');
+    const failed = (await store.readRun('run-deploy')).find(
+      (e) => e.type === 'deploy.provider_failed',
+    );
     expect(failed?.evidence?.[0].note).toMatch(/terminal state/i);
     expect(await types(store)).not.toContain('deploy.hosted_ready');
   });
@@ -286,7 +292,9 @@ describe('deployToRender — failure classes attach logs + allow retry', () => {
     expect(seen).toContain('deploy.health_pending');
     expect(seen).toContain('deploy.health_failed');
     expect(seen).not.toContain('deploy.hosted_ready');
-    const failed = (await store.readRun('run-deploy')).find((e) => e.type === 'deploy.health_failed');
+    const failed = (await store.readRun('run-deploy')).find(
+      (e) => e.type === 'deploy.health_failed',
+    );
     expect(failed?.evidence?.[0].note).toContain('health check');
   });
 });
@@ -297,17 +305,30 @@ describe('createRenderClient over a mock HTTP transport (no network)', () => {
     const transport: HttpTransport = (request) => {
       requests.push(`${request.method} ${request.url}`);
       if (request.url.endsWith('/deploys')) {
-        return Promise.resolve({ status: 201, ok: true, body: JSON.stringify({ id: 'dep-9', status: 'queued' }) });
+        return Promise.resolve({
+          status: 201,
+          ok: true,
+          body: JSON.stringify({ id: 'dep-9', status: 'queued' }),
+        });
       }
       if (request.url.includes('/deploys/')) {
-        return Promise.resolve({ status: 200, ok: true, body: JSON.stringify({ deploy: { id: 'dep-9', status: 'live' } }) });
+        return Promise.resolve({
+          status: 200,
+          ok: true,
+          body: JSON.stringify({ deploy: { id: 'dep-9', status: 'live' } }),
+        });
       }
       return Promise.resolve({ status: 200, ok: true, body: 'ok' });
     };
     const client = createRenderClient({ apiKey: 'test-key', transport });
 
     const created = await client.createDeploy({ serviceId: 'srv-9' });
-    expect(created).toEqual({ id: 'dep-9', status: 'queued', commit: undefined, failureReason: undefined });
+    expect(created).toEqual({
+      id: 'dep-9',
+      status: 'queued',
+      commit: undefined,
+      failureReason: undefined,
+    });
 
     const polled = await client.getDeploy({ serviceId: 'srv-9', deployId: 'dep-9' });
     expect(polled.status).toBe('live'); // unwrapped from { deploy: {...} }

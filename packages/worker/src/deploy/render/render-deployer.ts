@@ -19,7 +19,12 @@
  * failure, and health failure all attach logs (as event evidence + on the
  * outcome) and are marked retryable.
  */
-import type { AppendableEvent, EventActor, EventEvidence, EventStore } from '@software-factory/core';
+import type {
+  AppendableEvent,
+  EventActor,
+  EventEvidence,
+  EventStore,
+} from '@software-factory/core';
 import type { GitDestinationOutcome } from '../../git/git-destination';
 import type { RenderBlueprint } from './render-config';
 import { validateRenderBlueprint } from './render-config';
@@ -215,7 +220,11 @@ export async function deployToRender(
     polls += 1;
     await sleep(pollIntervalMs, deps.signal);
     try {
-      current = await deps.client.getDeploy({ serviceId, deployId: current.id, signal: deps.signal });
+      current = await deps.client.getDeploy({
+        serviceId,
+        deployId: current.id,
+        signal: deps.signal,
+      });
     } catch (error) {
       const reason = `Polling Render deploy ${current.id} failed: ${error instanceof Error ? error.message : String(error)}`;
       logs.push(reason);
@@ -251,7 +260,9 @@ export async function deployToRender(
       health = await deps.client.checkHealth({ url: params.hostedUrl, signal: deps.signal });
     } catch (error) {
       health = { healthy: false, status: 0 };
-      logs.push(`health check ${healthPolls} errored: ${error instanceof Error ? error.message : String(error)}`);
+      logs.push(
+        `health check ${healthPolls} errored: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
     logs.push(
       `health check ${healthPolls}: HTTP ${health.status} (${health.healthy ? 'healthy' : 'unhealthy'})`,

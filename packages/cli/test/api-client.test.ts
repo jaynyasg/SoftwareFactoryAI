@@ -11,15 +11,17 @@ interface RecordedCall {
 }
 
 /** Build a mock `fetch` that records calls and returns canned JSON responses. */
-function mockFetch(
-  handler: (call: RecordedCall) => { status: number; body: unknown },
-): { fetchImpl: FetchLike; calls: RecordedCall[] } {
+function mockFetch(handler: (call: RecordedCall) => { status: number; body: unknown }): {
+  fetchImpl: FetchLike;
+  calls: RecordedCall[];
+} {
   const calls: RecordedCall[] = [];
   const fetchImpl = (async (input: unknown, init?: Record<string, unknown>) => {
     const url = String(input);
     const headers = (init?.headers ?? {}) as Record<string, string>;
     const rawBody = init?.body;
-    const body = typeof rawBody === 'string' && rawBody.length > 0 ? JSON.parse(rawBody) : undefined;
+    const body =
+      typeof rawBody === 'string' && rawBody.length > 0 ? JSON.parse(rawBody) : undefined;
     const call: RecordedCall = {
       url,
       method: String(init?.method ?? 'GET'),
@@ -93,7 +95,10 @@ describe('createApiClient', () => {
   it('getEvents resumes by sequence (returns only events after sinceSequence)', async () => {
     const { fetchImpl } = mockFetch(() => ({
       status: 200,
-      body: { runId: 'run-1', events: [evt(1, 'run.created'), evt(2, 'run.planned'), evt(3, 'run.started')] },
+      body: {
+        runId: 'run-1',
+        events: [evt(1, 'run.created'), evt(2, 'run.planned'), evt(3, 'run.started')],
+      },
     }));
     const client = createApiClient({ baseUrl: 'http://x', fetchImpl });
 
@@ -105,7 +110,10 @@ describe('createApiClient', () => {
   });
 
   it('cancelRun and review send expectedVersion for the stale-command guard', async () => {
-    const { fetchImpl, calls } = mockFetch(() => ({ status: 200, body: { runId: 'run-1', run: {} } }));
+    const { fetchImpl, calls } = mockFetch(() => ({
+      status: 200,
+      body: { runId: 'run-1', run: {} },
+    }));
     const client = createApiClient({ baseUrl: 'http://x', operatorToken: 'tok', fetchImpl });
 
     await client.cancelRun('run-1', { expectedVersion: 5, reason: 'stop' });

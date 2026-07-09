@@ -50,11 +50,41 @@ export function DeployPanel({ metrics }: { readonly metrics: OperatorMetrics }) 
   const phaseSeverity = PHASE_SEVERITY[deploy.status];
 
   const allRows: FailureRow[] = [
-    { key: 'setup', testid: 'deploy-setup-required', label: 'Setup required', count: deploy.setupRequired, severity: 'warn' },
-    { key: 'config', testid: 'deploy-config-invalid', label: 'Config invalid', count: deploy.configInvalid, severity: 'error' },
-    { key: 'provider', testid: 'deploy-provider-failed', label: 'Provider failed', count: deploy.providerFailed, severity: 'error' },
-    { key: 'migration', testid: 'deploy-migration-failed', label: 'Migration failed', count: deploy.migrationFailed, severity: 'error' },
-    { key: 'health', testid: 'deploy-health-failed', label: 'Hosted health failed', count: deploy.healthFailed, severity: 'error' },
+    {
+      key: 'setup',
+      testid: 'deploy-setup-required',
+      label: 'Setup required',
+      count: deploy.setupRequired,
+      severity: 'warn',
+    },
+    {
+      key: 'config',
+      testid: 'deploy-config-invalid',
+      label: 'Config invalid',
+      count: deploy.configInvalid,
+      severity: 'error',
+    },
+    {
+      key: 'provider',
+      testid: 'deploy-provider-failed',
+      label: 'Provider failed',
+      count: deploy.providerFailed,
+      severity: 'error',
+    },
+    {
+      key: 'migration',
+      testid: 'deploy-migration-failed',
+      label: 'Migration failed',
+      count: deploy.migrationFailed,
+      severity: 'error',
+    },
+    {
+      key: 'health',
+      testid: 'deploy-health-failed',
+      label: 'Hosted health failed',
+      count: deploy.healthFailed,
+      severity: 'error',
+    },
   ];
   const failures = allRows.filter((row) => row.count > 0);
 

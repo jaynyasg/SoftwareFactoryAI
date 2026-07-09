@@ -19,18 +19,18 @@ decorative workflow canvas would undermine that trust.
 
 ## Ash operating model → factory mapping
 
-| Ash element | Factory surface | Backing events (U2 taxonomy) |
-| --- | --- | --- |
-| Supervisor — claims tickets, spawns workers, enforces budgets | `SupervisorPanel` | `supervisor.decision`, `run.planned`, `ticket.created` |
-| Worker agents (N tickets in parallel) | `WorkerBoard`, `TicketCard` | `worker.started`, `worker.progress`, `ticket.state_changed` |
-| Skill library (PM / Frontend / Backend / QA) | Genome modules + adapter/skill selection in `RunControl` | `genome.module_selected`, `adapter.selected` |
-| QA agent verify vs criteria, fail → retry | Gate runner + retry loop | `gate.started`, `gate.passed`, `gate.failed`, `worker.retry` |
-| CI gate (lint · tests · build · security) | `DeployStatus` precondition + gates in trace | `gate.*`, `security.block` |
-| Risk-tiered PR review (low auto-merge / medium 1 / high 2) | `ReviewStudio`, `DecisionCard` | `review.requested`, `review.decided`, `risk.tier_assigned` |
-| Human reviewers | `DecisionCard` (command-guarded) | `review.decided`, `command.rejected` |
-| Work queues — Backlog / In-Progress / Dead-letter (stuck → human) | Queue views (operator U11) + run/ticket projections | `ticket.queued`, `ticket.dead_lettered` |
-| Feedback memory → skill updates | Deferred to `TODOS.md` (P2 human-approved genome updates) | `genome.update_proposed` (future) |
-| Rebase vs main / Main | Package + deploy (U9) | `package.created`, `deploy.*` |
+| Ash element                                                       | Factory surface                                           | Backing events (U2 taxonomy)                                 |
+| ----------------------------------------------------------------- | --------------------------------------------------------- | ------------------------------------------------------------ |
+| Supervisor — claims tickets, spawns workers, enforces budgets     | `SupervisorPanel`                                         | `supervisor.decision`, `run.planned`, `ticket.created`       |
+| Worker agents (N tickets in parallel)                             | `WorkerBoard`, `TicketCard`                               | `worker.started`, `worker.progress`, `ticket.state_changed`  |
+| Skill library (PM / Frontend / Backend / QA)                      | Genome modules + adapter/skill selection in `RunControl`  | `genome.module_selected`, `adapter.selected`                 |
+| QA agent verify vs criteria, fail → retry                         | Gate runner + retry loop                                  | `gate.started`, `gate.passed`, `gate.failed`, `worker.retry` |
+| CI gate (lint · tests · build · security)                         | `DeployStatus` precondition + gates in trace              | `gate.*`, `security.block`                                   |
+| Risk-tiered PR review (low auto-merge / medium 1 / high 2)        | `ReviewStudio`, `DecisionCard`                            | `review.requested`, `review.decided`, `risk.tier_assigned`   |
+| Human reviewers                                                   | `DecisionCard` (command-guarded)                          | `review.decided`, `command.rejected`                         |
+| Work queues — Backlog / In-Progress / Dead-letter (stuck → human) | Queue views (operator U11) + run/ticket projections       | `ticket.queued`, `ticket.dead_lettered`                      |
+| Feedback memory → skill updates                                   | Deferred to `TODOS.md` (P2 human-approved genome updates) | `genome.update_proposed` (future)                            |
+| Rebase vs main / Main                                             | Package + deploy (U9)                                     | `package.created`, `deploy.*`                                |
 
 ## Signature visual moves
 

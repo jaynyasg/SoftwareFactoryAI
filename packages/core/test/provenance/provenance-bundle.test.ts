@@ -94,7 +94,13 @@ async function buildEventLog(): Promise<{ store: EventStore; events: FactoryEven
 
 const DEPENDENCY_DECISIONS: ProvenanceDependencyDecision[] = [
   { name: 'next', version: '15.1.4', status: 'allowed', riskTier: 'low', reason: 'allow-listed' },
-  { name: 'prisma', version: '6.1.0', status: 'needs_review', riskTier: 'medium', reason: 'unknown' },
+  {
+    name: 'prisma',
+    version: '6.1.0',
+    status: 'needs_review',
+    riskTier: 'medium',
+    reason: 'unknown',
+  },
 ];
 
 async function fullInput(): Promise<AssembleProvenanceInput> {
@@ -111,9 +117,19 @@ async function fullInput(): Promise<AssembleProvenanceInput> {
   return {
     runId: 'run-prov',
     artifactId: 'app',
-    source: { prompt: 'Build an AI services marketplace', prdRef: 'PRD.docx', intent: 'ai-services-marketplace' },
+    source: {
+      prompt: 'Build an AI services marketplace',
+      prdRef: 'PRD.docx',
+      intent: 'ai-services-marketplace',
+    },
     ticketPlan: [
-      { id: 'T1', title: 'Scaffold app', moduleId: 'scaffold-app', riskTier: 'low', state: 'completed' },
+      {
+        id: 'T1',
+        title: 'Scaffold app',
+        moduleId: 'scaffold-app',
+        riskTier: 'low',
+        state: 'completed',
+      },
       { id: 'T2', title: 'Data model', moduleId: 'data-model', dependsOn: ['T1'], riskTier: 'low' },
     ],
     events,
@@ -151,7 +167,13 @@ describe('assembleProvenanceBundle', () => {
     expect(bundle.adapters).toEqual([{ adapterId: 'codex-cli', family: 'codex' }]);
     // gate evidence (derived from gate.passed)
     expect(bundle.gateEvidence).toEqual([
-      { gate: 'lint', passed: true, command: 'pnpm lint', outputExcerpt: 'lint clean', summary: 'lint passed' },
+      {
+        gate: 'lint',
+        passed: true,
+        command: 'pnpm lint',
+        outputExcerpt: 'lint clean',
+        summary: 'lint passed',
+      },
     ]);
     // generated files
     expect(bundle.generatedFiles.map((f) => f.path)).toContain('prisma/schema.prisma');

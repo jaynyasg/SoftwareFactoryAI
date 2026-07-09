@@ -7,10 +7,7 @@
  * the U8 ArtifactConfidence component renders.
  */
 import { describe, expect, it } from 'vitest';
-import {
-  ARTIFACT_CONFIDENCE_FACTOR_KEYS,
-  computeArtifactConfidence,
-} from '../../src/index';
+import { ARTIFACT_CONFIDENCE_FACTOR_KEYS, computeArtifactConfidence } from '../../src/index';
 import type { ArtifactConfidenceInput } from '../../src/index';
 
 /** A best-case artifact: all gates pass, full provenance, low risk, healthy preview. */

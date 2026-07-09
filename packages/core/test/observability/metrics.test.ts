@@ -64,7 +64,12 @@ async function buildRun(store: EventStore): Promise<void> {
     ev('gate.passed', 'success', { gate: 'unit-test' }, ticketExtras('t1')),
     ev('worker.started', 'info', { adapterId: 'codex-cli' }, ticketExtras('t3')),
     ev('worker.completed', 'success', { summary: 'done' }, ticketExtras('t3')),
-    ev('operator.health_sample', 'info', { metric: 'queue_wait', value: 150, unit: 'ms', status: 'ok' }),
+    ev('operator.health_sample', 'info', {
+      metric: 'queue_wait',
+      value: 150,
+      unit: 'ms',
+      status: 'ok',
+    }),
     ev('deploy.setup_required', 'warn', { action: 'connect github' }),
     ev('deploy.provider_failed', 'error', { reason: 'build failed' }),
     ev('deploy.health_pending', 'info', {}),

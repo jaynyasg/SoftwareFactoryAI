@@ -144,7 +144,8 @@ function parseDeploy(body: string): RenderDeploy {
   }
   const deploy = record as Record<string, unknown>;
   const id = typeof deploy.id === 'string' ? deploy.id : '';
-  const status = typeof deploy.status === 'string' ? (deploy.status as RenderDeployStatus) : 'created';
+  const status =
+    typeof deploy.status === 'string' ? (deploy.status as RenderDeployStatus) : 'created';
   return {
     id,
     status,
@@ -168,7 +169,9 @@ export function createRenderClient(options: RenderClientOptions = {}): RenderCli
 
   const ensureOk = (response: HttpResponse, context: string): void => {
     if (!response.ok) {
-      throw new Error(`Render API ${context} failed (HTTP ${response.status}): ${response.body.slice(0, 200)}`);
+      throw new Error(
+        `Render API ${context} failed (HTTP ${response.status}): ${response.body.slice(0, 200)}`,
+      );
     }
   };
 

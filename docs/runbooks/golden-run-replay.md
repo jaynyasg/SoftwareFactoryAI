@@ -66,7 +66,7 @@ collide:
 import { seedRun } from './seed-run'; // tests/e2e/seed-run.ts
 // reidentify(events, freshRunId) rebinds runId + run-subject ids, keeps ticket ids
 await seedRun(page.request, reidentify(loadGolden(), runId));
-await page.goto(`/runs/${runId}`);          // user run surface
+await page.goto(`/runs/${runId}`); // user run surface
 await page.goto(`/operator?runId=${runId}`); // operator dashboard (scope by run id)
 ```
 

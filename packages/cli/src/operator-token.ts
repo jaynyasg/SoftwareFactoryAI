@@ -62,7 +62,9 @@ export interface LoadOperatorTokenOptions {
  * shared file store is read. Returns `null` when no token exists yet (the caller
  * decides whether that blocks the requested command).
  */
-export async function loadOperatorToken(options: LoadOperatorTokenOptions = {}): Promise<string | null> {
+export async function loadOperatorToken(
+  options: LoadOperatorTokenOptions = {},
+): Promise<string | null> {
   const env = options.env ?? process.env;
   const fromEnv = env.SF_OPERATOR_TOKEN;
   if (fromEnv !== undefined && fromEnv.length > 0) {

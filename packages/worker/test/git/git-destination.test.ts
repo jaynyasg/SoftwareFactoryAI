@@ -72,12 +72,21 @@ describe('pushToDestination', () => {
       },
       push: (args) => {
         calls.push('push');
-        return Promise.resolve({ pushed: true, remoteUrl: args.descriptor.remoteUrl, branch: 'main' });
+        return Promise.resolve({
+          pushed: true,
+          remoteUrl: args.descriptor.remoteUrl,
+          branch: 'main',
+        });
       },
     };
 
     const outcome = await pushToDestination(
-      { runId: 'run-1', github: { owner: 'octo', repo: 'app' }, localPath: '/tmp/app', commit: 'abc' },
+      {
+        runId: 'run-1',
+        github: { owner: 'octo', repo: 'app' },
+        localPath: '/tmp/app',
+        commit: 'abc',
+      },
       client,
     );
     expect(outcome.ok).toBe(true);
@@ -100,7 +109,10 @@ describe('pushToDestination', () => {
         return Promise.resolve({ pushed: false, remoteUrl: '', branch: 'main' });
       },
     };
-    const outcome = await pushToDestination({ runId: 'run-1', localPath: '/tmp/app', commit: 'abc' }, client);
+    const outcome = await pushToDestination(
+      { runId: 'run-1', localPath: '/tmp/app', commit: 'abc' },
+      client,
+    );
     expect(outcome.ok).toBe(false);
     expect(touched).toBe(false);
   });
@@ -110,7 +122,10 @@ describe('createCommandGitRemoteClient', () => {
   it('configures origin and pushes through the command runner', async () => {
     const runner = createFakeRunner({ fallback: { code: 0, stdout: '', stderr: '' } });
     const client = createCommandGitRemoteClient(runner);
-    const resolved = resolveGitDestination({ runId: 'run-1', github: { owner: 'octo', repo: 'app' } });
+    const resolved = resolveGitDestination({
+      runId: 'run-1',
+      github: { owner: 'octo', repo: 'app' },
+    });
     if (!resolved.ok) {
       throw new Error('expected resolved destination');
     }
@@ -132,11 +147,18 @@ describe('createCommandGitRemoteClient', () => {
       fallback: { code: 0, stdout: '', stderr: '' },
     });
     const client = createCommandGitRemoteClient(runner);
-    const resolved = resolveGitDestination({ runId: 'run-1', github: { owner: 'octo', repo: 'app' } });
+    const resolved = resolveGitDestination({
+      runId: 'run-1',
+      github: { owner: 'octo', repo: 'app' },
+    });
     if (!resolved.ok) {
       throw new Error('expected resolved destination');
     }
-    const result = await client.push({ descriptor: resolved.descriptor, localPath: '/tmp/app', commit: 'abc' });
+    const result = await client.push({
+      descriptor: resolved.descriptor,
+      localPath: '/tmp/app',
+      commit: 'abc',
+    });
     expect(result.pushed).toBe(false);
     expect(result.note).toMatch(/auth failed/);
   });

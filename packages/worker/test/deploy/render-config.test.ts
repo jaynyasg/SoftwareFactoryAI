@@ -60,7 +60,9 @@ describe('validateRenderBlueprint', () => {
   });
 
   it('catches a missing migration step in the build command', () => {
-    const result = validateRenderBlueprint(withWebPatch({ buildCommand: 'pnpm install && pnpm build' }));
+    const result = validateRenderBlueprint(
+      withWebPatch({ buildCommand: 'pnpm install && pnpm build' }),
+    );
     expect(result.valid).toBe(false);
     expect(result.errors.map((e) => e.code)).toContain('missing_migration');
   });
@@ -78,7 +80,9 @@ describe('validateRenderBlueprint', () => {
   });
 
   it('catches a missing DATABASE_URL env var', () => {
-    const result = validateRenderBlueprint(withWebPatch({ envVars: [{ key: 'NODE_ENV', value: 'production' }] }));
+    const result = validateRenderBlueprint(
+      withWebPatch({ envVars: [{ key: 'NODE_ENV', value: 'production' }] }),
+    );
     expect(result.valid).toBe(false);
     expect(result.errors.map((e) => e.code)).toContain('missing_database_url');
   });

@@ -129,8 +129,7 @@ export function resolveGitDestination(
   return {
     ok: false,
     setupRequired: true,
-    action:
-      'Connect a GitHub destination (owner/repo), or permit a factory-owned temporary repo.',
+    action: 'Connect a GitHub destination (owner/repo), or permit a factory-owned temporary repo.',
     reason:
       'No GitHub destination is configured and a factory-owned temporary repo is not permitted.',
   };
@@ -207,7 +206,9 @@ export function createCommandGitRemoteClient(runner: CommandRunner): GitRemoteCl
   ): Promise<void> => {
     const result = await runner.run('git', args, { cwd, signal, timeoutMs });
     if (result.code !== 0) {
-      throw new Error(`git ${args.join(' ')} failed (exit ${result.code}): ${result.stderr.trim()}`);
+      throw new Error(
+        `git ${args.join(' ')} failed (exit ${result.code}): ${result.stderr.trim()}`,
+      );
     }
   };
 
@@ -227,7 +228,11 @@ export function createCommandGitRemoteClient(runner: CommandRunner): GitRemoteCl
       try {
         // Re-point origin idempotently: remove if present, then add.
         await runner.run('git', ['remote', 'remove', 'origin'], { cwd: args.localPath });
-        await git(args.localPath, ['remote', 'add', 'origin', args.descriptor.remoteUrl], args.signal);
+        await git(
+          args.localPath,
+          ['remote', 'add', 'origin', args.descriptor.remoteUrl],
+          args.signal,
+        );
         await git(
           args.localPath,
           ['push', '-u', 'origin', branch],

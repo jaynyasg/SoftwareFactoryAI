@@ -131,7 +131,9 @@ describe('packageRepo', () => {
       .split('\n');
     expect(ledgerLines.length).toBe(events.length);
     expect(JSON.parse(ledgerLines[0]).type).toBe('run.created');
-    expect(await readFile(join(dir, '.factory/tests-summary.md'), 'utf8')).toContain('gates passed');
+    expect(await readFile(join(dir, '.factory/tests-summary.md'), 'utf8')).toContain(
+      'gates passed',
+    );
 
     // Git command sequence: init -> add -> commit -> rev-parse.
     const gitVerbs = runner.calls.filter((c) => c.command === 'git').map((c) => subcommand(c.args));

@@ -16,7 +16,10 @@ export function AdapterPanel({ metrics }: { readonly metrics: OperatorMetrics })
     <section className="panel" aria-label="Adapters">
       <header className="panel__header">
         <h2 className="panel__title">Adapters</h2>
-        <span className={`badge sev-${issues > 0 ? 'error' : 'success'}`} data-testid="adapter-state">
+        <span
+          className={`badge sev-${issues > 0 ? 'error' : 'success'}`}
+          data-testid="adapter-state"
+        >
           <span className="badge__dot" aria-hidden="true" />
           {issues > 0 ? 'unavailable' : 'ready'}
         </span>
@@ -43,7 +46,11 @@ export function AdapterPanel({ metrics }: { readonly metrics: OperatorMetrics })
             </span>
           </div>
           {adapter.throttled ? (
-            <p className="sev-warn" style={{ fontSize: 'var(--fs-2xs)' }} data-testid="capacity-throttled">
+            <p
+              className="sev-warn"
+              style={{ fontSize: 'var(--fs-2xs)' }}
+              data-testid="capacity-throttled"
+            >
               Capacity throttled from {adapter.previousCapacity ?? requestedCap ?? '—'} to{' '}
               {adapter.capacity ?? '—'} by system constraints.
             </p>

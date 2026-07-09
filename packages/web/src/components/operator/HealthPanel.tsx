@@ -5,7 +5,11 @@
  * failure-registry rescue actions. Read-only; every value comes from the
  * operator metrics + projection + run diagnostics (no invented state).
  */
-import type { OperatorMetrics, OperatorProjection, RunDiagnosticsReport } from '@software-factory/core';
+import type {
+  OperatorMetrics,
+  OperatorProjection,
+  RunDiagnosticsReport,
+} from '@software-factory/core';
 import { formatDurationMs } from '../../lib/run-view';
 
 function lagSeverity(events: number): 'success' | 'warn' {
@@ -108,14 +112,20 @@ export function HealthPanel({
           ) : (
             <ul className="stack" style={{ listStyle: 'none', margin: 0, padding: 0, gap: 8 }}>
               {diagnostics.activeFailures.map((failure) => (
-                <li key={`${failure.type}-${failure.sequence}`} className="stack" style={{ gap: 2 }}>
+                <li
+                  key={`${failure.type}-${failure.sequence}`}
+                  className="stack"
+                  style={{ gap: 2 }}
+                >
                   <span className="row">
                     <span className={`badge sev-${failure.severity}`}>
                       <span className="badge__dot" aria-hidden="true" />
                       {failure.type}
                     </span>
                     {failure.blocking ? <span className="badge sev-error">blocking</span> : null}
-                    <span className="badge">{failure.retryable ? 'retryable' : 'not retryable'}</span>
+                    <span className="badge">
+                      {failure.retryable ? 'retryable' : 'not retryable'}
+                    </span>
                   </span>
                   <span className="muted" style={{ fontSize: 'var(--fs-2xs)' }}>
                     Rescue: {failure.rescueAction}

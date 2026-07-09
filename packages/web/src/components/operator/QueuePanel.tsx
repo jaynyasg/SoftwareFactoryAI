@@ -29,7 +29,11 @@ export function QueuePanel({ metrics }: { readonly metrics: OperatorMetrics }) {
             </span>
           </div>
           {workers.throttled ? (
-            <p className="sev-warn" style={{ fontSize: 'var(--fs-2xs)' }} data-testid="queue-throttled">
+            <p
+              className="sev-warn"
+              style={{ fontSize: 'var(--fs-2xs)' }}
+              data-testid="queue-throttled"
+            >
               Effective capacity {workers.effectiveCap} is below the requested cap{' '}
               {workers.requestedCap ?? '—'}.
             </p>
@@ -56,8 +60,8 @@ export function QueuePanel({ metrics }: { readonly metrics: OperatorMetrics }) {
         {gates.failures > 0 ? (
           <div className="banner banner--error" role="alert" data-testid="gate-failed">
             <span className="banner__body">
-              {gates.failures} gate failure(s); {gates.retries} bounded retry/retries; {gates.passed}{' '}
-              passed.
+              {gates.failures} gate failure(s); {gates.retries} bounded retry/retries;{' '}
+              {gates.passed} passed.
             </span>
           </div>
         ) : (
