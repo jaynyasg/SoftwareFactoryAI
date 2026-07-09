@@ -425,6 +425,40 @@ describe('U7: review approval resumes the blocked stage', () => {
     expect(final.executionState).toBe('completed');
   });
 
+  it('a retried approval never resumes the stage twice (duplicate decide is inert)', async () => {
+    const unitTest = controllableGate('unit-test', false);
+    const { app, store, daemon } = makeHarness(
+      immediateAdapter(),
+      fakeGateStages({ postRun: [unitTest.gate] }),
+    );
+    const runId = await createPlannedRun(app);
+    await startRun(app, runId);
+    await daemon.tick(); // blocked on gates (pending gates-stage review)
+
+    unitTest.setPassing(true);
+    const body = { decision: 'approved', rationale: 'safe to re-run' };
+
+    // First approval closes the pending review and re-queues the gate re-run.
+    const first = await app.handle(req('POST', `/api/runs/${runId}/review`, authedHeaders(), body));
+    expect(first.status).toBe(200);
+    expect((record(first).resumed as { queued: boolean }).queued).toBe(true);
+
+    // A retried approval (no pending review remains) is INERT: it resumes
+    // NOTHING and never enqueues a second gate-rerun job, so the FIFO pairing's
+    // duplicate can never double-drive the pipeline.
+    const second = await app.handle(
+      req('POST', `/api/runs/${runId}/review`, authedHeaders(), body),
+    );
+    expect(second.status).toBe(200);
+    expect(record(second).resumed).toBeNull();
+
+    const events = await store.readRun(runId);
+    const rerunEnqueues = events.filter(
+      (e) => e.type === 'queue.enqueued' && e.payload.jobId === gateRerunJobId(runId),
+    );
+    expect(rerunEnqueues).toHaveLength(1);
+  });
+
   it('a refused re-enqueue (budget exhausted) leaves the blocking interventions OPEN', async () => {
     const unitTest = controllableGate('unit-test', false); // never passes
     const { app, store, daemon } = makeHarness(

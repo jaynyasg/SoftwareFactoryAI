@@ -24,6 +24,9 @@ const REQUIRED_OPERATIONS: Readonly<Record<string, readonly [string, string]>> =
   getRun: ['get', '/api/runs/{runId}'],
   getRunEvents: ['get', '/api/runs/{runId}/events'],
   cancelRun: ['post', '/api/runs/{runId}/cancel'],
+  reviewRun: ['post', '/api/runs/{runId}/review'],
+  materializeWorkspace: ['post', '/api/runs/{runId}/workspace'],
+  getWorkspace: ['get', '/api/runs/{runId}/workspace'],
   startRun: ['post', '/api/runs/{runId}/start'],
   pauseRun: ['post', '/api/runs/{runId}/pause'],
   resumeRun: ['post', '/api/runs/{runId}/resume'],
@@ -168,6 +171,36 @@ describe('ChatGPT Action schema (integrations/chatgpt/actions.openai.yaml)', () 
     const request = rec(rec(schemas.ResearchTriggerRequest).properties);
     expect(rec(request.budget)).toBeDefined();
     expect(rec(request.force)).toBeDefined();
+  });
+
+  it('review response reflects the stage-resume outcome (resumed)', () => {
+    const schemas = rec(rec(resolved.components).schemas);
+    const review = rec(rec(schemas.ReviewResponse).properties);
+    const resumed = rec(review.resumed);
+    expect(resumed.type).toBe('object');
+    // `resumed` is null when an approval resumed nothing (or on rejection).
+    expect(resumed.nullable).toBe(true);
+    const resumedProps = rec(resumed.properties);
+    expect(rec(resumedProps.stage).enum).toEqual(['gates', 'execution']);
+    expect(rec(resumedProps.queued).type).toBe('boolean');
+    // The decision request derives review authority server-side.
+    const request = rec(rec(schemas.ReviewRequest).properties);
+    expect(rec(request.decision).enum).toEqual(['approved', 'rejected']);
+  });
+
+  it('create-run response carries the optional research/execution blocks for non-plan-only modes', () => {
+    const schemas = rec(rec(resolved.components).schemas);
+    const response = rec(rec(schemas.CreateRunResponse).properties);
+    expect(rec(response.research).type).toBe('object');
+    expect(rec(response.researchInProgress).type).toBe('boolean');
+    expect(rec(response.execution).type).toBe('object');
+  });
+
+  it('research trigger 201 documents that findings are not guaranteed', () => {
+    const paths = rec(resolved.paths);
+    const trigger = rec(rec(rec(paths['/api/runs/{runId}/research'])).post);
+    const created = rec(rec(trigger.responses)['201']);
+    expect(String(created.description)).toMatch(/research\.status/);
   });
 
   it('run outputs contract keeps the hosted URL strict and links the event log', () => {

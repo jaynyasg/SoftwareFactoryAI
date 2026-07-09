@@ -112,6 +112,7 @@ async function resolveCreateInput(
   const input: CreateRunInput = {
     prompt: args.prompt ?? str(base.prompt),
     prdRef: str(base.prdRef) ?? (args.prdPath !== undefined ? args.prdPath : undefined),
+    prdText: str(base.prdText),
     title: args.title ?? str(base.title),
     localFolder: str(base.localFolder),
     githubRepo: str(base.githubRepo),
@@ -130,7 +131,7 @@ async function resolveCreateInput(
   if (input.prompt === undefined && typeof base.prompt === 'string') {
     return { ...input, prompt: base.prompt };
   }
-  if (input.prompt === undefined && input.prdRef === undefined) {
+  if (input.prompt === undefined && input.prdRef === undefined && input.prdText === undefined) {
     throw new Error('Provide a prompt, a --prd <path>, or a --request/--request-file JSON body.');
   }
   return input;

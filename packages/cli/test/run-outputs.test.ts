@@ -157,6 +157,61 @@ describe('buildRunOutputs (U8 package/provenance/deploy)', () => {
     });
   });
 
+  it('folds repair-loop counters per ticket (U7) — the same evidence the UI shows', () => {
+    const outputs = buildRunOutputs(
+      RUN_ID,
+      buildEvents([
+        ...BASE,
+        {
+          type: 'repair.started',
+          ticketId: 'scaffold',
+          severity: 'warn',
+          payload: { attempt: 1, gate: 'unit-test', reason: 'tests red' },
+        },
+        {
+          type: 'repair.failed',
+          ticketId: 'scaffold',
+          severity: 'error',
+          payload: { attempt: 2, gate: 'unit-test', reason: 'budget exhausted' },
+        },
+        {
+          type: 'repair.started',
+          ticketId: 'api',
+          severity: 'warn',
+          payload: { attempt: 1, gate: 'lint', reason: 'lint red' },
+        },
+        {
+          type: 'repair.succeeded',
+          ticketId: 'api',
+          severity: 'success',
+          payload: { attempt: 1, gate: 'lint' },
+        },
+      ]),
+      EVENTS_URL,
+    );
+
+    const byTicket = Object.fromEntries(outputs.repairs.map((repair) => [repair.ticketId, repair]));
+    expect(byTicket.scaffold).toEqual({
+      ticketId: 'scaffold',
+      attempts: 2,
+      status: 'exhausted',
+      gate: 'unit-test',
+      reason: 'budget exhausted',
+    });
+    expect(byTicket.api).toEqual({
+      ticketId: 'api',
+      attempts: 1,
+      status: 'succeeded',
+      gate: 'lint',
+      reason: undefined,
+    });
+  });
+
+  it('reports no repair loop for a run that never entered repair', () => {
+    const outputs = buildRunOutputs(RUN_ID, buildEvents(BASE), EVENTS_URL);
+    expect(outputs.repairs).toEqual([]);
+  });
+
   it('reports an idle deploy for planning-only V1 ledgers (replay compatible)', () => {
     const outputs = buildRunOutputs(
       RUN_ID,

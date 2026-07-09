@@ -10,7 +10,10 @@
  * release can build via `pnpm dlx tsup` without `tsup` resolvable from this dir.
  */
 export default {
-  entry: ['src/index.ts'],
+  // Both the CLI entry AND the `./run-outputs` subpath export are built, so a
+  // dist-based consumer (the web package imports `buildRunOutputs` from
+  // `@software-factory/cli/run-outputs`) resolves `dist/run-outputs.js`.
+  entry: ['src/index.ts', 'src/run-outputs.ts'],
   format: ['esm'] as const,
   platform: 'node' as const,
   target: 'node22',

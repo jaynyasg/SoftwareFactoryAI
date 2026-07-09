@@ -172,15 +172,54 @@ Supported MCP methods:
 | `tools/call`                | Executes one tool.                        |
 | `ping`                      | Health-style empty response.              |
 
-Supported tools:
+Supported tools. Every tool is a thin adapter over the SAME guarded HTTP route
+the browser and CLI use — the bridge never reimplements command behavior.
+Mutating tools carry the same token/origin/CSRF/stale-version guard and
+idempotency as the route; run projections are returned as concise summaries
+(ledger summarized to a count) plus detail links, and `get_events` is the
+explicit event-level read.
 
-| Tool                          | Purpose                                                 |
-| ----------------------------- | ------------------------------------------------------- |
-| `software_factory_create_run` | Creates and plans a new run.                            |
-| `software_factory_list_runs`  | Lists projected runs.                                   |
-| `software_factory_get_run`    | Reads one projected run.                                |
-| `software_factory_get_events` | Reads a run ledger, optionally after a sequence cursor. |
-| `software_factory_cancel_run` | Cancels a run with stale-version protection.            |
+Run lifecycle:
+
+| Tool                             | Purpose                                                                         |
+| -------------------------------- | ------------------------------------------------------------------------------- |
+| `software_factory_create_run`    | Creates and plans a new run (any run mode).                                     |
+| `software_factory_list_runs`     | Lists projected runs.                                                           |
+| `software_factory_get_run`       | Reads one projected run.                                                        |
+| `software_factory_get_events`    | Reads a run ledger, optionally after a sequence cursor.                         |
+| `software_factory_cancel_run`    | Cancels a run with stale-version protection.                                    |
+| `software_factory_review_decide` | Records an approve/reject review decision; an approval resumes a blocked stage. |
+
+Research + workspace + contract:
+
+| Tool                                     | Purpose                                                 |
+| ---------------------------------------- | ------------------------------------------------------- |
+| `software_factory_trigger_research`      | Runs one bounded research pass (idempotent).            |
+| `software_factory_get_research`          | Reads the projected research state.                     |
+| `software_factory_materialize_workspace` | Materializes/retries the run workspace (repo checkout). |
+| `software_factory_get_workspace`         | Reads the projected workspace materialization state.    |
+| `software_factory_get_contract`          | Reads the build contract for a run.                     |
+
+Execution controls:
+
+| Tool                             | Purpose                                            |
+| -------------------------------- | -------------------------------------------------- |
+| `software_factory_start_run`     | Preflight + enqueue execution for a planned run.   |
+| `software_factory_pause_run`     | Pause execution (no new worker starts).            |
+| `software_factory_resume_run`    | Resume a paused execution.                         |
+| `software_factory_retry_run`     | Retry failed/blocked/abandoned execution.          |
+| `software_factory_rerun_gates`   | Enqueue a quality-gate re-run job.                 |
+| `software_factory_get_execution` | Reads projected execution state (queue/preflight). |
+| `software_factory_get_preflight` | Reads the latest dry-run preflight rehearsal.      |
+
+Interventions + outputs + setup:
+
+| Tool                                    | Purpose                                                  |
+| --------------------------------------- | -------------------------------------------------------- |
+| `software_factory_list_interventions`   | Lists the operator intervention queue (filterable).      |
+| `software_factory_resolve_intervention` | Resolves one intervention (idempotent).                  |
+| `software_factory_get_outputs`          | Reads the run artifact contract (gates, deploy, hosted). |
+| `software_factory_get_setup`            | Reads cloud/local setup diagnostics (presence only).     |
 
 Authentication accepted by `/mcp`:
 
@@ -199,25 +238,44 @@ The Next route handler forwards `/api/*` traffic into `createApp()`. `createApp`
 has no Next.js dependency, so it is directly unit-testable and can also be used
 in-process by another host.
 
-Read routes:
+Read routes (no command guard, per policy):
 
 ```text
 GET /api/setup
 GET /api/runs
 GET /api/runs/:runId
 GET /api/runs/:runId/events
+GET /api/runs/:runId/research
+GET /api/runs/:runId/workspace
+GET /api/runs/:runId/execution
+GET /api/runs/:runId/outputs
+GET /api/knowledge
+GET /api/interventions
 ```
 
-Mutating routes:
+Mutating routes (all pass through the command guard —
+token/origin/CSRF/stale-version — before appending side-effect events):
 
 ```text
 POST /api/runs
 POST /api/runs/:runId/cancel
 POST /api/runs/:runId/review
+POST /api/runs/:runId/research
+POST /api/runs/:runId/workspace
+POST /api/runs/:runId/start
+POST /api/runs/:runId/pause
+POST /api/runs/:runId/resume
+POST /api/runs/:runId/retry
+POST /api/runs/:runId/gates/rerun
+POST /api/interventions/:interventionId/resolve
 ```
 
-All mutating routes pass through the command guard before appending side-effect
-events.
+Grouped by concern: run lifecycle (`runs`, `cancel`, `review`), research
+(`research`, `knowledge`), workspace materialization (`workspace`), execution
+controls (`start`, `pause`, `resume`, `retry`, `gates/rerun`, `execution`), the
+operator intervention queue (`interventions`, `resolve`), and the run artifact
+contract (`outputs`). The MCP bridge and the ChatGPT Action expose the same
+mutating surface through the same guarded routes.
 
 ## Event Ledger And Projections
 

@@ -56,6 +56,8 @@ function makeFakeClient(): { client: ApiClient; calls: RecordedCall[] } {
     getEvents: notUsed,
     cancelRun: notUsed,
     review: notUsed,
+    materializeWorkspace: notUsed,
+    getWorkspace: notUsed,
     getSetup: notUsed,
     startRun(runId, input) {
       calls.push({ method: 'startRun', runId, input });

@@ -21,7 +21,12 @@ import {
   type EventStore,
   type ExecutionAdapter,
 } from '@software-factory/core';
-import { createApp, type App, type RunResearcher } from '../../src/server/app';
+import {
+  createApp,
+  type App,
+  type RunResearcher,
+  type RunWorkspaceMaterializer,
+} from '../../src/server/app';
 import { createExecutionDaemon } from '../../src/server/execution/daemon';
 import { handleMcpRequest } from '../../src/server/mcp';
 import { resolveRuntimeConfig } from '../../src/server/runtime';
@@ -41,6 +46,9 @@ const EXPECTED_TOOLS = [
   'software_factory_get_run',
   'software_factory_get_events',
   'software_factory_cancel_run',
+  'software_factory_review_decide',
+  'software_factory_materialize_workspace',
+  'software_factory_get_workspace',
   'software_factory_start_run',
   'software_factory_pause_run',
   'software_factory_resume_run',
@@ -119,9 +127,81 @@ interface McpTestContext {
   readonly session: LocalSession;
 }
 
+/**
+ * A deterministic stub materializer: binds a fake repo checkout for any run with
+ * a `githubRepo`, otherwise records the source as unavailable. Exercises the MCP
+ * workspace tools without real git/network.
+ */
+function stubMaterializer(): RunWorkspaceMaterializer {
+  return async (store, runId) => {
+    const created = (await store.readRun(runId)).find((event) => event.type === 'run.created');
+    const githubRepo =
+      created !== undefined && created.type === 'run.created'
+        ? created.payload.githubRepo
+        : undefined;
+    const base = {
+      runId,
+      actor: { kind: 'system' as const, id: 'stub-materializer' },
+      subject: { kind: 'workspace', id: runId },
+    };
+    if (githubRepo === undefined) {
+      await store.append({
+        ...base,
+        type: 'workspace.unavailable',
+        severity: 'warn',
+        payload: {
+          source: 'none',
+          reason: 'No source input to materialize.',
+          requiredAction: 'Provide a GitHub repository.',
+        },
+      });
+      return {
+        ok: false,
+        outcome: 'unavailable',
+        source: 'none',
+        reason: 'No source input to materialize.',
+        requiredAction: 'Provide a GitHub repository.',
+        securityBlocked: false,
+      };
+    }
+    const checkoutPath = `/tmp/checkouts/${runId}`;
+    await store.append({
+      ...base,
+      type: 'workspace.checkout_started',
+      severity: 'info',
+      payload: { repo: githubRepo, requestedBranch: 'main', checkoutPath, attempt: 1 },
+    });
+    await store.append({
+      ...base,
+      type: 'workspace.checkout_completed',
+      severity: 'success',
+      payload: {
+        repo: githubRepo,
+        branch: 'main',
+        commit: 'stubcommit123',
+        checkoutPath,
+        dirtyStatePolicy: 'clean_checkout',
+      },
+    });
+    return {
+      ok: true,
+      converged: false,
+      workspace: {
+        kind: 'repo_checkout',
+        repo: githubRepo,
+        branch: 'main',
+        commit: 'stubcommit123',
+        checkoutPath,
+        dirtyStatePolicy: 'clean_checkout',
+      },
+    };
+  };
+}
+
 function makeMcp(
   options: {
     readonly researcher?: RunResearcher | null;
+    readonly materializer?: RunWorkspaceMaterializer | null;
     readonly runtime?: RuntimeConfig;
   } = {},
 ): McpTestContext {
@@ -144,6 +224,7 @@ function makeMcp(
     config: { allowedOrigins: [], csrfToken: CSRF, runtime: options.runtime },
     execution: daemon,
     researcher: options.researcher ?? null,
+    materializer: options.materializer ?? null,
     // Deterministic ready catalog: these tests exercise the MCP contract, not
     // real CLI setup probing (covered by execution-worker tests).
     adapterCatalog: createAdapterCatalog([readyFakeAdapter()]),
@@ -395,6 +476,121 @@ describe('MCP repeated commands return existing state', () => {
     });
     expect(again.isError).toBe(false);
     expect(again.body.alreadyResolved).toBe(true);
+  });
+});
+
+/* ----------------------------------------------------------------------------
+ * Review + workspace parity tools (connector parity): every lifecycle action in
+ * the UI/CLI is reachable over MCP through the SAME guarded route.
+ * ------------------------------------------------------------------------- */
+
+describe('MCP review decide tool', () => {
+  it('records a review decision through the guarded route (resumes nothing when idle)', async () => {
+    const ctx = makeMcp();
+    const runId = await createRunViaTool(ctx);
+
+    const res = await callTool(ctx, 'software_factory_review_decide', {
+      runId,
+      decision: 'approved',
+      rationale: 'looks good',
+    });
+    expect(res.isError).toBe(false);
+    expect(res.body.runId).toBe(runId);
+    expect(res.body.decision).toBe('approved');
+    // A planned run with no pending stage review resumes nothing.
+    expect(res.body.resumed).toBeNull();
+    expect((await ctx.store.readRun(runId)).map((event) => event.type)).toContain('review.decided');
+  });
+
+  it('rejects a stale review decision and appends no review.decided', async () => {
+    const ctx = makeMcp();
+    const runId = await createRunViaTool(ctx);
+
+    const res = await callTool(ctx, 'software_factory_review_decide', {
+      runId,
+      decision: 'approved',
+      expectedVersion: 1,
+    });
+    expect(res.isError).toBe(true);
+    expect(res.body.error).toBe('stale_subject_version');
+
+    const seen = (await ctx.store.readRun(runId)).map((event) => event.type);
+    expect(seen).toContain('security.command_rejected');
+    expect(seen).not.toContain('review.decided');
+  });
+
+  it('dedups a concurrent double-submit at the same run version (idempotency guard)', async () => {
+    const ctx = makeMcp();
+    const runId = await createRunViaTool(ctx);
+    // Pin the SAME expectedVersion on both calls: a genuine retry/replay of the
+    // identical guarded request. The idempotency key (decision + anchor version)
+    // collapses the second append instead of recording a duplicate decision.
+    const run = record((await callTool(ctx, 'software_factory_get_run', { runId })).body.run);
+    const expectedVersion = run.lastSequence as number;
+
+    const first = await callTool(ctx, 'software_factory_review_decide', {
+      runId,
+      decision: 'approved',
+      expectedVersion,
+    });
+    expect(first.isError).toBe(false);
+    // The replayed request carries the ORIGINAL (now-stale) version. The guard
+    // rejects it as stale — but even absent the guard, the idempotency key would
+    // dedup it; either way NO second review.decided is recorded.
+    const second = await callTool(ctx, 'software_factory_review_decide', {
+      runId,
+      decision: 'approved',
+      expectedVersion,
+    });
+    expect(second.body.error).toBe('stale_subject_version');
+
+    const decided = (await ctx.store.readRun(runId)).filter(
+      (event) => event.type === 'review.decided',
+    );
+    expect(decided).toHaveLength(1);
+  });
+});
+
+describe('MCP workspace tools', () => {
+  it('materializes a github-repo workspace and reads it back', async () => {
+    const ctx = makeMcp({ materializer: stubMaterializer() });
+    const runId = await createRunViaTool(ctx, { githubRepo: 'octo/app' });
+
+    const materialized = await callTool(ctx, 'software_factory_materialize_workspace', { runId });
+    expect(materialized.isError).toBe(false);
+    expect(record(materialized.body.workspace).status).toBe('ready');
+
+    const status = await callTool(ctx, 'software_factory_get_workspace', { runId });
+    expect(status.isError).toBe(false);
+    expect(record(status.body.workspace).status).toBe('ready');
+
+    expect((await ctx.store.readRun(runId)).map((event) => event.type)).toContain(
+      'workspace.checkout_completed',
+    );
+  });
+
+  it('rejects a stale materialize command and appends no workspace events', async () => {
+    const ctx = makeMcp({ materializer: stubMaterializer() });
+    const runId = await createRunViaTool(ctx, { githubRepo: 'octo/app' });
+
+    const res = await callTool(ctx, 'software_factory_materialize_workspace', {
+      runId,
+      expectedVersion: 1,
+    });
+    expect(res.isError).toBe(true);
+    expect(res.body.error).toBe('stale_subject_version');
+
+    const seen = (await ctx.store.readRun(runId)).map((event) => event.type);
+    expect(seen).toContain('security.command_rejected');
+    expect(seen.some((type) => type.startsWith('workspace.'))).toBe(false);
+  });
+
+  it('returns 503 when workspace materialization is disabled on the instance', async () => {
+    const ctx = makeMcp();
+    const runId = await createRunViaTool(ctx, { githubRepo: 'octo/app' });
+    const res = await callTool(ctx, 'software_factory_materialize_workspace', { runId });
+    expect(res.isError).toBe(true);
+    expect(res.body.error).toBe('workspace_disabled');
   });
 });
 

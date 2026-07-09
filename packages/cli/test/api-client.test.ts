@@ -322,6 +322,7 @@ describe('intervention extraction', () => {
     reason: 'needs credentials',
     requiredAction: 'add the render credentials',
     status: 'open',
+    sequence: 7,
   };
 
   it('listInterventions builds the query string and validates item shapes', async () => {
@@ -346,6 +347,8 @@ describe('intervention extraction', () => {
     );
     // Malformed rows are dropped instead of surfacing undefined fields.
     expect(result.interventions).toEqual([GOOD_ITEM]);
+    // The ledger `sequence` (FIFO/ordering signal shown in the UI) is preserved.
+    expect(result.interventions[0].sequence).toBe(7);
     expect(result.openCount).toBe(1);
   });
 

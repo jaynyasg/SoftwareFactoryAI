@@ -51,6 +51,21 @@ export interface ArtifactOutput {
   readonly confidence?: number;
 }
 
+/**
+ * Ledger-derived repair-loop state for one ticket (U7). Mirrors the counters
+ * ReviewStudio shows, so remote/CLI callers see the same repair evidence the UI
+ * does — a bounded gate-repair loop that exhausted its budget is a first-class
+ * signal, not UI-only state.
+ */
+export interface RepairOutput {
+  readonly ticketId: string;
+  /** Repair attempts consumed (max observed `repair.*` attempt for the ticket). */
+  readonly attempts: number;
+  readonly status: 'repairing' | 'succeeded' | 'exhausted';
+  readonly gate?: string;
+  readonly reason?: string;
+}
+
 /** Deploy lifecycle states derivable from `deploy.*` events (U8). */
 export type DeployOutputStatus =
   | 'idle'
@@ -97,6 +112,8 @@ export interface RunOutputs {
   /** Projected deploy state (U8): url only after hosted health passes. */
   readonly deploy: DeployOutput;
   readonly tests: TestsSummary;
+  /** Ledger-derived per-ticket repair-loop counters (U7); empty when none ran. */
+  readonly repairs: readonly RepairOutput[];
   readonly artifacts: readonly ArtifactOutput[];
   /** Absolute URL of the read-only event log. */
   readonly eventsUrl: string;
@@ -112,6 +129,7 @@ interface DerivedLifecycle {
   handoffSummary?: string;
   deploy: DeployOutput;
   gates: GateOutput[];
+  repairs: Map<string, RepairOutput>;
 }
 
 /** Fold preview/deploy/package/gate events that core projections do not cover. */
@@ -119,6 +137,7 @@ function deriveLifecycle(events: readonly FactoryEvent[]): DerivedLifecycle {
   const derived: DerivedLifecycle = {
     gates: [],
     deploy: { status: 'idle', retryable: false },
+    repairs: new Map<string, RepairOutput>(),
   };
   let repoFromArtifact: string | undefined;
 
@@ -196,6 +215,30 @@ function deriveLifecycle(events: readonly FactoryEvent[]): DerivedLifecycle {
           detail: event.payload.reason,
         });
         break;
+      case 'repair.started':
+      case 'repair.succeeded':
+      case 'repair.failed': {
+        if (event.ticketId === undefined) {
+          break;
+        }
+        const prior = derived.repairs.get(event.ticketId);
+        const attempts = Math.max(prior?.attempts ?? 0, event.payload.attempt);
+        const status =
+          event.type === 'repair.started'
+            ? ('repairing' as const)
+            : event.type === 'repair.succeeded'
+              ? ('succeeded' as const)
+              : ('exhausted' as const);
+        derived.repairs.set(event.ticketId, {
+          ticketId: event.ticketId,
+          attempts,
+          status,
+          gate: event.payload.gate,
+          // A successful repair clears the failure reason; started/failed keep it.
+          reason: event.type === 'repair.succeeded' ? undefined : event.payload.reason,
+        });
+        break;
+      }
       default:
         break;
     }
@@ -248,6 +291,7 @@ export function buildRunOutputs(
     handoffSummary: lifecycle.handoffSummary,
     deploy: lifecycle.deploy,
     tests: summarizeGates(lifecycle.gates),
+    repairs: [...lifecycle.repairs.values()],
     artifacts: artifacts.map((artifact) => ({
       artifactId: artifact.artifactId,
       kind: artifact.kind,

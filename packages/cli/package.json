@@ -5,7 +5,10 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./run-outputs": "./src/run-outputs.ts"
+    "./run-outputs": {
+      "import": "./dist/run-outputs.js",
+      "default": "./src/run-outputs.ts"
+    }
   },
   "main": "./src/index.ts",
   "types": "./src/index.ts",

@@ -89,6 +89,12 @@ export function getStore(): EventStore {
  * one daemon owner. `start()` runs the initial reconcile pass (resume safe
  * queued work, abandon stale leases) and the interval loop; SIGTERM/SIGINT
  * stop it gracefully so in-flight work yields and requeues.
+ *
+ * Bootstrap is EAGER at server startup via the Next instrumentation hook
+ * (`src/instrumentation.ts` calls this), so queued/requeued work resumes after
+ * a restart WITHOUT waiting for the first HTTP request — matching the eager
+ * standalone server. `getApp()` still calls this lazily as a fallback (whichever
+ * runs first wins; the singleton makes the second call a no-op).
  */
 /** The process-wide adapter catalog shared by preflight and the executor. */
 function getAdapterCatalog(): AdapterCatalog {

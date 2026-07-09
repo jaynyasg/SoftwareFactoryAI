@@ -208,12 +208,25 @@ async function decideReview(ctx: RouteContext): Promise<ApiResponse> {
   const mode: ReviewMode = current.reviewMode ?? DEFAULT_REVIEW_MODE;
   const resolution = resolveReview(riskTier, mode);
 
+  // FIFO target: the oldest pending review this decision closes (matches
+  // `deriveReviews`). Its sequence is the stable idempotency anchor — a retried
+  // decide against the SAME pending review dedups instead of appending a second
+  // `review.decided` that FIFO-pairing would surface as a spurious standalone
+  // decision. When no review is pending (a bare operator decision) fall back to
+  // the projected version, so an instantaneous double-submit still collapses.
+  const pending = deriveReviews(events).find((item) => item.status === 'pending');
+  const idempotencyAnchor = pending?.sequence ?? current.lastSequence;
+
+  // A retried decide reports the SAME resume outcome as the original: `resumed`
+  // is re-derived from the post-append ledger below, so a deduped append still
+  // reflects the (already-applied) stage resume.
   await ctx.writer.append({
     runId,
     type: 'review.decided',
     actor: { kind: 'operator', id: 'operator' },
     subject: { kind: 'run', id: runId, version: current.lastSequence },
     severity: decision === 'approved' ? 'success' : 'warn',
+    idempotencyKey: `${runId}:review.decided:${decision}:${idempotencyAnchor}`,
     payload: { riskTier, decision, rationale: str(body.rationale) },
   });
 
@@ -221,11 +234,8 @@ async function decideReview(ctx: RouteContext): Promise<ApiResponse> {
   // `deriveReviews`); when that review carries a blocked stage, the approval
   // resumes it. Rejections record the decision and resume nothing.
   let resumed: StageResumeResult | null = null;
-  if (decision === 'approved') {
-    const pendingStage = deriveReviews(events).find((item) => item.status === 'pending')?.stage;
-    if (pendingStage !== undefined) {
-      resumed = await resumeBlockedStage(ctx, runId, pendingStage);
-    }
+  if (decision === 'approved' && pending?.stage !== undefined) {
+    resumed = await resumeBlockedStage(ctx, runId, pending.stage);
   }
 
   const run = projectRun(await ctx.reader.readRun(runId), runId);

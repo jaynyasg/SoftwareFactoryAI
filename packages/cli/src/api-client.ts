@@ -68,6 +68,8 @@ export interface ApiClientOptions {
 export interface CreateRunInput {
   readonly prompt?: string;
   readonly prdRef?: string;
+  /** Inline PRD body text (the route reads `body.prdText`). */
+  readonly prdText?: string;
   readonly title?: string;
   readonly localFolder?: string;
   readonly githubRepo?: string;
@@ -185,6 +187,8 @@ export interface InterventionSummary {
   readonly requiredAction: string;
   readonly status: string;
   readonly resolution?: string;
+  /** Ledger sequence the intervention was raised at (FIFO/ordering signal). */
+  readonly sequence?: number;
 }
 
 export interface ListInterventionsQuery {
@@ -211,6 +215,32 @@ export interface ResolveInterventionResult {
   readonly intervention?: InterventionSummary;
 }
 
+/** Input for triggering (or retrying) workspace materialization (U4). */
+export interface MaterializeWorkspaceInput {
+  /** Requested branch for repository checkouts. */
+  readonly branch?: string;
+  /** Optimistic-concurrency check; rejected with 409 when stale. */
+  readonly expectedVersion?: number;
+}
+
+/**
+ * Workspace materialization result. The `result`/`workspace` shapes are
+ * whole-object passthroughs from the worker projection (kept as records so a
+ * drifting server payload degrades to unknown fields, not lying types).
+ */
+export interface MaterializeWorkspaceResult {
+  readonly runId: string;
+  readonly result?: Record<string, unknown>;
+  readonly workspace?: Record<string, unknown>;
+  readonly run?: RunProjection;
+}
+
+/** Projected workspace state for a run (GET /api/runs/:id/workspace). */
+export interface WorkspaceStatusResult {
+  readonly runId: string;
+  readonly workspace?: Record<string, unknown>;
+}
+
 export interface SetupResult {
   readonly operatorToken: { readonly present: boolean };
   readonly sandbox: { readonly status: string };
@@ -234,6 +264,13 @@ export interface ApiClient {
   getEvents(runId: string, options?: GetEventsOptions): Promise<GetEventsResult>;
   cancelRun(runId: string, input: CancelRunInput): Promise<{ runId: string; run: RunProjection }>;
   review(runId: string, input: ReviewInput): Promise<ReviewResult>;
+  /** Materialize (or retry materializing) the run workspace (U4). */
+  materializeWorkspace(
+    runId: string,
+    input?: MaterializeWorkspaceInput,
+  ): Promise<MaterializeWorkspaceResult>;
+  /** Read the projected workspace state for a run (U4). */
+  getWorkspace(runId: string): Promise<WorkspaceStatusResult>;
   getSetup(): Promise<SetupResult>;
   /** Preflight + enqueue execution for a planned run (U5). */
   startRun(runId: string, input?: ExecutionCommandInput): Promise<ExecutionCommandResult>;
@@ -357,6 +394,7 @@ function toInterventionSummary(value: unknown): InterventionSummary | undefined 
     requiredAction,
     status,
     resolution: optStr(record.resolution),
+    sequence: optNum(record.sequence),
   };
 }
 
@@ -453,6 +491,7 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
       const body = await mutate('/api/runs', {
         prompt: input.prompt,
         prdRef: input.prdRef,
+        prdText: input.prdText,
         title: input.title,
         localFolder: input.localFolder,
         githubRepo: input.githubRepo,
@@ -503,6 +542,25 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
         // Present when an approval resumed a blocked stage (`resumed: null`
         // otherwise) — surfaced so callers can report what the approval did.
         resumed: toReviewResume(body.resumed),
+      };
+    },
+    async materializeWorkspace(runId, input = {}) {
+      const body = await mutate(`/api/runs/${encodeURIComponent(runId)}/workspace`, {
+        branch: input.branch,
+        expectedVersion: input.expectedVersion,
+      });
+      return {
+        runId: String(body.runId ?? runId),
+        result: body.result !== undefined ? asRecord(body.result) : undefined,
+        workspace: body.workspace !== undefined ? asRecord(body.workspace) : undefined,
+        run: body.run !== undefined ? (body.run as RunProjection) : undefined,
+      };
+    },
+    async getWorkspace(runId) {
+      const body = await get(`/api/runs/${encodeURIComponent(runId)}/workspace`);
+      return {
+        runId: String(body.runId ?? runId),
+        workspace: body.workspace !== undefined ? asRecord(body.workspace) : undefined,
       };
     },
     async getSetup() {

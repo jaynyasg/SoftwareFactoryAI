@@ -114,6 +114,12 @@ function makeFakeBackend(opts: { failCreateWith?: ApiError } = {}): FakeBackend 
     review() {
       return Promise.reject(new Error('not used'));
     },
+    materializeWorkspace() {
+      return Promise.reject(new Error('not used'));
+    },
+    getWorkspace() {
+      return Promise.reject(new Error('not used'));
+    },
     startRun() {
       return Promise.reject(new Error('not used'));
     },
@@ -215,6 +221,39 @@ describe('run command', () => {
     );
     expect(be.createCalls[0].prompt).toBe('JSON marketplace');
     expect(be.createCalls[0].reviewMode).toBe('autonomous');
+  });
+
+  it('forwards inline PRD text (prdText) from a JSON request instead of dropping it', async () => {
+    const be = makeFakeBackend();
+    const { io } = makeIo();
+    await runCommand(
+      {
+        requestJson: JSON.stringify({
+          prompt: 'Build it',
+          prdText: '# PRD\nInline PRD body content.',
+        }),
+        follow: false,
+        json: true,
+      },
+      { client: be.client, io },
+    );
+    expect(be.createCalls[0].prdText).toBe('# PRD\nInline PRD body content.');
+  });
+
+  it('accepts a prdText-only JSON request (no prompt/prdRef)', async () => {
+    const be = makeFakeBackend();
+    const { io } = makeIo();
+    const outputs = await runCommand(
+      {
+        requestJson: JSON.stringify({ prdText: 'Inline PRD only.' }),
+        follow: false,
+        json: true,
+      },
+      { client: be.client, io },
+    );
+    expect(be.createCalls[0].prdText).toBe('Inline PRD only.');
+    expect(be.createCalls[0].prompt).toBeUndefined();
+    expect(outputs.runId).toBe('run-1');
   });
 
   it('forwards --caller-family and records it on the run for nested-agent metadata', async () => {

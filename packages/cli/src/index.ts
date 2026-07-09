@@ -47,6 +47,8 @@ import {
   retryRunCommand,
   startRunCommand,
 } from './commands/execution';
+import { isReviewDecision, isRiskTier, reviewCommand } from './commands/review';
+import { materializeWorkspaceCommand, workspaceStatusCommand } from './commands/workspace';
 
 /** Stable package identifier for the factory CLI. */
 export const CLI_PACKAGE_NAME = '@software-factory/cli' as const;
@@ -218,6 +220,14 @@ enqueue/mutate state and print projected results):
   software-factory rerun-gates  <runId> [--expected-version <n>] [--json]
   software-factory interventions [--run <id>] [--kind <k>] [--stage <s>] [--open] [--json]
   software-factory resolve      <interventionId> --resolution <r> [--note <n>] [--json]
+
+Review (unblock a human-review run):
+  software-factory review       <runId> --decision approved|rejected [--rationale <r>]
+                                [--risk-tier low|medium|high] [--expected-version <n>] [--json]
+
+Workspace (U4 — materialize a run's source before starting execution):
+  software-factory materialize-workspace <runId> [--branch <b>] [--expected-version <n>] [--json]
+  software-factory workspace-status       <runId> [--json]
 
 Environment:
   SF_BASE_URL         backend base URL (default ${DEFAULT_BASE_URL})
@@ -417,6 +427,64 @@ export async function runCli(argv: readonly string[], deps: RunCliDeps = {}): Pr
         );
         return 0;
       }
+      case 'review': {
+        const runId = positionals[0];
+        if (runId === undefined) {
+          io.err('review requires a <runId>.');
+          return 2;
+        }
+        const decision = flagStr(flags, 'decision');
+        if (!isReviewDecision(decision)) {
+          io.err('review requires --decision approved|rejected.');
+          return 2;
+        }
+        const riskTierFlag = flagStr(flags, 'risk-tier');
+        if (riskTierFlag !== undefined && !isRiskTier(riskTierFlag)) {
+          io.err(`Invalid --risk-tier "${riskTierFlag}". Expected one of: low, medium, high.`);
+          return 2;
+        }
+        const client = await buildClient();
+        await reviewCommand(
+          {
+            runId,
+            decision,
+            riskTier: isRiskTier(riskTierFlag) ? riskTierFlag : undefined,
+            rationale: flagStr(flags, 'rationale'),
+            expectedVersion: flagNum(flags, 'expected-version'),
+            json,
+          },
+          { client, io },
+        );
+        return 0;
+      }
+      case 'materialize-workspace': {
+        const runId = positionals[0];
+        if (runId === undefined) {
+          io.err('materialize-workspace requires a <runId>.');
+          return 2;
+        }
+        const client = await buildClient();
+        await materializeWorkspaceCommand(
+          {
+            runId,
+            branch: flagStr(flags, 'branch'),
+            expectedVersion: flagNum(flags, 'expected-version'),
+            json,
+          },
+          { client, io },
+        );
+        return 0;
+      }
+      case 'workspace-status': {
+        const runId = positionals[0];
+        if (runId === undefined) {
+          io.err('workspace-status requires a <runId>.');
+          return 2;
+        }
+        const client = await buildClient();
+        await workspaceStatusCommand({ runId, json }, { client, io });
+        return 0;
+      }
       default: {
         io.err(`Unknown command: ${command}\n`);
         io.out(HELP);
@@ -473,3 +541,5 @@ export {
   interventionsCommand,
   resolveInterventionCommand,
 } from './commands/execution';
+export { reviewCommand, isReviewDecision, isRiskTier } from './commands/review';
+export { materializeWorkspaceCommand, workspaceStatusCommand } from './commands/workspace';

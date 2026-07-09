@@ -192,6 +192,48 @@ const TOOLS: readonly McpTool[] = [
     },
   },
   {
+    name: 'software_factory_review_decide',
+    description:
+      'Record a review decision for a run (guarded, stale-version protected). An APPROVED decision that closes a pending stage review unblocks the run — resolving approval-resolvable interventions and re-enqueuing the blocked stage; a REJECTED decision records the outcome and resumes nothing. The review authority (mode + risk tier) is derived SERVER-side; riskTier here is only a payload fallback when the run has no planned ticket tier.',
+    inputSchema: {
+      type: 'object',
+      required: ['runId', 'decision'],
+      properties: {
+        runId: { type: 'string' },
+        decision: { type: 'string', enum: ['approved', 'rejected'] },
+        riskTier: { type: 'string', enum: ['low', 'medium', 'high'] },
+        rationale: { type: 'string' },
+        expectedVersion: { type: 'integer', minimum: 0 },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'software_factory_materialize_workspace',
+    description:
+      'Materialize (or retry materializing) the run workspace before starting execution (guarded, stale-version protected). A run created with a githubRepo needs its source checked out before a start can preflight; retries converge — an already-ready workspace is reused and new checkout attempts increment an explicit attempt counter.',
+    inputSchema: {
+      type: 'object',
+      required: ['runId'],
+      properties: {
+        runId: { type: 'string' },
+        branch: { type: 'string' },
+        expectedVersion: { type: 'integer', minimum: 0 },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'software_factory_get_workspace',
+    description: 'Read the projected workspace materialization state for a run.',
+    inputSchema: {
+      type: 'object',
+      required: ['runId'],
+      properties: { runId: { type: 'string' } },
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'software_factory_list_interventions',
     description:
       'List the operator intervention queue across runs, filterable by run, kind, severity, blocking stage, and open-only.',
@@ -385,6 +427,7 @@ function runLinks(runId: string): Record<string, string> {
     events: `/api/runs/${id}/events`,
     execution: `/api/runs/${id}/execution`,
     research: `/api/runs/${id}/research`,
+    workspace: `/api/runs/${id}/workspace`,
     outputs: `/api/runs/${id}/outputs`,
   };
 }
@@ -463,6 +506,7 @@ const RUN_READ_SUBPATH: Readonly<Record<string, string | undefined>> = {
   software_factory_get_execution: 'execution',
   software_factory_get_research: 'research',
   software_factory_get_outputs: 'outputs',
+  software_factory_get_workspace: 'workspace',
 };
 
 async function callFactoryTool(
@@ -487,7 +531,8 @@ async function callFactoryTool(
       case 'software_factory_get_run':
       case 'software_factory_get_execution':
       case 'software_factory_get_research':
-      case 'software_factory_get_outputs': {
+      case 'software_factory_get_outputs':
+      case 'software_factory_get_workspace': {
         const runId = str(args.runId);
         if (runId === undefined) {
           return missingRunId();
@@ -527,6 +572,37 @@ async function callFactoryTool(
           internalRequest('POST', runPath(runId, 'cancel'), session, {
             expectedVersion: num(args.expectedVersion),
             reason: str(args.reason),
+          }),
+        );
+        break;
+      }
+      case 'software_factory_review_decide': {
+        const runId = str(args.runId);
+        if (runId === undefined) {
+          return missingRunId();
+        }
+        // Thin adapter over the guarded review route: the route derives the
+        // review authority (mode + highest ticket risk) server-side and reads
+        // exactly these body fields, so no authority is trusted from the client.
+        response = await deps.app.handle(
+          internalRequest('POST', runPath(runId, 'review'), session, {
+            decision: str(args.decision),
+            riskTier: str(args.riskTier),
+            rationale: str(args.rationale),
+            expectedVersion: num(args.expectedVersion),
+          }),
+        );
+        break;
+      }
+      case 'software_factory_materialize_workspace': {
+        const runId = str(args.runId);
+        if (runId === undefined) {
+          return missingRunId();
+        }
+        response = await deps.app.handle(
+          internalRequest('POST', runPath(runId, 'workspace'), session, {
+            branch: str(args.branch),
+            expectedVersion: num(args.expectedVersion),
           }),
         );
         break;
