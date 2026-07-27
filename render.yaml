@@ -23,6 +23,11 @@ services:
         generateValue: true
       - key: SF_PUBLIC_BASE_URL
         sync: false
+      # Execution boots HELD by default: after every deploy/restart an operator
+      # must open the Factory Floor and click "Resume execution" before queued
+      # work runs. Uncomment to opt into unattended drain-on-start instead.
+      # - key: SF_EXEC_AUTOSTART
+      #   value: "1"
     disk:
       name: software-factory-ledger
       mountPath: /var/data

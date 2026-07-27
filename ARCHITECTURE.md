@@ -251,6 +251,7 @@ GET /api/runs/:runId/execution
 GET /api/runs/:runId/outputs
 GET /api/knowledge
 GET /api/interventions
+GET /api/execution
 ```
 
 Mutating routes (all pass through the command guard —
@@ -258,6 +259,7 @@ token/origin/CSRF/stale-version — before appending side-effect events):
 
 ```text
 POST /api/runs
+POST /api/runs/cancel-all
 POST /api/runs/:runId/cancel
 POST /api/runs/:runId/review
 POST /api/runs/:runId/research
@@ -267,15 +269,34 @@ POST /api/runs/:runId/pause
 POST /api/runs/:runId/resume
 POST /api/runs/:runId/retry
 POST /api/runs/:runId/gates/rerun
+POST /api/execution/resume
+POST /api/execution/hold
 POST /api/interventions/:interventionId/resolve
 ```
 
-Grouped by concern: run lifecycle (`runs`, `cancel`, `review`), research
-(`research`, `knowledge`), workspace materialization (`workspace`), execution
-controls (`start`, `pause`, `resume`, `retry`, `gates/rerun`, `execution`), the
-operator intervention queue (`interventions`, `resolve`), and the run artifact
-contract (`outputs`). The MCP bridge and the ChatGPT Action expose the same
-mutating surface through the same guarded routes.
+Grouped by concern: run lifecycle (`runs`, `cancel`, `cancel-all`, `review`),
+research (`research`, `knowledge`), workspace materialization (`workspace`),
+execution controls (`start`, `pause`, `resume`, `retry`, `gates/rerun`,
+`execution`), the operator intervention queue (`interventions`, `resolve`), and
+the run artifact contract (`outputs`). The MCP bridge and the ChatGPT Action
+expose the same mutating surface through the same guarded routes; the one
+deliberate web-only route is the read-only `GET /api/knowledge` index (remote
+agents consume knowledge through the run-scoped research/contract/outputs
+reads). This parity is enforced, not aspirational:
+`packages/web/test/server/connector-parity.test.ts` derives the route surface
+from the route factories and fails when a route ships without an Action
+operation + MCP tool (or an explicit written exclusion).
+
+Factory-wide execution gate: the execution daemon boots HELD by default —
+opening the factory (any server entry point) never starts queued work
+automatically. `GET /api/execution` reports the gate plus cross-run job
+counts, `POST /api/execution/resume` releases it for the life of the process,
+and `POST /api/execution/hold` re-engages it. The gate is deliberately
+process-local (not a ledger event): every fresh process starts held again.
+`SF_EXEC_AUTOSTART=1` opts a deployment back into drain-on-start (e.g. an
+unattended hosted worker). `POST /api/runs/cancel-all` is the matching
+"cancel all tasks" control: it cancels every cancellable run and propagates
+to queued and in-flight execution work.
 
 ## Event Ledger And Projections
 

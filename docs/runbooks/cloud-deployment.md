@@ -29,6 +29,24 @@ healthCheckPath: /api/setup
 It also mounts a persistent disk at `/var/data` and stores the factory ledger in
 `/var/data/.factory`.
 
+## Execution Drain Gate
+
+Every server process boots with execution HELD: queued work does not run until
+an operator clicks **Resume execution** on the Factory Floor (or calls
+`POST /api/execution/resume`). The gate is process-local BY DESIGN — every
+deploy or restart re-holds. The DECIDED hosted policy is held-by-default: after
+every deploy/restart an operator must open the web UI and resume. This is
+intentional safety-first behavior, so a fresh (or crashed-and-restarted) cloud
+instance never drains queued runs unattended.
+
+- `GET /api/execution` reports
+  `{execution: {enabled, held, running}, queue: {queued, leased}}`.
+- `POST /api/runs/cancel-all` cancels every cancellable run if you need to
+  drain the queue instead of resuming it.
+- Set `SF_EXEC_AUTOSTART=1` (also accepts `true`/`yes`; anything else means
+  held) to opt a deployment back into unattended drain-on-start. The shipped
+  `render.yaml` keeps it commented out.
+
 Required env:
 
 | Key                                 | Purpose                                                                            |
@@ -37,6 +55,7 @@ Required env:
 | `SF_FACTORY_DIR=/var/data/.factory` | Keeps the ledger and token state on the persistent disk.                           |
 | `SF_OPERATOR_TOKEN`                 | Stable secret for CLI and skill mutations. The blueprint generates one.            |
 | `SF_PUBLIC_BASE_URL`                | Optional but recommended hosted URL, e.g. `https://software-factory.onrender.com`. |
+| `SF_EXEC_AUTOSTART`                 | Optional. Unset (default) boots execution HELD; `1`/`true`/`yes` opts into drain-on-start. |
 
 ## Cloud Setup Diagnostics
 
@@ -103,8 +122,11 @@ that any replacement backend must pass unchanged.
 
 ## Calling The Cloud Factory
 
-After deploy, copy the hosted `SF_OPERATOR_TOKEN` from the provider dashboard
-into your local shell. Then point the CLI or installed skills at the hosted URL:
+After deploy, open the hosted Factory Floor and click **Resume execution** —
+the daemon boots held (see "Execution Drain Gate" above), so anything you queue
+before resuming just waits. Then copy the hosted `SF_OPERATOR_TOKEN` from the
+provider dashboard into your local shell and point the CLI or installed skills
+at the hosted URL:
 
 ```powershell
 $env:SF_BASE_URL = 'https://your-factory.onrender.com'
@@ -133,7 +155,9 @@ The action covers the full lifecycle: create/list/inspect runs, read events,
 trigger and read research, start/pause/resume/retry execution, re-run gates,
 read execution state, list and resolve interventions, read run outputs, and
 cancel a run. The schema is validated as a real OpenAPI 3.1 document by
-`packages/web/test/server/chatgpt-action-schema.test.ts`.
+`packages/web/test/server/chatgpt-action-schema.test.ts`. Drain-gate caveat: a
+run started remotely only **queues** — it does not execute until execution is
+resumed (see "Execution Drain Gate" above).
 
 ### Hosted MCP
 

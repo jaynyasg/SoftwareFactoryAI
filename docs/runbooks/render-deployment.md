@@ -159,6 +159,7 @@ evidence — never values (hardening E5).
 | `SF_DEPLOY_ALLOW_TEMP_REPO` | `true` permits the factory-owned temporary repo fallback.                   |
 | `SF_PREVIEW_COMMAND`        | Optional local preview command for the packaged app (e.g. `pnpm dev`).      |
 | `SF_PREVIEW_URL`            | Local preview URL the health probe hits (with `SF_PREVIEW_COMMAND`).        |
+| `SF_EXEC_AUTOSTART`         | Default unset = execution boots **held**. `1`/`true`/`yes` opts into drain-on-start (see below). |
 
 Without a preview command the preview stays honestly un-attempted: it lowers
 artifact confidence and holds the deploy `previewHealthy` precondition (deploy
@@ -166,6 +167,19 @@ pauses with setup-required), but never fails the local run.
 
 Host secrets are never passed into sandboxed generated-app commands; only the
 explicit deploy env is sent to Render.
+
+### Execution drain gate
+
+Every factory server process boots with execution **held**: queued runs — and
+therefore the deploy completion stage — do not execute until an operator clicks
+**Resume execution** on the Factory Floor (or calls `POST
+/api/execution/resume`). The gate is process-local **by design**, so every
+deploy or restart of the factory re-holds; after each one, open the Factory
+Floor and resume before expecting queued work (including deploys) to drain.
+`GET /api/execution` reports the current
+`{execution: {enabled, held, running}, queue: {queued, leased}}` state. Set
+`SF_EXEC_AUTOSTART=1` (also accepts `true`/`yes`) to opt a deployment back into
+unattended drain-on-start.
 
 ## Deploy events + failure taxonomy
 
