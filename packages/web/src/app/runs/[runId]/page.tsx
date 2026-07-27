@@ -4,7 +4,7 @@
  */
 import { notFound } from 'next/navigation';
 import { getLocalSession } from '../../../server/instance';
-import { loadRunAggregate } from '../../../server/run-data';
+import { loadExecutionOverview, loadRunAggregate } from '../../../server/run-data';
 import { SessionProvider } from '../../../components/session-context';
 import { AppShell } from '../../../components/AppShell';
 import { RunDetail } from '../../../components/factory-floor/RunDetail';
@@ -13,7 +13,11 @@ export const dynamic = 'force-dynamic';
 
 export default async function RunPage({ params }: { params: Promise<{ runId: string }> }) {
   const { runId } = await params;
-  const [session, initial] = await Promise.all([getLocalSession(), loadRunAggregate(runId)]);
+  const [session, initial, executionOverview] = await Promise.all([
+    getLocalSession(),
+    loadRunAggregate(runId),
+    loadExecutionOverview(),
+  ]);
   if (initial === null) {
     notFound();
   }
@@ -21,7 +25,7 @@ export default async function RunPage({ params }: { params: Promise<{ runId: str
   return (
     <SessionProvider session={session}>
       <AppShell>
-        <RunDetail runId={runId} initial={initial} />
+        <RunDetail runId={runId} initial={initial} initialExecution={executionOverview} />
       </AppShell>
     </SessionProvider>
   );

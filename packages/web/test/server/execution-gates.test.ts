@@ -459,6 +459,43 @@ describe('U7: review approval resumes the blocked stage', () => {
     expect(rerunEnqueues).toHaveLength(1);
   });
 
+  it('a review decision on a CANCELLED run is refused with run_cancelled and writes nothing', async () => {
+    const unitTest = controllableGate('unit-test', false);
+    const { app, store, daemon } = makeHarness(
+      immediateAdapter(),
+      fakeGateStages({ postRun: [unitTest.gate] }),
+    );
+    const runId = await createPlannedRun(app);
+    await startRun(app, runId);
+    await daemon.tick(); // blocked on gates (pending gates-stage review)
+
+    const cancel = await app.handle(
+      req('POST', `/api/runs/${runId}/cancel`, authedHeaders(), { reason: 'operator stop' }),
+    );
+    expect(cancel.status).toBe(200);
+    const before = (await store.readRun(runId)).length;
+
+    // Approving the pending gates review now would record `review.decided`
+    // and enqueue a gate re-run that instantly releases as cancelled while
+    // reporting queued:true — the guard must refuse it with ZERO writes.
+    unitTest.setPassing(true);
+    const res = await app.handle(
+      req('POST', `/api/runs/${runId}/review`, authedHeaders(), {
+        decision: 'approved',
+        rationale: 'approval after cancellation must be refused',
+      }),
+    );
+    expect(res.status).toBe(422);
+    expect(record(res).error).toBe('run_cancelled');
+
+    const events = await store.readRun(runId);
+    expect(events).toHaveLength(before);
+    expect(events.some((e) => e.type === 'review.decided')).toBe(false);
+    expect(
+      events.some((e) => e.type === 'queue.enqueued' && e.payload.jobId === gateRerunJobId(runId)),
+    ).toBe(false);
+  });
+
   it('a refused re-enqueue (budget exhausted) leaves the blocking interventions OPEN', async () => {
     const unitTest = controllableGate('unit-test', false); // never passes
     const { app, store, daemon } = makeHarness(

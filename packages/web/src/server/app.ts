@@ -404,6 +404,13 @@ function matchRoute(
  * App factory
  * ------------------------------------------------------------------------- */
 
+/**
+ * Reserved ledger stream for factory-scoped (cross-run) command denials. It
+ * deliberately never receives `run.created`, so `isRealRun` filters it from
+ * every run list while the security events stay durable and replayable.
+ */
+const FACTORY_AUDIT_RUN_ID = 'factory';
+
 export function createApp(deps: AppDeps): App {
   const { store, operatorToken } = deps;
   const clock = deps.clock ?? Date.now;
@@ -569,7 +576,24 @@ export function createApp(deps: AppDeps): App {
     // Denied: append exactly one security event and perform NO other side
     // effects (no workers/adapters/deploys/repo writes). The event is attached
     // to the run subject so the blocked attempt is auditable in the ledger.
-    const runId = input.runId ?? (input.subject.kind === 'run' ? input.subject.id : undefined);
+    // Factory-scoped commands (cancel-all, resume/hold) have no run of their
+    // own: their denials land on the reserved 'factory' stream — a runId that
+    // never sees `run.created`, so `isRealRun` keeps it out of every run list
+    // (the same phantom-run filtering that already covers lone security
+    // events) — AND on the server log so the denial is never invisible.
+    if (input.subject.kind === 'factory') {
+      console.error(
+        `[software-factory] factory command denied: ${input.command} (${result.reason}) on ` +
+          `${input.subject.kind}/${input.subject.id}`,
+      );
+    }
+    const runId =
+      input.runId ??
+      (input.subject.kind === 'run'
+        ? input.subject.id
+        : input.subject.kind === 'factory'
+          ? FACTORY_AUDIT_RUN_ID
+          : undefined);
     if (runId !== undefined) {
       // Build each branch separately so the discriminated union narrows the
       // payload to the matching event type.

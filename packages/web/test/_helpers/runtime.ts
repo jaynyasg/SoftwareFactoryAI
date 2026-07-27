@@ -57,6 +57,9 @@ export function testRuntimeConfig(overrides: TestRuntimeConfigOverrides = {}): R
       heartbeatMs: 15_000,
       reconcileIntervalMs: 30_000,
       maxAttempts: 3,
+      // Tests keep the original drain-on-start behavior unless a suite
+      // exercises the held/resume gate explicitly.
+      autoStart: true,
       ...overrides.execution,
     },
     deploy: {

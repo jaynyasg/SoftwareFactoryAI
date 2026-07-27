@@ -29,6 +29,7 @@ import { filterInterventions, projectInterventions } from './execution/intervent
 import type { InterventionView } from './execution/interventions';
 import { executionJobId, projectExecutionQueue } from './execution/queue';
 import { projectPreflight } from './execution/preflight';
+import { parseExecutionOverview } from '../lib/execution-overview';
 import {
   deriveDeploy,
   deriveGateOutcomes,
@@ -39,6 +40,7 @@ import {
 } from '../lib/run-view';
 import type { BlockedStageView } from '../lib/run-view';
 import type {
+  ExecutionOverview,
   InterventionItem,
   InterventionQueueSnapshot,
   OperatorAggregate,
@@ -205,6 +207,21 @@ export async function loadRunList(): Promise<RunProjection[]> {
   return runs
     .filter(isRealRun)
     .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0) || b.lastSequence - a.lastSequence);
+}
+
+/**
+ * Load the factory-wide execution state (drain gate + cross-run job counts)
+ * through the same GET /api/execution route the client polls, so the initial
+ * render and every poll see identical state.
+ */
+export async function loadExecutionOverview(): Promise<ExecutionOverview> {
+  const res = await getApp().handle({
+    method: 'GET',
+    path: '/api/execution',
+    query: {},
+    headers: {},
+  });
+  return parseExecutionOverview(bodyOf(res));
 }
 
 /** Read the setup status that drives the blocking/actionable checklist. */

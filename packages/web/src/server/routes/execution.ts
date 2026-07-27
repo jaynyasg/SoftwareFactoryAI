@@ -17,13 +17,26 @@
  *                                    queue (X4), filterable by run, kind,
  *                                    severity, blocking stage, and action.
  *   POST /api/interventions/:id/resolve (guarded) — resolve one intervention.
+ *   GET  /api/execution             (read-only) — factory-wide execution
+ *                                    state: whether the drain gate is held
+ *                                    plus cross-run queued/leased job counts.
+ *   POST /api/execution/resume      (guarded) — release the drain gate so
+ *                                    queued work starts (the daemon boots
+ *                                    HELD: nothing runs on open until this).
+ *   POST /api/execution/hold        (guarded) — re-engage the drain gate:
+ *                                    stop claiming NEW work factory-wide.
  *
  * All mutations pass the command guard first (token/origin/CSRF/stale-version)
  * and are idempotent: duplicate starts return the existing queue state instead
  * of double-enqueueing (queue appends are keyed per job+attempt).
  */
 import { INTERVENTION_KINDS, projectRun } from '@software-factory/core';
-import type { EventSeverity, InterventionKind, RunProjection } from '@software-factory/core';
+import type {
+  EventSeverity,
+  FactoryEvent,
+  InterventionKind,
+  RunProjection,
+} from '@software-factory/core';
 import type { ApiResponse, RouteContext, RouteDef } from '../app';
 import { asRecord, num, str } from './parse';
 import { guardRunCommand, notFound, refreshBuildContract } from './shared';
@@ -269,6 +282,9 @@ async function startOutcomeResponse(
           runId,
           queued: true,
           alreadyQueued: false,
+          // Honest queue semantics: while the factory drain gate is engaged a
+          // queued job WAITS for the operator's resume instead of running.
+          held: ctx.executionDaemon?.held ?? false,
           job: outcome.job,
           preflight: outcome.preflight,
           execution: executionSummary(run),
@@ -422,7 +438,128 @@ async function rerunGates(ctx: RouteContext): Promise<ApiResponse> {
   });
   daemon.notify();
   const job = projectExecutionQueue(await ctx.reader.readRun(runId), runId).byJobId[jobId];
-  return { status: 202, body: { runId, queued: true, job } };
+  // `held` mirrors the start/retry queued responses: a queued gate re-run
+  // waits behind the drain gate until the operator resumes execution.
+  return { status: 202, body: { runId, queued: true, held: daemon.held, job } };
+}
+
+/* ----------------------------------------------------------------------------
+ * Factory-wide execution controls (operator autostart/hold surface).
+ *
+ * The daemon boots HELD by default (`autoStart` off): opening the factory
+ * never runs queued work automatically. These routes expose the gate to the
+ * operator — status is read-only; resume/hold are guarded mutations on the
+ * process daemon (deliberately NOT ledger events: every fresh process starts
+ * held again by design, so persisting the gate would defeat it).
+ * ------------------------------------------------------------------------- */
+
+/**
+ * Cross-run queued/leased job counts for the overview. PERF: without a runId,
+ * `projectExecutionQueue` folds ONLY `queue.*` event types (enqueued/claimed/
+ * heartbeat/released/lease_abandoned — see queue.ts; the runId-scoped alias
+ * resolution that reads other events never applies here), so pre-filtering to
+ * that family keeps the fold linear in queue traffic instead of total ledger
+ * size. The queue tests pin that the fold ignores everything else.
+ */
+function countQueueJobs(events: readonly FactoryEvent[]): { queued: number; leased: number } {
+  const queue = projectExecutionQueue(events.filter((event) => event.type.startsWith('queue.')));
+  let queued = 0;
+  let leased = 0;
+  for (const job of queue.jobs) {
+    if (job.status === 'queued') {
+      queued += 1;
+    } else if (job.status === 'leased') {
+      leased += 1;
+    }
+  }
+  return { queued, leased };
+}
+
+async function getExecutionOverview(ctx: RouteContext): Promise<ApiResponse> {
+  const daemon = ctx.executionDaemon;
+  // The queue is LEDGER truth either way: even with no daemon on this
+  // instance, real cross-run counts beat hardcoded zeros — only the
+  // enabled/held/running flags are daemon-dependent.
+  const queue = countQueueJobs(await ctx.reader.readAll());
+  if (daemon === null) {
+    return {
+      status: 200,
+      body: {
+        execution: { enabled: false, held: false, running: false },
+        queue,
+      },
+    };
+  }
+  return {
+    status: 200,
+    body: {
+      execution: { enabled: true, held: daemon.held, running: daemon.running },
+      queue,
+    },
+  };
+}
+
+/**
+ * Audit record for a SUCCESSFUL factory-scoped gate command. The drain gate
+ * is deliberately process-local (never a ledger event — every fresh process
+ * boots held again by design), and no existing core event type describes an
+ * operator factory command without overloading a projection-bearing family,
+ * so the audit record is a structured server log line rather than an invented
+ * event type. Guard DENIALS of these commands DO land on the reserved
+ * 'factory' ledger stream (see `guardMutation` in app.ts).
+ */
+function auditFactoryCommand(command: string): void {
+  console.info(
+    JSON.stringify({
+      audit: 'software-factory.command',
+      command,
+      actor: 'operator',
+      timestamp: Date.now(),
+    }),
+  );
+}
+
+async function resumeAllExecution(ctx: RouteContext): Promise<ApiResponse> {
+  const denial = await ctx.guardMutation({
+    subject: { kind: 'factory', id: 'execution' },
+    command: 'execution.resume_all',
+  });
+  if (denial !== null) {
+    return denial;
+  }
+  const daemon = ctx.executionDaemon;
+  if (daemon === null) {
+    return EXECUTION_DISABLED;
+  }
+  // `running` rides on both bodies so the caller can tell "gate released"
+  // apart from "gate released but the daemon loop is not running" — a resumed
+  // gate on a stopped daemon still drains nothing.
+  if (!daemon.held) {
+    return { status: 200, body: { alreadyActive: true, held: false, running: daemon.running } };
+  }
+  daemon.resume();
+  auditFactoryCommand('execution.resume_all');
+  return { status: 200, body: { resumed: true, held: daemon.held, running: daemon.running } };
+}
+
+async function holdAllExecution(ctx: RouteContext): Promise<ApiResponse> {
+  const denial = await ctx.guardMutation({
+    subject: { kind: 'factory', id: 'execution' },
+    command: 'execution.hold_all',
+  });
+  if (denial !== null) {
+    return denial;
+  }
+  const daemon = ctx.executionDaemon;
+  if (daemon === null) {
+    return EXECUTION_DISABLED;
+  }
+  if (daemon.held) {
+    return { status: 200, body: { alreadyHeld: true, held: true, running: daemon.running } };
+  }
+  daemon.hold();
+  auditFactoryCommand('execution.hold_all');
+  return { status: 200, body: { held: true, running: daemon.running } };
 }
 
 async function getExecution(ctx: RouteContext): Promise<ApiResponse> {
@@ -533,6 +670,9 @@ async function resolveInterventionRoute(ctx: RouteContext): Promise<ApiResponse>
 
 export function executionRoutes(): RouteDef[] {
   return [
+    { method: 'GET', pattern: '/api/execution', handler: getExecutionOverview },
+    { method: 'POST', pattern: '/api/execution/resume', handler: resumeAllExecution },
+    { method: 'POST', pattern: '/api/execution/hold', handler: holdAllExecution },
     { method: 'POST', pattern: '/api/runs/:id/start', handler: startRun },
     { method: 'POST', pattern: '/api/runs/:id/pause', handler: pauseRun },
     { method: 'POST', pattern: '/api/runs/:id/resume', handler: resumeRun },

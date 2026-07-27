@@ -79,6 +79,16 @@ export interface ExecutionRuntimeConfig {
   readonly reconcileIntervalMs: number;
   /** Max execution attempts per queue job (operator retries included). */
   readonly maxAttempts: number;
+  /**
+   * Whether the daemon may DRAIN queued work without an operator resume.
+   * Server runtimes resolve this from `SF_EXEC_AUTOSTART` and default to
+   * FALSE: opening the factory never runs leftover queued work automatically —
+   * the daemon boots held and the operator resumes explicitly. The static
+   * default below is TRUE so directly-constructed daemons (tests, embedded
+   * callers passing partial configs) keep the original drain-on-start
+   * behavior.
+   */
+  readonly autoStart: boolean;
 }
 
 /**
@@ -159,6 +169,7 @@ interface RuntimeEnv {
   readonly SF_EXEC_HEARTBEAT_MS?: string;
   readonly SF_EXEC_RECONCILE_INTERVAL_MS?: string;
   readonly SF_EXEC_MAX_ATTEMPTS?: string;
+  readonly SF_EXEC_AUTOSTART?: string;
   readonly RENDER_API_KEY?: string;
   readonly SF_RENDER_API_KEY?: string;
   readonly SF_RENDER_SERVICE_ID?: string;
@@ -228,9 +239,15 @@ export const DEFAULT_EXECUTION_RUNTIME_CONFIG: ExecutionRuntimeConfig = {
   heartbeatMs: 15_000,
   reconcileIntervalMs: 30_000,
   maxAttempts: 3,
+  autoStart: true,
 };
 
-/** Resolve the execution queue/daemon config from the environment. */
+/**
+ * Resolve the execution queue/daemon config from the environment. `autoStart`
+ * deliberately does NOT inherit the static default: server runtimes boot the
+ * daemon HELD unless `SF_EXEC_AUTOSTART` explicitly opts back in, so opening
+ * the factory never runs queued work until the operator resumes.
+ */
 export function resolveExecutionRuntimeConfig(
   env: RuntimeEnv = process.env as RuntimeEnv,
 ): ExecutionRuntimeConfig {
@@ -242,6 +259,7 @@ export function resolveExecutionRuntimeConfig(
       DEFAULT_EXECUTION_RUNTIME_CONFIG.reconcileIntervalMs,
     ),
     maxAttempts: parsePort(env.SF_EXEC_MAX_ATTEMPTS, DEFAULT_EXECUTION_RUNTIME_CONFIG.maxAttempts),
+    autoStart: parseBool(env.SF_EXEC_AUTOSTART),
   };
 }
 

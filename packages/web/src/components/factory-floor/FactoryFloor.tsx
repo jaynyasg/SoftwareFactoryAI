@@ -20,7 +20,13 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 import type { RunProjection } from '@software-factory/core';
-import type { InterventionQueueSnapshot, RunAggregate, SetupStatus } from '../../lib/types';
+import type {
+  ExecutionOverview,
+  InterventionQueueSnapshot,
+  RunAggregate,
+  SetupStatus,
+} from '../../lib/types';
+import { DISABLED_EXECUTION_OVERVIEW } from '../../lib/execution-overview';
 import { deriveFactoryPulse } from '../../lib/run-view';
 import { useRunAggregate } from '../../lib/use-run-aggregate';
 import { useInterventionQueue } from '../../lib/use-intervention-queue';
@@ -32,6 +38,7 @@ import { RunStrip } from './RunStrip';
 import { BlueprintLanes } from './BlueprintLanes';
 import { ContractHandoff } from './ContractHandoff';
 import { RunCommandBar } from './RunCommandBar';
+import { FactoryCommandBar } from './FactoryCommandBar';
 import { InterventionQueue } from './InterventionQueue';
 import { StateBlock } from './primitives';
 
@@ -173,11 +180,13 @@ export function FactoryFloor({
   setup,
   latest,
   initialInterventions = EMPTY_QUEUE,
+  initialExecution = DISABLED_EXECUTION_OVERVIEW,
 }: {
   readonly initialRuns: readonly RunProjection[];
   readonly setup: SetupStatus;
   readonly latest: RunAggregate | null;
   readonly initialInterventions?: InterventionQueueSnapshot;
+  readonly initialExecution?: ExecutionOverview;
 }) {
   const router = useRouter();
   const [historyCleared, setHistoryCleared] = useState(false);
@@ -215,6 +224,18 @@ export function FactoryFloor({
           Operator view
         </Link>
       </div>
+
+      {/* 0 — factory-wide controls: the held/resume gate (nothing runs
+          automatically on open) and the destructive cancel-all command. */}
+      <FactoryCommandBar
+        initial={initialExecution}
+        onChanged={() => {
+          // A resume/hold/cancel-all changes every run's projected state:
+          // re-render the server-provided props and re-poll the queue.
+          queue.refresh();
+          router.refresh();
+        }}
+      />
 
       {/* 1 — anything blocking on a human, across every run, always first. */}
       <InterventionQueue

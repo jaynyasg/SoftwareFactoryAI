@@ -61,6 +61,11 @@ export interface StageResumeResult {
   readonly resolvedInterventions: readonly string[];
   /** Whether the stage's job is (re-)queued after the approval. */
   readonly queued: boolean;
+  /**
+   * Whether the factory drain gate is engaged: a queued job WAITS instead of
+   * running until the operator resumes execution. Absent when nothing queued.
+   */
+  readonly held?: boolean;
   readonly note?: string;
 }
 
@@ -124,7 +129,7 @@ async function resumeBlockedStage(
     const jobId = gateRerunJobId(runId);
     const existing = projectExecutionQueue(events, runId).byJobId[jobId];
     if (existing !== undefined && isActiveJobStatus(existing.status)) {
-      return { stage, resolvedInterventions: await resolveAll(), queued: true };
+      return { stage, resolvedInterventions: await resolveAll(), queued: true, held: daemon.held };
     }
     const attempt = (existing?.attempt ?? 0) + 1;
     // Ledger-derived failure budget (failed/blocked releases), so safe yields
@@ -146,7 +151,7 @@ async function resumeBlockedStage(
       reason: 'review approval resumed the gate stage',
     });
     daemon.notify();
-    return { stage, resolvedInterventions: await resolveAll(), queued: true };
+    return { stage, resolvedInterventions: await resolveAll(), queued: true, held: daemon.held };
   }
 
   const outcome = await requestExecutionStart(ctx, runId, {
@@ -160,6 +165,7 @@ async function resumeBlockedStage(
     // NOTHING: the blocking interventions stay open and actionable.
     resolvedInterventions: queued ? await resolveAll() : [],
     queued,
+    ...(queued ? { held: daemon.held } : {}),
     note: queued ? undefined : outcome.kind,
   };
 }
@@ -189,6 +195,22 @@ async function decideReview(ctx: RouteContext): Promise<ApiResponse> {
 
   if (current.ledger.length === 0) {
     return { status: 404, body: { error: 'not_found', message: `Run ${runId} does not exist.` } };
+  }
+
+  // A cancelled run takes NO review decisions (mirrors the cancel route's
+  // terminal-state check): approving one would record `review.decided` and —
+  // on the gates path — enqueue a gate re-run that instantly releases as
+  // cancelled while reporting queued:true. Placed BEFORE any append so a
+  // decision against a cancelled run makes zero ledger writes.
+  if (current.status === 'cancelled') {
+    return {
+      status: 422,
+      body: {
+        error: 'run_cancelled',
+        message: `Run ${runId} is cancelled; a cancelled run cannot take review decisions.`,
+        run: current,
+      },
+    };
   }
 
   // SERVER-AUTHORITATIVE gate inputs (never trust the client body for these):

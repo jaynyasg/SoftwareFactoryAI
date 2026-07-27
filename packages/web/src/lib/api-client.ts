@@ -16,7 +16,13 @@ import type {
   RiskTier,
   RunProjection,
 } from '@software-factory/core';
-import type { InterventionItem, InterventionQueueSnapshot, RunAggregate } from './types';
+import type {
+  ExecutionOverview,
+  InterventionItem,
+  InterventionQueueSnapshot,
+  RunAggregate,
+} from './types';
+import { parseExecutionOverview } from './execution-overview';
 import type { LocalSession } from './session';
 
 export type { RunAggregate } from './types';
@@ -124,6 +130,8 @@ export interface ReviewResumeResult {
   readonly stage: 'gates' | 'execution';
   readonly resolvedInterventions: readonly string[];
   readonly queued: boolean;
+  /** True when the re-queued job waits behind the factory drain gate. */
+  readonly held?: boolean;
   readonly note?: string;
 }
 
@@ -162,6 +170,8 @@ export interface ExecutionCommandResult {
   readonly runId?: string;
   readonly queued?: boolean;
   readonly alreadyQueued?: boolean;
+  /** True when the enqueue landed while the factory drain gate is engaged. */
+  readonly held?: boolean;
   readonly paused?: boolean;
   readonly alreadyPaused?: boolean;
   readonly resumed?: boolean;
@@ -207,6 +217,64 @@ export function rerunGates(
   reason?: string,
 ): Promise<MutationResult<ExecutionCommandResult>> {
   return mutate(`/api/runs/${encodeURIComponent(runId)}/gates/rerun`, session, { reason });
+}
+
+/* ----------------------------------------------------------------------------
+ * Factory-wide execution controls (drain gate + cancel-all)
+ *
+ * The daemon boots HELD: nothing runs automatically when the factory opens.
+ * Resume releases the gate for this server process; hold re-engages it; and
+ * cancel-all cancels every cancellable run in one guarded command.
+ * ------------------------------------------------------------------------- */
+
+/** Poll the factory-wide execution state (read-only, no token). */
+export async function fetchExecutionOverview(): Promise<ExecutionOverview> {
+  const res = await fetch('/api/execution', {
+    headers: { accept: 'application/json' },
+    cache: 'no-store',
+  });
+  if (!res.ok) {
+    throw new Error(`execution_fetch_failed:${res.status}`);
+  }
+  return parseExecutionOverview(await readJson(res));
+}
+
+/** Release the drain gate so queued work starts (POST /api/execution/resume). */
+export function resumeFactoryExecution(session: LocalSession): Promise<
+  MutationResult<{
+    resumed?: boolean;
+    alreadyActive?: boolean;
+    held?: boolean;
+    /** False means the gate released but the daemon loop is NOT draining. */
+    running?: boolean;
+  }>
+> {
+  return mutate('/api/execution/resume', session, {});
+}
+
+/** Re-engage the drain gate: stop starting new work (POST /api/execution/hold). */
+export function holdFactoryExecution(
+  session: LocalSession,
+): Promise<MutationResult<{ held?: boolean; alreadyHeld?: boolean; running?: boolean }>> {
+  return mutate('/api/execution/hold', session, {});
+}
+
+/** Outcome lists from the guarded cancel-all command. */
+export interface CancelAllRunsResult {
+  readonly cancelled: readonly string[];
+  readonly alreadyCancelled: readonly string[];
+  readonly skippedTerminal: readonly string[];
+  readonly cancelledCount: number;
+  /** Per-run failures, present only when part of the batch could not cancel. */
+  readonly errors?: readonly { readonly runId: string; readonly message: string }[];
+}
+
+/** Cancel every cancellable run (POST /api/runs/cancel-all). */
+export function cancelAllRuns(
+  session: LocalSession,
+  reason?: string,
+): Promise<MutationResult<CancelAllRunsResult>> {
+  return mutate('/api/runs/cancel-all', session, { reason });
 }
 
 /* ----------------------------------------------------------------------------

@@ -6,6 +6,7 @@
  */
 import { getLocalSession } from '../server/instance';
 import {
+  loadExecutionOverview,
   loadInterventionQueue,
   loadRunAggregate,
   loadRunList,
@@ -19,11 +20,12 @@ import type { RunAggregate } from '../lib/types';
 export const dynamic = 'force-dynamic';
 
 export default async function Page() {
-  const [session, runs, setup, interventions] = await Promise.all([
+  const [session, runs, setup, interventions, executionOverview] = await Promise.all([
     getLocalSession(),
     loadRunList(),
     loadSetup(),
     loadInterventionQueue(),
+    loadExecutionOverview(),
   ]);
   const latestId = runs[0]?.runId ?? null;
   const latest: RunAggregate | null = latestId !== null ? await loadRunAggregate(latestId) : null;
@@ -36,6 +38,7 @@ export default async function Page() {
           setup={setup}
           latest={latest}
           initialInterventions={interventions}
+          initialExecution={executionOverview}
         />
       </AppShell>
     </SessionProvider>

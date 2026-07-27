@@ -208,6 +208,176 @@ describe('daemon lifecycle + U6 executor seam', () => {
     expect(projectExecutionQueue(final, 'run-shutdown').jobs[0].status).toBe('completed');
   });
 
+  it('a held daemon (autoStart off) reconciles but never claims queued work until resume()', async () => {
+    const { createExecutionDaemon } = await import('../../src/server/execution/daemon');
+    const { projectExecutionQueue } = await import('../../src/server/execution/queue');
+    const store = createInMemoryEventStore();
+    await seedPlannedStartableRun(store, 'run-held');
+
+    const executed: string[] = [];
+    const daemon = createExecutionDaemon({
+      store,
+      ownerId: 'daemon-held',
+      timers: noopTimers(),
+      config: { autoStart: false },
+      executor: (ctx) => {
+        executed.push(ctx.jobId);
+        return Promise.resolve({ status: 'completed', summary: 'done' });
+      },
+    });
+    expect(daemon.held).toBe(true);
+
+    // Boot + explicit passes run NOTHING while the gate is engaged: this is
+    // the "opening the factory never auto-runs queued work" guarantee.
+    await daemon.start();
+    const whileHeld = await daemon.tick();
+    expect(whileHeld.claimed).toBe(0);
+    expect(executed).toEqual([]);
+    const queueHeld = projectExecutionQueue(await store.readRun('run-held'), 'run-held');
+    expect(queueHeld.jobs[0].status).toBe('queued');
+
+    // The operator's resume releases the gate; the next pass drains the job.
+    daemon.resume();
+    expect(daemon.held).toBe(false);
+    await daemon.tick();
+    expect(executed).toEqual(['run-held:execution']);
+    const queueAfter = projectExecutionQueue(await store.readRun('run-held'), 'run-held');
+    expect(queueAfter.jobs[0].status).toBe('completed');
+    await daemon.stop();
+  });
+
+  it('a held daemon still abandons expired stale leases (reconcile is not gated)', async () => {
+    const { createExecutionDaemon } = await import('../../src/server/execution/daemon');
+    const { projectExecutionQueue } = await import('../../src/server/execution/queue');
+    const store = createInMemoryEventStore();
+    await seedPlannedStartableRun(store, 'run-held-stale');
+    // A lease from a previous (crashed) owner that has long expired.
+    await store.append({
+      runId: 'run-held-stale',
+      type: 'queue.claimed',
+      actor: { kind: 'system', id: 'daemon-dead' },
+      subject: { kind: 'queue-job', id: 'run-held-stale:execution' },
+      severity: 'info',
+      payload: {
+        jobId: 'run-held-stale:execution',
+        jobKind: 'run-execution',
+        attempt: 1,
+        leaseId: 'lease-dead',
+        ownerId: 'daemon-dead',
+        leaseExpiresAt: 1,
+      },
+    });
+
+    const daemon = createExecutionDaemon({
+      store,
+      ownerId: 'daemon-held-reconciler',
+      timers: noopTimers(),
+      config: { autoStart: false },
+      executor: () => Promise.resolve({ status: 'completed' }),
+    });
+    const result = await daemon.tick();
+    expect(result.abandoned).toBe(1);
+    expect(result.claimed).toBe(0);
+    const events = await store.readRun('run-held-stale');
+    expect(events.some((e) => e.type === 'queue.lease_abandoned')).toBe(true);
+    expect(projectExecutionQueue(events, 'run-held-stale').jobs[0].status).toBe('abandoned');
+  });
+
+  it('resume() on a daemon that was never started flips the gate but drains nothing', async () => {
+    const { createExecutionDaemon } = await import('../../src/server/execution/daemon');
+    const { projectExecutionQueue } = await import('../../src/server/execution/queue');
+    const store = createInMemoryEventStore();
+    await seedPlannedStartableRun(store, 'run-dead-daemon');
+
+    const executed: string[] = [];
+    const daemon = createExecutionDaemon({
+      store,
+      ownerId: 'daemon-dead-resume',
+      timers: noopTimers(),
+      config: { autoStart: false },
+      executor: (ctx) => {
+        executed.push(ctx.jobId);
+        return Promise.resolve({ status: 'completed', summary: 'done' });
+      },
+    });
+
+    // The operator resumes a daemon whose loop never started: the gate opens…
+    daemon.resume();
+    expect(daemon.held).toBe(false);
+    expect(daemon.running).toBe(false);
+
+    // …but notify() is a no-op on a stopped loop, so nothing claims or runs.
+    // This is the "operator resumes a dead daemon" trap the resume route
+    // surfaces via `running: false` — the gate is open and NOTHING drains.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(executed).toEqual([]);
+    const events = await store.readRun('run-dead-daemon');
+    expect(events.some((e) => e.type === 'queue.claimed')).toBe(false);
+    expect(projectExecutionQueue(events, 'run-dead-daemon').jobs[0].status).toBe('queued');
+  });
+
+  it('resume() on a RUNNING daemon drains queued work asynchronously — no manual tick', async () => {
+    const { createExecutionDaemon } = await import('../../src/server/execution/daemon');
+    const { projectExecutionQueue } = await import('../../src/server/execution/queue');
+    const store = createInMemoryEventStore();
+    await seedPlannedStartableRun(store, 'run-async-resume');
+
+    const executed: string[] = [];
+    const daemon = createExecutionDaemon({
+      store,
+      ownerId: 'daemon-async-resume',
+      timers: noopTimers(),
+      config: { autoStart: false },
+      executor: (ctx) => {
+        executed.push(ctx.jobId);
+        return Promise.resolve({ status: 'completed', summary: 'done' });
+      },
+    });
+    try {
+      // start() boots the loop HELD: the initial pass claims nothing.
+      await daemon.start();
+      expect(executed).toEqual([]);
+
+      // resume() wakes the loop itself via notify() (E1: soon, never in the
+      // caller's request lifetime) — the caller never ticks manually.
+      daemon.resume();
+      await vi.waitFor(() => {
+        expect(executed).toEqual(['run-async-resume:execution']);
+      });
+      const queue = projectExecutionQueue(
+        await store.readRun('run-async-resume'),
+        'run-async-resume',
+      );
+      expect(queue.jobs[0].status).toBe('completed');
+    } finally {
+      await daemon.stop();
+    }
+  });
+
+  it('hold() re-engages the gate on an auto-start daemon: no NEW claims', async () => {
+    const { createExecutionDaemon } = await import('../../src/server/execution/daemon');
+    const store = createInMemoryEventStore();
+    await seedPlannedStartableRun(store, 'run-holdable');
+
+    let executed = 0;
+    const daemon = createExecutionDaemon({
+      store,
+      ownerId: 'daemon-holdable',
+      timers: noopTimers(),
+      executor: () => {
+        executed += 1;
+        return Promise.resolve({ status: 'completed' });
+      },
+    });
+    // Default (static) config auto-starts: no gate.
+    expect(daemon.held).toBe(false);
+    daemon.hold();
+    expect(daemon.held).toBe(true);
+    const result = await daemon.tick();
+    expect(result.claimed).toBe(0);
+    expect(executed).toBe(0);
+  });
+
   it('the default executor blocks honestly instead of pretending to build (U6 seam)', async () => {
     const { createExecutionDaemon } = await import('../../src/server/execution/daemon');
     const { projectInterventions } = await import('../../src/server/execution/interventions');

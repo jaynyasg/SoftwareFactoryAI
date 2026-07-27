@@ -6,6 +6,10 @@
  *                             then (per the requested run mode) research events,
  *                             the supervisor plan, and a build contract.
  *   GET  /api/runs            (read-only) — list projected runs.
+ *   POST /api/runs/cancel-all (mutating, guarded) — cancel every cancellable
+ *                             run: appends `run.cancelled` per run FIRST, then
+ *                             propagates the whole batch to queued/in-flight
+ *                             execution in one daemon call.
  *   POST /api/runs/:id/cancel (mutating, guarded) — append `run.cancelled`.
  *   POST /api/runs/:id/workspace (mutating, guarded) — materialize (or retry
  *                             materializing) the run workspace (full-factory
@@ -49,6 +53,8 @@ import {
 import type {
   AppendableEvent,
   CallerFamily,
+  EventStore,
+  FactoryEvent,
   PlannerResearchContext,
   ResearchProjection,
   RunCreatedPayload,
@@ -62,6 +68,11 @@ import { buildRunOutputs } from '@software-factory/cli/run-outputs';
 import type { ApiResponse, RouteContext, RouteDef } from '../app';
 import { asRecord, num, reviewMode, str } from './parse';
 import { requestExecutionStart } from './execution';
+import {
+  filterInterventions,
+  projectInterventions,
+  resolveIntervention,
+} from '../execution/interventions';
 import { guardRunCommand, notFound, refreshBuildContract } from './shared';
 
 function callerFamily(value: unknown): CallerFamily | undefined {
@@ -341,6 +352,30 @@ async function listRunsHandler(ctx: RouteContext): Promise<ApiResponse> {
   return { status: 200, body: { runs } };
 }
 
+/**
+ * Resolve every OPEN intervention on a run that is being cancelled. A
+ * cancelled run never resumes, so leaving its interventions 'open'/'blocking'
+ * would pin dead entries on the factory floor forever. The resolution event
+ * matches the operator resolve route's shape (`intervention.resolved`, actor
+ * operator) and `resolveIntervention` is idempotent per interventionId, so a
+ * repeated cancel appends nothing new. `events` is the run's ledger as read
+ * BEFORE the `run.cancelled` append — cancellation opens no interventions, so
+ * the pre-cancel snapshot is the complete open set.
+ */
+async function resolveInterventionsForCancelledRun(
+  store: EventStore,
+  events: readonly unknown[],
+  runId: string,
+): Promise<void> {
+  const open = filterInterventions(projectInterventions(events), { runId, openOnly: true });
+  for (const intervention of open) {
+    await resolveIntervention(store, intervention, {
+      resolution: 'cancelled',
+      note: 'Run was cancelled; the intervention no longer blocks any pending work.',
+    });
+  }
+}
+
 async function cancelRun(ctx: RouteContext): Promise<ApiResponse> {
   const runId = ctx.params.id;
   const body = asRecord(ctx.request.body);
@@ -376,6 +411,9 @@ async function cancelRun(ctx: RouteContext): Promise<ApiResponse> {
     idempotencyKey: `${runId}:run.cancelled`,
     payload: { reason: str(body.reason) },
   });
+  // A cancelled run's open interventions are dead: resolve them so the
+  // operator queue never carries blocking entries for a run that ended.
+  await resolveInterventionsForCancelledRun(ctx.store, guarded.events, runId);
   // Cancel propagates to queued and active execution work (U5): the daemon
   // aborts in-flight jobs and releases queued/abandoned ones as cancelled.
   if (ctx.executionDaemon !== null) {
@@ -383,6 +421,114 @@ async function cancelRun(ctx: RouteContext): Promise<ApiResponse> {
   }
   const run = projectRun(await ctx.reader.readRun(runId), runId);
   return { status: 200, body: { runId, run } };
+}
+
+/**
+ * Cancel EVERY cancellable run in one guarded command (the operator's
+ * "cancel all tasks" control). Semantics per run match the single cancel:
+ * already-cancelled runs converge, terminal (completed/failed) runs keep
+ * their recorded outcome, and the batch propagates to queued and in-flight
+ * execution work via the daemon. One factory-scoped guard check covers the
+ * batch; no per-run stale-version check (a live factory bumps versions
+ * constantly and the command is explicitly cross-run).
+ *
+ * TWO-PHASE SHAPE: every `run.cancelled` is appended FIRST (per-run append
+ * failures are collected into `errors` instead of aborting the batch with
+ * earlier cancellations already committed), then ONE `cancelRuns` call hands
+ * the whole batch to the daemon — which aborts every in-flight executor
+ * immediately before its single chained release pass, so cancelling run A
+ * never waits behind (or keeps executing) work for run B.
+ */
+async function cancelAllRuns(ctx: RouteContext): Promise<ApiResponse> {
+  const body = asRecord(ctx.request.body);
+  const denial = await ctx.guardMutation({
+    subject: { kind: 'factory', id: 'runs' },
+    command: 'run.cancel_all',
+  });
+  if (denial !== null) {
+    return denial;
+  }
+  const reason = str(body.reason) ?? 'operator cancel-all';
+
+  // ONE cross-run read serves every projection in the batch (perf: no
+  // readRun per run). Grouping preserves per-run order; `projectRun` sorts
+  // defensively anyway.
+  const eventsByRun = new Map<string, FactoryEvent[]>();
+  for (const event of await ctx.reader.readAll()) {
+    const runEvents = eventsByRun.get(event.runId);
+    if (runEvents === undefined) {
+      eventsByRun.set(event.runId, [event]);
+    } else {
+      runEvents.push(event);
+    }
+  }
+
+  const cancelled: string[] = [];
+  const alreadyCancelled: string[] = [];
+  const skippedTerminal: string[] = [];
+  const errors: { runId: string; message: string }[] = [];
+  for (const [runId, events] of eventsByRun) {
+    const run = projectRun(events, runId);
+    if (!isRealRun(run)) {
+      continue;
+    }
+    if (run.status === 'cancelled') {
+      alreadyCancelled.push(runId);
+      continue;
+    }
+    if (run.status === 'completed' || run.status === 'failed') {
+      skippedTerminal.push(runId);
+      continue;
+    }
+    let cancelAppended = false;
+    try {
+      await ctx.writer.append({
+        runId,
+        type: 'run.cancelled',
+        actor: { kind: 'operator', id: 'operator' },
+        subject: { kind: 'run', id: runId, version: run.lastSequence },
+        severity: 'warn',
+        idempotencyKey: `${runId}:run.cancelled`,
+        payload: { reason },
+      });
+      cancelAppended = true;
+      // A cancelled run's open interventions are dead: resolve them so the
+      // operator queue never carries blocking entries for a run that ended.
+      await resolveInterventionsForCancelledRun(ctx.store, events, runId);
+    } catch (error) {
+      // One run's append failure must not 500 the batch with earlier
+      // cancellations already committed: record it and keep cancelling.
+      const message = error instanceof Error ? error.message : String(error);
+      errors.push({ runId, message });
+    }
+    if (cancelAppended) {
+      cancelled.push(runId);
+    }
+  }
+
+  // ONE daemon propagation for the whole batch (aborts every in-flight
+  // executor before the single chained release pass). A propagation failure
+  // is reported, not thrown: the `run.cancelled` events are already durable
+  // and the daemon's reconcile/drain passes release cancelled work anyway.
+  if (ctx.executionDaemon !== null && cancelled.length > 0) {
+    try {
+      await ctx.executionDaemon.cancelRuns(cancelled);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      errors.push({ runId: 'factory', message: `daemon cancel propagation failed: ${message}` });
+    }
+  }
+
+  return {
+    status: 200,
+    body: {
+      cancelled,
+      alreadyCancelled,
+      skippedTerminal,
+      cancelledCount: cancelled.length,
+      ...(errors.length > 0 ? { errors } : {}),
+    },
+  };
 }
 
 /**
@@ -463,6 +609,7 @@ export function runRoutes(): RouteDef[] {
   return [
     { method: 'POST', pattern: '/api/runs', handler: createRun },
     { method: 'GET', pattern: '/api/runs', handler: listRunsHandler },
+    { method: 'POST', pattern: '/api/runs/cancel-all', handler: cancelAllRuns },
     { method: 'POST', pattern: '/api/runs/:id/cancel', handler: cancelRun },
     { method: 'POST', pattern: '/api/runs/:id/workspace', handler: materializeWorkspaceRoute },
     { method: 'GET', pattern: '/api/runs/:id/workspace', handler: getWorkspace },

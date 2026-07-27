@@ -138,6 +138,23 @@ export interface OperatorAggregate {
   readonly tickets: readonly TicketView[];
 }
 
+/**
+ * Factory-wide execution state (shape of GET /api/execution). The daemon
+ * boots HELD — nothing runs automatically when the factory opens — and the
+ * operator releases the gate with the Resume control.
+ */
+export interface ExecutionOverview {
+  readonly execution: {
+    /** False on instances without an execution daemon (controls hidden). */
+    readonly enabled: boolean;
+    /** True while the drain gate is engaged (no queued work is started). */
+    readonly held: boolean;
+    readonly running: boolean;
+  };
+  /** Cross-run queue job counts (what a resume would start / a hold stops). */
+  readonly queue: { readonly queued: number; readonly leased: number };
+}
+
 /** The read-only setup status feeding the checklist (shape of GET /api/setup). */
 export interface SetupStatus {
   readonly operatorToken: { readonly present: boolean };

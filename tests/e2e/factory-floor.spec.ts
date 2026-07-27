@@ -234,12 +234,19 @@ test('blueprint and core controls still fit at 1280x800 (laptop)', async ({ page
   await focusRun(page, runId);
 
   await scrollToTop(page);
+  // The always-visible drain-gate banner joined the fold (decision D7,
+  // 2026-07 review): it is itself a core control, so the laptop budget is
+  // the viewport plus the gate section's real footprint (height + the
+  // section stack gap) — core controls may sit below 800px by exactly that
+  // amount, and no more.
+  const gateBox = await page.getByTestId('factory-held-banner').boundingBox();
+  const foldBudget = 800 + (gateBox?.height ?? 0) + 8;
   const laneBox = await page.getByTestId('lane-deploy').boundingBox();
   const barBox = await page.getByTestId('run-command-bar').boundingBox();
   expect(laneBox?.y ?? -1).toBeGreaterThanOrEqual(0);
   expect(barBox?.y ?? -1).toBeGreaterThanOrEqual(0);
-  expect((laneBox?.y ?? 0) + (laneBox?.height ?? 0)).toBeLessThanOrEqual(800);
-  expect((barBox?.y ?? 0) + (barBox?.height ?? 0)).toBeLessThanOrEqual(800);
+  expect((laneBox?.y ?? 0) + (laneBox?.height ?? 0)).toBeLessThanOrEqual(foldBudget);
+  expect((barBox?.y ?? 0) + (barBox?.height ?? 0)).toBeLessThanOrEqual(foldBudget);
   expect(await horizontalOverflow(page)).toBeLessThanOrEqual(1);
 
   await page.screenshot({
@@ -337,6 +344,42 @@ test('mobile 390x844: interventions first, lanes stack, no horizontal scroll', a
     path: 'test-results/screenshots/u9-blueprint-mobile-390x844-full.png',
     fullPage: true,
   });
+});
+
+/* ----------------------------------------------------------------------------
+ * Factory-wide drain gate (the daemon boots HELD; the operator resumes)
+ * ------------------------------------------------------------------------- */
+
+test('factory drain gate: held banner shows on open and cancel-all arm backs out safely', async ({
+  page,
+}) => {
+  await page.goto('/');
+
+  // The daemon boots HELD: the banner says nothing runs automatically and
+  // offers the single explicit Resume affordance. This spec deliberately
+  // NEVER clicks Resume: the gate is process-local on the SHARED dev server,
+  // so releasing it here would drain every other spec's seeded queued work
+  // through the real executor mid-suite (fullyParallel). The resume/hold
+  // flip is covered in isolation by factory-gate.spec.ts (ephemeral server)
+  // and at the component level in factory-floor.test.tsx.
+  const heldBanner = page.getByTestId('factory-held-banner');
+  await expect(heldBanner).toBeVisible({ timeout: 10_000 });
+  await expect(heldBanner).toContainText('Execution is held');
+  await expect(page.getByTestId('factory-resume')).toBeVisible();
+
+  // Arm cancel-all, then back out: 'Keep running' must fire NO cancel request.
+  const cancelAllRequests: string[] = [];
+  page.on('request', (request) => {
+    if (request.url().includes('/api/runs/cancel-all')) {
+      cancelAllRequests.push(request.url());
+    }
+  });
+  await page.getByTestId('cancel-all-tasks').click();
+  await expect(page.getByTestId('cancel-all-confirm')).toBeVisible();
+  await page.getByTestId('cancel-all-keep').click();
+  await expect(page.getByTestId('cancel-all-confirm')).toBeHidden();
+  await expect(page.getByTestId('cancel-all-tasks')).toBeVisible();
+  expect(cancelAllRequests).toEqual([]);
 });
 
 test('tablet 900x768: lanes stack without horizontal scroll', async ({ page }) => {

@@ -8,7 +8,7 @@
  * daemon singleton, abandoned lease recovery) are split across this file,
  * execution-daemon.test.ts, and execution-queue.test.ts.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   AdapterError,
   createAdapterCatalog,
@@ -80,21 +80,52 @@ interface MakeExecAppResult {
   readonly daemon: ExecutionDaemon;
 }
 
-function makeExecApp(
-  options: {
-    executor?: TicketExecutor;
-    preflight?: PreflightRunner | null;
-    researcher?: RunResearcher | null;
-    maxAttempts?: number;
-  } = {},
-): MakeExecAppResult {
+/** An app with NO execution daemon wired (execution disabled on this instance). */
+function makeDaemonlessApp(): { app: App; store: EventStore } {
   const det = deterministic();
   const store = createInMemoryEventStore(det);
   const provider = createOperatorTokenProvider({
     store: createInMemoryOperatorTokenStore({ token: TOKEN, createdAt: 0 }),
   });
   let runSeq = 0;
+  const app = createApp({
+    store,
+    operatorToken: provider,
+    idGenerator: () => `run-${(runSeq += 1)}`,
+    config: { allowedOrigins: [ORIGIN], csrfToken: CSRF },
+    execution: null,
+  });
+  return { app, store };
+}
+
+function makeExecApp(
+  options: {
+    executor?: TicketExecutor;
+    preflight?: PreflightRunner | null;
+    researcher?: RunResearcher | null;
+    maxAttempts?: number;
+    autoStart?: boolean;
+    /** Wrap the shared store (e.g. to inject targeted append failures). */
+    wrapStore?: (store: EventStore) => EventStore;
+  } = {},
+): MakeExecAppResult {
+  const det = deterministic();
+  const baseStore = createInMemoryEventStore(det);
+  const store = options.wrapStore === undefined ? baseStore : options.wrapStore(baseStore);
+  const provider = createOperatorTokenProvider({
+    store: createInMemoryOperatorTokenStore({ token: TOKEN, createdAt: 0 }),
+  });
+  let runSeq = 0;
   let leaseSeq = 0;
+  // Build the partial config without spreading `undefined` values (a spread
+  // would override the daemon's static defaults with undefined).
+  const execConfig: { maxAttempts?: number; autoStart?: boolean } = {};
+  if (options.maxAttempts !== undefined) {
+    execConfig.maxAttempts = options.maxAttempts;
+  }
+  if (options.autoStart !== undefined) {
+    execConfig.autoStart = options.autoStart;
+  }
   const daemon = createExecutionDaemon({
     store,
     clock: det.clock,
@@ -102,7 +133,7 @@ function makeExecApp(
     ownerId: 'daemon-test',
     executor: options.executor,
     timers: noopTimers(),
-    config: options.maxAttempts !== undefined ? { maxAttempts: options.maxAttempts } : undefined,
+    config: Object.keys(execConfig).length > 0 ? execConfig : undefined,
   });
   const app = createApp({
     store,
@@ -417,6 +448,35 @@ describe('pause, resume, and cancel', () => {
 
     const events = await store.readRun(runId);
     expect(events.filter((e) => e.type === 'run.cancelled')).toHaveLength(1);
+  });
+
+  it('cancel resolves the run’s open interventions so the queue drops them', async () => {
+    const { app, store } = makeExecApp();
+    // A repo-sourced run with no workspace: the failed preflight leaves OPEN
+    // interventions blocking the run.
+    const runId = await createPlannedRun(app, { githubRepo: 'octo/app' });
+    const blocked = await app.handle(req('POST', `/api/runs/${runId}/start`, authedHeaders(), {}));
+    expect(blocked.status).toBe(422);
+    const openBefore = projectInterventions(await store.readRun(runId)).open;
+    expect(openBefore.length).toBeGreaterThan(0);
+
+    const cancel = await app.handle(
+      req('POST', `/api/runs/${runId}/cancel`, authedHeaders(), { reason: 'operator stop' }),
+    );
+    expect(cancel.status).toBe(200);
+
+    // A cancelled run never resumes: its interventions must not sit
+    // 'open'/'blocking' on the factory floor forever.
+    const projection = projectInterventions(await store.readRun(runId));
+    expect(projection.open).toHaveLength(0);
+    for (const { interventionId } of openBefore) {
+      expect(projection.byId[interventionId]?.status).toBe('resolved');
+      expect(projection.byId[interventionId]?.resolution).toBe('cancelled');
+    }
+
+    // The cross-run queue's open count drops with them.
+    const list = await app.handle(req('GET', '/api/interventions', {}, undefined));
+    expect(record(list).openCount).toBe(0);
   });
 
   it('cancel propagates to ACTIVE (in-flight) work via the abort signal', async () => {
@@ -798,6 +858,452 @@ describe('MCP execution tools', () => {
     expect(res.isError).toBe(true);
 
     expect((await store.readRun(runId)).length).toBe(before);
+  });
+});
+
+/* ----------------------------------------------------------------------------
+ * Factory-wide execution controls (drain gate) + cancel-all
+ * ------------------------------------------------------------------------- */
+
+describe('factory-wide execution controls', () => {
+  it('GET /api/execution reports the drain gate state and cross-run job counts', async () => {
+    const { app, daemon } = makeExecApp({ autoStart: false });
+    expect(daemon.held).toBe(true);
+
+    const runId = await createPlannedRun(app);
+    const started = await app.handle(req('POST', `/api/runs/${runId}/start`, authedHeaders(), {}));
+    // A queued start while the gate is engaged says so: the job WAITS.
+    expect(started.status).toBe(202);
+    expect(record(started).queued).toBe(true);
+    expect(record(started).held).toBe(true);
+
+    const res = await app.handle(req('GET', '/api/execution', {}));
+    expect(res.status).toBe(200);
+    expect(record(res).execution).toMatchObject({ enabled: true, held: true });
+    expect(record(res).queue).toMatchObject({ queued: 1, leased: 0 });
+  });
+
+  it('GET /api/execution without a daemon still reports LEDGER queue counts', async () => {
+    // Execution disabled on THIS instance, but queued work exists on the
+    // ledger (e.g. enqueued by an instance that HAS a daemon): the overview
+    // must report the real cross-run counts, never hardcoded zeros.
+    const { app, store } = makeDaemonlessApp();
+    await store.append({
+      runId: 'run-q',
+      type: 'queue.enqueued',
+      actor: { kind: 'system', id: 'test' },
+      subject: { kind: 'queue-job', id: 'run-q:execution' },
+      severity: 'info',
+      payload: { jobId: 'run-q:execution', jobKind: 'run-execution', attempt: 1 },
+    });
+
+    const res = await app.handle(req('GET', '/api/execution', {}));
+    expect(res.status).toBe(200);
+    expect(record(res).execution).toEqual({ enabled: false, held: false, running: false });
+    expect(record(res).queue).toEqual({ queued: 1, leased: 0 });
+  });
+
+  it('resume requires the command guard, releases the gate, and is idempotent', async () => {
+    let executed = 0;
+    const { app, daemon } = makeExecApp({
+      autoStart: false,
+      executor: (): Promise<TicketExecutionResult> => {
+        executed += 1;
+        return Promise.resolve({ status: 'completed', summary: 'done' });
+      },
+    });
+    const runId = await createPlannedRun(app);
+    await app.handle(req('POST', `/api/runs/${runId}/start`, authedHeaders(), {}));
+
+    // Explicit start enqueues honestly, but the held daemon runs NOTHING.
+    const heldTick = await daemon.tick();
+    expect(heldTick.claimed).toBe(0);
+    expect(executed).toBe(0);
+
+    // Unauthorized resume is rejected before any side effects.
+    const denied = await app.handle(
+      req('POST', '/api/execution/resume', { origin: ORIGIN, 'x-csrf-token': CSRF }, {}),
+    );
+    expect(denied.status).toBe(401);
+    expect(daemon.held).toBe(true);
+
+    const resumed = await app.handle(req('POST', '/api/execution/resume', authedHeaders(), {}));
+    expect(resumed.status).toBe(200);
+    expect(record(resumed).resumed).toBe(true);
+    // `running` rides along so a caller can spot a released gate on a daemon
+    // whose loop is not draining (these tests drive tick() manually, so the
+    // loop is honestly not running).
+    expect(record(resumed).running).toBe(false);
+    expect(daemon.held).toBe(false);
+
+    await daemon.tick();
+    expect(executed).toBe(1);
+
+    // Repeat resume converges instead of erroring.
+    const again = await app.handle(req('POST', '/api/execution/resume', authedHeaders(), {}));
+    expect(again.status).toBe(200);
+    expect(record(again).alreadyActive).toBe(true);
+    expect(record(again).running).toBe(false);
+  });
+
+  it('hold re-engages the gate so no NEW work is claimed (and is idempotent)', async () => {
+    let executed = 0;
+    const { app, daemon } = makeExecApp({
+      executor: (): Promise<TicketExecutionResult> => {
+        executed += 1;
+        return Promise.resolve({ status: 'completed', summary: 'done' });
+      },
+    });
+    expect(daemon.held).toBe(false);
+    const runId = await createPlannedRun(app);
+    await app.handle(req('POST', `/api/runs/${runId}/start`, authedHeaders(), {}));
+
+    const held = await app.handle(req('POST', '/api/execution/hold', authedHeaders(), {}));
+    expect(held.status).toBe(200);
+    expect(record(held).held).toBe(true);
+    expect(record(held).running).toBe(false);
+    expect(daemon.held).toBe(true);
+
+    const tick = await daemon.tick();
+    expect(tick.claimed).toBe(0);
+    expect(executed).toBe(0);
+
+    const again = await app.handle(req('POST', '/api/execution/hold', authedHeaders(), {}));
+    expect(again.status).toBe(200);
+    expect(record(again).alreadyHeld).toBe(true);
+    expect(record(again).running).toBe(false);
+  });
+
+  it('resume and hold fail closed with execution_disabled when no daemon is wired', async () => {
+    const { app } = makeDaemonlessApp();
+    // Authed + guard-passing requests still 503: there is no gate to operate.
+    for (const path of ['/api/execution/resume', '/api/execution/hold']) {
+      const res = await app.handle(req('POST', path, authedHeaders(), {}));
+      expect(res.status).toBe(503);
+      expect(record(res)).toEqual({
+        error: 'execution_disabled',
+        message: 'Execution controls are not enabled on this server instance.',
+      });
+    }
+  });
+
+  it('a run-level resume never lets queued work bypass the factory drain gate', async () => {
+    let executed = 0;
+    const { app, store, daemon } = makeExecApp({
+      autoStart: false,
+      executor: (): Promise<TicketExecutionResult> => {
+        executed += 1;
+        return Promise.resolve({ status: 'completed', summary: 'done' });
+      },
+    });
+    const runId = await createPlannedRun(app);
+    const started = await app.handle(req('POST', `/api/runs/${runId}/start`, authedHeaders(), {}));
+    expect(started.status).toBe(202);
+    expect(record(started).held).toBe(true);
+
+    // Pause then resume the RUN: the run-level gate reopens (and the route
+    // notifies the daemon), but the FACTORY gate is still engaged.
+    await app.handle(req('POST', `/api/runs/${runId}/pause`, authedHeaders(), {}));
+    const resumed = await app.handle(req('POST', `/api/runs/${runId}/resume`, authedHeaders(), {}));
+    expect(resumed.status).toBe(200);
+    expect(record(resumed).resumed).toBe(true);
+
+    // The job stays queued and NOTHING executes while the factory is held.
+    const tickWhileHeld = await daemon.tick();
+    expect(tickWhileHeld.claimed).toBe(0);
+    expect(executed).toBe(0);
+    const queueHeld = projectExecutionQueue(await store.readRun(runId), runId);
+    expect(queueHeld.jobs[0].status).toBe('queued');
+
+    // Only the operator's FACTORY resume releases the waiting job.
+    const factoryResume = await app.handle(
+      req('POST', '/api/execution/resume', authedHeaders(), {}),
+    );
+    expect(factoryResume.status).toBe(200);
+    await daemon.tick();
+    expect(executed).toBe(1);
+    expect(projectRun(await store.readRun(runId), runId).executionState).toBe('completed');
+  });
+});
+
+describe('POST /api/runs/cancel-all', () => {
+  it('cancels every cancellable run, converges on cancelled ones, and skips terminal ones', async () => {
+    const { app, store, daemon } = makeExecApp();
+    const active = await createPlannedRun(app); // planned, never started
+    const queued = await createPlannedRun(app); // planned + queued execution
+    await app.handle(req('POST', `/api/runs/${queued}/start`, authedHeaders(), {}));
+    const preCancelled = await createPlannedRun(app);
+    await app.handle(req('POST', `/api/runs/${preCancelled}/cancel`, authedHeaders(), {}));
+    const failed = await createPlannedRun(app);
+    await store.append({
+      runId: failed,
+      type: 'run.failed',
+      actor: { kind: 'operator', id: 'operator' },
+      subject: { kind: 'run', id: failed },
+      severity: 'error',
+      payload: { reason: 'exploded before cancel-all' },
+    });
+
+    const res = await app.handle(
+      req('POST', '/api/runs/cancel-all', authedHeaders(), { reason: 'operator cancel-all' }),
+    );
+    expect(res.status).toBe(200);
+    const body = record(res) as {
+      cancelled: string[];
+      alreadyCancelled: string[];
+      skippedTerminal: string[];
+      cancelledCount: number;
+    };
+    expect(body.cancelled.sort()).toEqual([active, queued].sort());
+    expect(body.alreadyCancelled).toEqual([preCancelled]);
+    expect(body.skippedTerminal).toEqual([failed]);
+    expect(body.cancelledCount).toBe(2);
+
+    // Every cancelled run projects cancelled; the queued job was released.
+    for (const runId of [active, queued, preCancelled]) {
+      expect(projectRun(await store.readRun(runId), runId).status).toBe('cancelled');
+    }
+    const queuedEvents = await store.readRun(queued);
+    const released = queuedEvents.find((e) => e.type === 'queue.released');
+    expect((released?.payload as { outcome?: string } | undefined)?.outcome).toBe('cancelled');
+    // The terminal run keeps its recorded outcome.
+    expect(projectRun(await store.readRun(failed), failed).status).toBe('failed');
+
+    // The daemon has nothing left to claim.
+    const tick = await daemon.tick();
+    expect(tick.claimed).toBe(0);
+
+    // Repeat cancel-all converges: everything is already cancelled/terminal.
+    const again = await app.handle(req('POST', '/api/runs/cancel-all', authedHeaders(), {}));
+    expect(again.status).toBe(200);
+    expect((record(again) as { cancelledCount: number }).cancelledCount).toBe(0);
+  });
+
+  it('cancel-all with no runs at all returns the honest all-empty result', async () => {
+    const { app } = makeExecApp();
+    const res = await app.handle(req('POST', '/api/runs/cancel-all', authedHeaders(), {}));
+    expect(res.status).toBe(200);
+    // Nothing cancelled, nothing skipped, and no phantom `errors` key.
+    expect(record(res)).toEqual({
+      cancelled: [],
+      alreadyCancelled: [],
+      skippedTerminal: [],
+      cancelledCount: 0,
+    });
+  });
+
+  it('cancel-all without a daemon still cancels runs on the ledger (no propagation)', async () => {
+    const { app, store } = makeDaemonlessApp();
+    const runId = await createPlannedRun(app);
+
+    const res = await app.handle(req('POST', '/api/runs/cancel-all', authedHeaders(), {}));
+    expect(res.status).toBe(200);
+    const body = record(res) as {
+      cancelled: string[];
+      cancelledCount: number;
+      errors?: unknown;
+    };
+    expect(body.cancelled).toEqual([runId]);
+    expect(body.cancelledCount).toBe(1);
+    // No daemon means no propagation attempt — and no phantom error entry.
+    expect(body.errors).toBeUndefined();
+
+    const events = await store.readRun(runId);
+    expect(events.some((e) => e.type === 'run.cancelled')).toBe(true);
+    expect(projectRun(events, runId).status).toBe('cancelled');
+    // Nothing was enqueued and nothing needed releasing on this instance.
+    expect(events.some((e) => e.type.startsWith('queue.'))).toBe(false);
+  });
+
+  it('requires the command guard before cancelling anything', async () => {
+    const { app, store } = makeExecApp();
+    const runId = await createPlannedRun(app);
+
+    const denied = await app.handle(
+      req('POST', '/api/runs/cancel-all', { origin: ORIGIN, 'x-csrf-token': CSRF }, {}),
+    );
+    expect(denied.status).toBe(401);
+    expect(projectRun(await store.readRun(runId), runId).status).toBe('planned');
+    expect((await store.readRun(runId)).some((e) => e.type === 'run.cancelled')).toBe(false);
+  });
+
+  it('cancel-all aborts ACTIVE in-flight work via the abort signal', async () => {
+    let startedResolve: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      startedResolve = resolve;
+    });
+    const { app, store, daemon } = makeExecApp({
+      executor: (ctx): Promise<TicketExecutionResult> =>
+        new Promise((resolve) => {
+          startedResolve?.();
+          ctx.signal.addEventListener('abort', () =>
+            resolve({ status: 'yielded', reason: 'aborted by cancel-all' }),
+          );
+        }),
+    });
+    const runId = await createPlannedRun(app);
+    await app.handle(req('POST', `/api/runs/${runId}/start`, authedHeaders(), {}));
+
+    const tickPromise = daemon.tick(); // claims and blocks inside the executor
+    await started;
+    const res = await app.handle(req('POST', '/api/runs/cancel-all', authedHeaders(), {}));
+    expect(res.status).toBe(200);
+    expect((record(res) as { cancelled: string[] }).cancelled).toEqual([runId]);
+    await tickPromise;
+
+    const events = await store.readRun(runId);
+    expect(
+      events.some(
+        (e) =>
+          e.type === 'queue.released' &&
+          (e.payload as { outcome?: string }).outcome === 'cancelled',
+      ),
+    ).toBe(true);
+    expect(projectRun(events, runId).executionState).toBe('cancelled');
+  });
+
+  it('cancel-all with work across TWO runs aborts in-flight work promptly and never executes the later run', async () => {
+    // The daemon drains sequentially, so run A's executor is in-flight while
+    // run B's job waits queued behind it. The OLD per-run chained cancel
+    // deadlocked here: aborting A let the pass continue into B's executor,
+    // whose abort would never come. The two-phase cancel appends BOTH
+    // run.cancelled events first, aborts every in-flight controller before
+    // any chained pass, and the post-claim cancellation gate stops B's
+    // executor from ever starting.
+    const abortedRuns: string[] = [];
+    const executedRuns: string[] = [];
+    let startedResolve: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      startedResolve = resolve;
+    });
+    const { app, store, daemon } = makeExecApp({
+      executor: (ctx): Promise<TicketExecutionResult> =>
+        new Promise((resolve) => {
+          executedRuns.push(ctx.runId);
+          startedResolve?.();
+          ctx.signal.addEventListener('abort', () => {
+            abortedRuns.push(ctx.runId);
+            resolve({ status: 'yielded', reason: 'aborted by cancel-all' });
+          });
+        }),
+    });
+    const first = await createPlannedRun(app);
+    const second = await createPlannedRun(app);
+    await app.handle(req('POST', `/api/runs/${first}/start`, authedHeaders(), {}));
+    await app.handle(req('POST', `/api/runs/${second}/start`, authedHeaders(), {}));
+
+    const tickPromise = daemon.tick(); // claims one run, blocks in its executor
+    await started;
+    // Exactly ONE executor is in-flight; the other run's job waits queued.
+    expect(executedRuns).toHaveLength(1);
+    const inFlightRun = executedRuns[0];
+
+    const res = await app.handle(req('POST', '/api/runs/cancel-all', authedHeaders(), {}));
+    expect(res.status).toBe(200);
+    expect((record(res) as { cancelled: string[] }).cancelled.sort()).toEqual(
+      [first, second].sort(),
+    );
+    await tickPromise;
+
+    // The in-flight executor was aborted; the OTHER run's executor NEVER ran.
+    expect(abortedRuns).toEqual([inFlightRun]);
+    expect(executedRuns).toEqual([inFlightRun]);
+    for (const runId of [first, second]) {
+      const events = await store.readRun(runId);
+      expect(
+        events.some(
+          (e) =>
+            e.type === 'queue.released' &&
+            (e.payload as { outcome?: string }).outcome === 'cancelled',
+        ),
+        `run ${runId} released as cancelled`,
+      ).toBe(true);
+      expect(projectRun(events, runId).executionState).toBe('cancelled');
+    }
+  });
+
+  it('an append failure for one run still cancels the others and reports errors', async () => {
+    // The wrapped store refuses run-2's `run.cancelled` append; every other
+    // write (queue, interventions, the other runs' cancels) works normally.
+    const { app, store } = makeExecApp({
+      wrapStore: (base) => ({
+        ...base,
+        append: (event) =>
+          event.type === 'run.cancelled' && event.runId === 'run-2'
+            ? Promise.reject(new Error('ledger write refused'))
+            : base.append(event),
+      }),
+    });
+    const first = await createPlannedRun(app); // run-1
+    const failing = await createPlannedRun(app); // run-2
+    const last = await createPlannedRun(app); // run-3
+    expect(failing).toBe('run-2');
+
+    const res = await app.handle(req('POST', '/api/runs/cancel-all', authedHeaders(), {}));
+    // The batch reports 200 with the failure COLLECTED, never a 500 with the
+    // earlier cancellations already committed.
+    expect(res.status).toBe(200);
+    const body = record(res) as {
+      cancelled: string[];
+      cancelledCount: number;
+      errors?: { runId: string; message: string }[];
+    };
+    expect(body.cancelled.sort()).toEqual([first, last].sort());
+    expect(body.cancelledCount).toBe(2);
+    expect(body.errors).toHaveLength(1);
+    expect(body.errors?.[0].runId).toBe(failing);
+    expect(body.errors?.[0].message).toContain('ledger write refused');
+
+    for (const runId of [first, last]) {
+      expect(projectRun(await store.readRun(runId), runId).status).toBe('cancelled');
+    }
+    expect(projectRun(await store.readRun(failing), failing).status).toBe('planned');
+  });
+
+  it('cancel-all resolves every cancelled run’s open interventions', async () => {
+    const { app, store } = makeExecApp();
+    const runId = await createPlannedRun(app, { githubRepo: 'octo/app' });
+    const blocked = await app.handle(req('POST', `/api/runs/${runId}/start`, authedHeaders(), {}));
+    expect(blocked.status).toBe(422);
+    expect(projectInterventions(await store.readRun(runId)).open.length).toBeGreaterThan(0);
+
+    const res = await app.handle(req('POST', '/api/runs/cancel-all', authedHeaders(), {}));
+    expect(res.status).toBe(200);
+    expect((record(res) as { cancelled: string[] }).cancelled).toEqual([runId]);
+
+    const projection = projectInterventions(await store.readRun(runId));
+    expect(projection.open).toHaveLength(0);
+    const list = await app.handle(req('GET', '/api/interventions', {}, undefined));
+    expect(record(list).openCount).toBe(0);
+  });
+
+  it('a denied cancel-all lands an audit record on the reserved factory stream', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const { app, store } = makeExecApp();
+      await createPlannedRun(app);
+
+      const denied = await app.handle(
+        req('POST', '/api/runs/cancel-all', { origin: ORIGIN, 'x-csrf-token': CSRF }, {}),
+      );
+      expect(denied.status).toBe(401);
+
+      // Factory-scoped commands have no run of their own: the denial is
+      // durable on the reserved 'factory' stream…
+      const audit = await store.readRun('factory');
+      expect(audit).toHaveLength(1);
+      expect(audit[0].type.startsWith('security.')).toBe(true);
+      expect(audit[0].subject).toMatchObject({ kind: 'factory', id: 'runs' });
+      // …and logged, since no run page will ever surface it.
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('run.cancel_all'));
+
+      // The phantom 'factory' stream never surfaces as a run (isRealRun).
+      const runs = await app.handle(req('GET', '/api/runs', {}));
+      const listed = (record(runs).runs as { runId: string }[]).map((run) => run.runId);
+      expect(listed).not.toContain('factory');
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });
 

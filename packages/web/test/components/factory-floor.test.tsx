@@ -21,6 +21,7 @@ import { projectInterventions } from '../../src/server/execution/interventions';
 import { deriveBlueprintLanes, deriveFactoryPulse } from '../../src/lib/run-view';
 import { useInterventionQueue } from '../../src/lib/use-intervention-queue';
 import type {
+  ExecutionOverview,
   InterventionItem,
   InterventionQueueSnapshot,
   RunAggregate,
@@ -42,6 +43,7 @@ import { ReviewStudio } from '../../src/components/factory-floor/ReviewStudio';
 import { BlueprintLanes } from '../../src/components/factory-floor/BlueprintLanes';
 import { ContractHandoff } from '../../src/components/factory-floor/ContractHandoff';
 import { RunCommandBar } from '../../src/components/factory-floor/RunCommandBar';
+import { FactoryCommandBar } from '../../src/components/factory-floor/FactoryCommandBar';
 import { InterventionQueue } from '../../src/components/factory-floor/InterventionQueue';
 import { RunStrip } from '../../src/components/factory-floor/RunStrip';
 import { Mono } from '../../src/components/factory-floor/primitives';
@@ -661,6 +663,255 @@ describe('RunCommandBar (U9)', () => {
   });
 });
 
+describe('FactoryCommandBar (factory drain gate)', () => {
+  const HELD_EXECUTION: ExecutionOverview = {
+    execution: { enabled: true, held: true, running: true },
+    queue: { queued: 2, leased: 0 },
+  };
+  const ACTIVE_EXECUTION: ExecutionOverview = {
+    execution: { enabled: true, held: false, running: true },
+    queue: { queued: 0, leased: 1 },
+  };
+
+  function jsonResponse(body: unknown, status = 200): Response {
+    return new Response(JSON.stringify(body), {
+      status,
+      headers: { 'content-type': 'application/json' },
+    });
+  }
+
+  it('renders the held banner with Resume and Cancel all while the gate is engaged', () => {
+    render(withSession(<FactoryCommandBar initial={HELD_EXECUTION} />));
+
+    const banner = screen.getByTestId('factory-held-banner');
+    // The banner states the guarantee honestly: nothing runs automatically.
+    expect(banner).toHaveTextContent(/Execution is held — nothing runs automatically/);
+    expect(banner).toHaveTextContent(/2 tasks are waiting for your resume/);
+    expect(screen.getByTestId('factory-resume')).toBeEnabled();
+    expect(screen.getByTestId('cancel-all-tasks')).toBeEnabled();
+    expect(screen.queryByTestId('factory-active-badge')).toBeNull();
+  });
+
+  it('renders the active badge with Hold and Cancel all once the gate is released', () => {
+    render(withSession(<FactoryCommandBar initial={ACTIVE_EXECUTION} />));
+
+    expect(screen.getByTestId('factory-active-badge')).toHaveTextContent('execution active');
+    expect(screen.getByTestId('factory-hold')).toBeEnabled();
+    expect(screen.getByTestId('cancel-all-tasks')).toBeEnabled();
+    expect(screen.queryByTestId('factory-held-banner')).toBeNull();
+  });
+
+  it('renders nothing on an instance without execution controls', () => {
+    const { container } = render(
+      withSession(
+        <FactoryCommandBar
+          initial={{
+            execution: { enabled: false, held: false, running: false },
+            queue: { queued: 0, leased: 0 },
+          }}
+        />,
+      ),
+    );
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it('cancel-all is two-step: arming focuses the safe option and Keep running fires no request', () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      render(withSession(<FactoryCommandBar initial={ACTIVE_EXECUTION} />));
+
+      fireEvent.click(screen.getByTestId('cancel-all-tasks'));
+      const confirm = screen.getByRole('group', { name: 'Confirm cancel all tasks' });
+      expect(within(confirm).getByTestId('cancel-all-confirm')).toBeInTheDocument();
+      // Focus lands on the SAFE "Keep running" option, never the destructive one.
+      expect(screen.getByTestId('cancel-all-keep')).toHaveFocus();
+
+      fireEvent.click(screen.getByTestId('cancel-all-keep'));
+      expect(screen.queryByRole('group', { name: 'Confirm cancel all tasks' })).toBeNull();
+      // Disarming returns focus to the arm button — and cancels NOTHING.
+      expect(screen.getByTestId('cancel-all-tasks')).toHaveFocus();
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('Escape disarms the cancel-all confirm without firing the command', () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      render(withSession(<FactoryCommandBar initial={HELD_EXECUTION} />));
+
+      fireEvent.click(screen.getByTestId('cancel-all-tasks'));
+      fireEvent.keyDown(screen.getByRole('group', { name: 'Confirm cancel all tasks' }), {
+        key: 'Escape',
+      });
+      expect(screen.queryByRole('group', { name: 'Confirm cancel all tasks' })).toBeNull();
+      expect(screen.getByTestId('cancel-all-tasks')).toHaveFocus();
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('confirmed cancel-all posts the command and reports the zero-count outcome honestly', async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) =>
+      Promise.resolve(
+        String(input) === '/api/runs/cancel-all'
+          ? jsonResponse({
+              cancelled: [],
+              alreadyCancelled: ['run-old'],
+              skippedTerminal: [],
+              cancelledCount: 0,
+            })
+          : // The post-command refresh() re-polls the overview immediately.
+            jsonResponse(ACTIVE_EXECUTION),
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      render(withSession(<FactoryCommandBar initial={ACTIVE_EXECUTION} />));
+
+      fireEvent.click(screen.getByTestId('cancel-all-tasks'));
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('cancel-all-confirm'));
+      });
+
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/runs/cancel-all',
+        expect.objectContaining({ method: 'POST' }),
+      );
+      expect(screen.getByTestId('factory-command-notice')).toHaveTextContent(
+        'No active tasks to cancel — every run was already finished or cancelled.',
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('confirmed cancel-all reports one cancelled run in the singular and refreshes the parent', async () => {
+    const onChanged = vi.fn();
+    const fetchMock = vi.fn((input: RequestInfo | URL) =>
+      Promise.resolve(
+        String(input) === '/api/runs/cancel-all'
+          ? jsonResponse({
+              cancelled: ['run-one'],
+              alreadyCancelled: [],
+              skippedTerminal: [],
+              cancelledCount: 1,
+            })
+          : jsonResponse(HELD_EXECUTION),
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      render(withSession(<FactoryCommandBar initial={HELD_EXECUTION} onChanged={onChanged} />));
+
+      fireEvent.click(screen.getByTestId('cancel-all-tasks'));
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('cancel-all-confirm'));
+      });
+
+      expect(screen.getByTestId('factory-command-notice')).toHaveTextContent(
+        'Cancelled 1 run; queued and in-flight work stops.',
+      );
+      expect(onChanged).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('surfaces a rejected command as a dismissible error banner (no parent refresh)', async () => {
+    const onChanged = vi.fn();
+    const fetchMock = vi.fn((input: RequestInfo | URL) =>
+      Promise.resolve(
+        String(input) === '/api/execution/resume'
+          ? jsonResponse(
+              {
+                error: 'execution_disabled',
+                message: 'Execution controls are not enabled on this server instance.',
+              },
+              503,
+            )
+          : jsonResponse(HELD_EXECUTION),
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      render(withSession(<FactoryCommandBar initial={HELD_EXECUTION} onChanged={onChanged} />));
+
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('factory-resume'));
+      });
+
+      const error = screen.getByTestId('factory-command-error');
+      expect(error).toHaveTextContent(
+        'Execution controls are not enabled on this server instance.',
+      );
+      expect(onChanged).not.toHaveBeenCalled();
+
+      fireEvent.click(within(error).getByRole('button', { name: 'Dismiss' }));
+      expect(screen.queryByTestId('factory-command-error')).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('a resume that leaves the daemon loop stopped surfaces the not-draining notice', async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) =>
+      Promise.resolve(
+        String(input) === '/api/execution/resume'
+          ? // The gate released, but the daemon loop is dead: nothing drains.
+            jsonResponse({ resumed: true, held: false, running: false })
+          : jsonResponse(HELD_EXECUTION),
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      render(withSession(<FactoryCommandBar initial={HELD_EXECUTION} />));
+
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('factory-resume'));
+      });
+
+      expect(screen.getByTestId('factory-command-notice')).toHaveTextContent(
+        /daemon is not running — queued work will not drain/,
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('ignores a command that settles after unmount (no onChanged, no state update)', async () => {
+    let settle: (response: Response) => void = () => {};
+    const pending = new Promise<Response>((resolve) => {
+      settle = resolve;
+    });
+    const fetchMock = vi.fn(() => pending);
+    vi.stubGlobal('fetch', fetchMock);
+    const onChanged = vi.fn();
+    try {
+      const { unmount } = render(
+        withSession(<FactoryCommandBar initial={HELD_EXECUTION} onChanged={onChanged} />),
+      );
+      fireEvent.click(screen.getByTestId('factory-resume'));
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      // The operator navigates away while the resume is in flight…
+      unmount();
+      await act(async () => {
+        settle(jsonResponse({ resumed: true, held: false, running: true }));
+      });
+
+      // …so the late result must not trigger the parent refresh (or setState).
+      expect(onChanged).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
 describe('InterventionQueue (U9/X4)', () => {
   function twoRunQueue(): InterventionQueueSnapshot {
     const a = interventionItemsOf(buildFullFactoryRunEvents('run-alpha'));
@@ -850,7 +1101,11 @@ describe('FactoryFloor blueprint-first hierarchy (U9/KTD7)', () => {
     workspace: { root: 'C:\\repo\\software-factory' },
   };
 
-  function renderFloor() {
+  /** True when `a` renders before `b` in document order. */
+  const before = (a: Element, b: Element): boolean =>
+    (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+
+  function renderFloor(initialExecution?: ExecutionOverview) {
     const runId = 'run-floor';
     const events = buildFullFactoryRunEvents(runId);
     const aggregate = aggregateFromEvents(events, runId);
@@ -862,6 +1117,7 @@ describe('FactoryFloor blueprint-first hierarchy (U9/KTD7)', () => {
           setup={setup}
           latest={aggregate}
           initialInterventions={{ interventions: items, openCount: items.length }}
+          initialExecution={initialExecution}
         />,
       ),
     );
@@ -875,8 +1131,6 @@ describe('FactoryFloor blueprint-first hierarchy (U9/KTD7)', () => {
     const intake = screen.getByLabelText('Run control');
     const history = screen.getByLabelText('Runs');
 
-    const before = (a: Element, b: Element): boolean =>
-      (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
     expect(before(interventions, blueprint)).toBe(true);
     expect(before(blueprint, intake)).toBe(true);
     expect(before(intake, history)).toBe(true);
@@ -884,6 +1138,25 @@ describe('FactoryFloor blueprint-first hierarchy (U9/KTD7)', () => {
     // The blueprint region includes the contract handoff with commands adjacent.
     expect(screen.getByLabelText('Build contract and preflight')).toBeInTheDocument();
     expect(screen.getByTestId('run-command-bar')).toBeInTheDocument();
+  });
+
+  it('renders the factory execution gate ABOVE the interventions when execution is enabled', () => {
+    renderFloor({
+      execution: { enabled: true, held: true, running: true },
+      queue: { queued: 1, leased: 0 },
+    });
+
+    // The drain gate outranks even the intervention queue: nothing runs until
+    // the operator resumes, so the gate is the first thing on the floor.
+    const controls = screen.getByLabelText('Factory execution controls');
+    const interventions = screen.getByLabelText('Operator interventions');
+    expect(before(controls, interventions)).toBe(true);
+
+    // The held state is explicit: banner text plus the single Resume affordance.
+    expect(screen.getByTestId('factory-held-banner')).toHaveTextContent(
+      /Execution is held — nothing runs automatically/,
+    );
+    expect(screen.getByTestId('factory-resume')).toHaveTextContent('Resume execution');
   });
 
   it('clearing run history preserves the focused blueprint', () => {

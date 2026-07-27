@@ -14,6 +14,17 @@
  *   2. DRAIN — queued jobs whose runs are not paused/cancelled are claimed
  *      (lease + heartbeat) and handed to the injected `TicketExecutor`.
  *
+ * DRAIN GATE (operator autostart control): when `config.autoStart` is false
+ * the daemon boots HELD — reconcile bookkeeping still runs every pass (stale
+ * leases are abandoned and escalated, cancelled runs' queued jobs are
+ * released), but NO queued work is claimed or executed until an operator
+ * calls `resume()`. `hold()` re-engages the gate; like a run pause it stops
+ * NEW claims and leaves in-flight work to finish. Server runtimes resolve
+ * `autoStart` to false by default (see `resolveExecutionRuntimeConfig`), so
+ * opening the factory never runs leftover queued work automatically — the
+ * operator resumes explicitly. The gate is deliberately process-local state
+ * (like `inFlight`): every fresh process starts held again by design.
+ *
  * U6 SEAM: the `TicketExecutor` is where ticket-to-worker execution plugs in.
  * U5 ships `deferredTicketExecutor`, which honestly BLOCKS execution (with an
  * intervention) instead of pretending to build. U6 replaces it with a
@@ -187,6 +198,12 @@ export interface DaemonTickResult {
 export interface ExecutionDaemon {
   readonly ownerId: string;
   readonly running: boolean;
+  /**
+   * Whether the drain gate is engaged: while true, passes reconcile but never
+   * claim/execute queued work. Daemons created with `autoStart: false` boot
+   * held; `resume()` releases the gate for the life of the process.
+   */
+  readonly held: boolean;
   /** Resolved queue tuning (lease/heartbeat/reconcile/retry budget). */
   readonly config: ExecutionRuntimeConfig;
   /** Idempotent bootstrap: initial reconcile pass + the interval loop. */
@@ -197,8 +214,27 @@ export interface ExecutionDaemon {
   tick(): Promise<DaemonTickResult>;
   /** Wake the loop soon (called by routes after enqueue). No-op when stopped. */
   notify(): void;
+  /**
+   * Release the drain gate and wake the loop so waiting queued work starts
+   * soon (asynchronously — never in the caller's request lifetime, E1).
+   * Idempotent; the operator's explicit "resume the factory" command.
+   */
+  resume(): void;
+  /**
+   * Re-engage the drain gate: stop claiming NEW queued work. Like a run pause,
+   * in-flight work is left to finish (or yield) safely — never aborted.
+   */
+  hold(): void;
   /** Propagate a run cancellation to queued and in-flight work. */
   cancelRun(runId: string): Promise<void>;
+  /**
+   * Propagate MANY run cancellations at once (the cancel-all command). Two
+   * phases: every matching in-flight AbortController is aborted FIRST (before
+   * any chained pass), then ONE chained release pass covers all runs — so a
+   * batch cancel never blocks behind, or keeps executing, work for runs later
+   * in the batch. `cancelRun` is the single-run special case.
+   */
+  cancelRuns(runIds: readonly string[]): Promise<void>;
 }
 
 let daemonsCreated = 0;
@@ -222,6 +258,10 @@ export function createExecutionDaemon(options: ExecutionDaemonOptions): Executio
   let running = false;
   let intervalHandle: unknown = null;
   let stopping = false;
+  // Drain gate: held daemons reconcile but never claim queued work. Process-
+  // local BY DESIGN (like inFlight): every fresh process starts held again
+  // unless configured to auto-start, so opening the factory runs nothing.
+  let held = !config.autoStart;
   // Re-entrant stop guard: a second stop() joins the in-flight shutdown.
   let stopPromise: Promise<void> | null = null;
   // Skip-not-stack: interval ticks are skipped while one is still pending.
@@ -291,6 +331,7 @@ export function createExecutionDaemon(options: ExecutionDaemonOptions): Executio
       failed: number;
       blocked: number;
       requeued: number;
+      cancelled: number;
     },
   ): Promise<void> {
     const leaseId = idGenerator();
@@ -326,6 +367,19 @@ export function createExecutionDaemon(options: ExecutionDaemonOptions): Executio
     }
     counters.claimed += 1;
     const leasedJob: QueueJobView = { ...job, status: 'leased', leaseId, ownerId };
+
+    // Fresh post-claim cancellation gate (invariant 7): the drain loop's
+    // pre-claim check reads the pass SNAPSHOT, so a cancellation that landed
+    // between snapshot and claim would otherwise start an executor that can
+    // only be stopped by an abort nobody will send (a cancel command's abort
+    // phase ran before this in-flight entry existed). Release immediately and
+    // never start the work. Pause keeps its executor-mediated path
+    // (`shouldContinue`) — only a cancelled run short-circuits here.
+    if ((await runIsPausedOrCancelled(job.runId)) === 'cancelled') {
+      await releaseJob(store, leasedJob, 'cancelled', 'Run was cancelled before execution.');
+      counters.cancelled += 1;
+      return;
+    }
 
     try {
       await runClaimedJob(job, leasedJob, leaseId, counters);
@@ -549,8 +603,11 @@ export function createExecutionDaemon(options: ExecutionDaemonOptions): Executio
           counters.cancelled += 1;
           continue;
         }
-        if (state === 'paused') {
-          // Pause stops NEW worker starts; the job stays queued for resume.
+        if (state === 'paused' || held) {
+          // A run pause and the factory drain gate both stop NEW worker
+          // starts; the job stays queued for the matching resume. Cancelled
+          // cleanup above still runs while held — it releases work, never
+          // starts any.
           continue;
         }
         await executeJob(job, counters);
@@ -625,27 +682,49 @@ export function createExecutionDaemon(options: ExecutionDaemonOptions): Executio
     });
   }
 
-  async function cancelRun(runId: string): Promise<void> {
-    // Abort THIS owner's in-flight work for the run immediately; the
-    // executor's post-run path releases the job as cancelled because the run
-    // projection is now cancelled. The abort must NOT wait behind the pass
-    // chain: the in-flight executor is awaited by the current pass, so a
-    // chained abort would deadlock behind the very work it cancels.
+  function resume(): void {
+    if (!held) {
+      return;
+    }
+    held = false;
+    // Drain soon, NEVER in the caller's request lifetime (E1): notify() runs
+    // the pass asynchronously with errors logged, so waiting queued work
+    // starts on the operator's resume without blocking the resume command.
+    notify();
+  }
+
+  function hold(): void {
+    held = true;
+  }
+
+  async function cancelRuns(runIds: readonly string[]): Promise<void> {
+    if (runIds.length === 0) {
+      return;
+    }
+    const targets = new Set(runIds);
+    // Phase 1 — abort THIS owner's in-flight work for EVERY targeted run
+    // immediately; the executor's post-run path releases each job as
+    // cancelled because the run projection is now cancelled. The aborts must
+    // NOT wait behind the pass chain: an in-flight executor is awaited by the
+    // current pass, so a chained abort would deadlock behind the very work it
+    // cancels — and a batch cancel that aborted one run per chained pass
+    // would keep executing work for runs later in the batch meanwhile.
     const snapshot = projectExecutionQueue(await store.readAll());
     for (const job of snapshot.jobs) {
-      if (job.runId === runId) {
+      if (targets.has(job.runId)) {
         inFlight.get(job.jobId)?.abort();
       }
     }
-    // Release queued/abandoned jobs INSIDE the pass chain, re-projecting the
-    // queue there, so the cancelled release can never interleave with a drain
-    // pass's claim of the same attempt (a pre-claim `released(cancelled)`
-    // would burn the outcome's idempotency scope and leave the claimed job
-    // leased forever, later abandoned with a spurious retry intervention).
+    // Phase 2 — release queued/abandoned jobs for ALL targeted runs INSIDE
+    // one pass-chain slot, re-projecting the queue there, so the cancelled
+    // release can never interleave with a drain pass's claim of the same
+    // attempt (a pre-claim `released(cancelled)` would burn the outcome's
+    // idempotency scope and leave the claimed job leased forever, later
+    // abandoned with a spurious retry intervention).
     await enqueuePass(async () => {
       const queue = projectExecutionQueue(await store.readAll());
       for (const job of queue.jobs) {
-        if (job.runId !== runId || inFlight.has(job.jobId)) {
+        if (!targets.has(job.runId) || inFlight.has(job.jobId)) {
           continue;
         }
         if (job.status === 'queued' || job.status === 'abandoned') {
@@ -655,16 +734,26 @@ export function createExecutionDaemon(options: ExecutionDaemonOptions): Executio
     });
   }
 
+  function cancelRun(runId: string): Promise<void> {
+    return cancelRuns([runId]);
+  }
+
   return {
     ownerId,
     config,
     get running() {
       return running;
     },
+    get held() {
+      return held;
+    },
     start,
     stop,
     tick,
     notify,
+    resume,
+    hold,
     cancelRun,
+    cancelRuns,
   };
 }

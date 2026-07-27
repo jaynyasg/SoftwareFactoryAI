@@ -2,10 +2,11 @@
  * Browser api-client extraction tests: fetchInterventions must validate the
  * polled JSON shape item by item (Record + array + field checks) so a drifting
  * or malformed payload degrades to dropped rows — never `undefined` rendered
- * into the operator queue.
+ * into the operator queue. fetchExecutionOverview shares the same contract via
+ * the shared parseExecutionOverview (structural degrade, typed HTTP error).
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fetchInterventions } from '../../src/lib/api-client';
+import { fetchExecutionOverview, fetchInterventions } from '../../src/lib/api-client';
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -74,5 +75,48 @@ describe('fetchInterventions', () => {
       vi.fn(() => Promise.resolve(jsonResponse({}, 503))),
     );
     await expect(fetchInterventions()).rejects.toThrow('interventions_fetch_failed:503');
+  });
+});
+
+describe('fetchExecutionOverview', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('parses a well-formed overview through the shared structural parser', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve(
+          jsonResponse({
+            execution: { enabled: true, held: true, running: true },
+            queue: { queued: 2, leased: 1 },
+          }),
+        ),
+      ),
+    );
+    await expect(fetchExecutionOverview()).resolves.toEqual({
+      execution: { enabled: true, held: true, running: true },
+      queue: { queued: 2, leased: 1 },
+    });
+  });
+
+  it('degrades a malformed body to the disabled overview instead of throwing', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(jsonResponse({ execution: 'nope', queue: 42 }))),
+    );
+    await expect(fetchExecutionOverview()).resolves.toEqual({
+      execution: { enabled: false, held: false, running: false },
+      queue: { queued: 0, leased: 0 },
+    });
+  });
+
+  it('throws a typed error on an HTTP failure (poll loop reports reconnecting)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(jsonResponse({}, 502))),
+    );
+    await expect(fetchExecutionOverview()).rejects.toThrow('execution_fetch_failed:502');
   });
 });

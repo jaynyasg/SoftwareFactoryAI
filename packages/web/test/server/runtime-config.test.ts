@@ -65,6 +65,16 @@ describe('resolveRuntimeConfig', () => {
     // E5: the credential VALUE never appears in resolved config.
     expect(JSON.stringify(config)).not.toContain('super-secret-value');
   });
+
+  it('defaults execution autoStart OFF: opening the factory never auto-runs queued work', () => {
+    const config = resolveRuntimeConfig({}, 'C:\\repo');
+    expect(config.execution.autoStart).toBe(false);
+  });
+
+  it('SF_EXEC_AUTOSTART=1 opts the daemon back into drain-on-start', () => {
+    const config = resolveRuntimeConfig({ SF_EXEC_AUTOSTART: '1' }, 'C:\\repo');
+    expect(config.execution.autoStart).toBe(true);
+  });
 });
 
 describe('scale diagnostics (full-factory U11)', () => {
