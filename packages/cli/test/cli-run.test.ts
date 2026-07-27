@@ -138,6 +138,18 @@ function makeFakeBackend(opts: { failCreateWith?: ApiError } = {}): FakeBackend 
     getExecution() {
       return Promise.reject(new Error('not used'));
     },
+    getExecutionOverview() {
+      return Promise.reject(new Error('not used'));
+    },
+    resumeExecution() {
+      return Promise.reject(new Error('not used'));
+    },
+    holdExecution() {
+      return Promise.reject(new Error('not used'));
+    },
+    cancelAllRuns() {
+      return Promise.reject(new Error('not used'));
+    },
     listInterventions() {
       return Promise.reject(new Error('not used'));
     },

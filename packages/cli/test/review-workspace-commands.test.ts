@@ -88,6 +88,10 @@ function makeFakeClient(options: FakeOptions = {}): {
     retryRun: notUsed,
     rerunGates: notUsed,
     getExecution: notUsed,
+    getExecutionOverview: notUsed,
+    resumeExecution: notUsed,
+    holdExecution: notUsed,
+    cancelAllRuns: notUsed,
     listInterventions: notUsed,
     resolveIntervention: notUsed,
   };

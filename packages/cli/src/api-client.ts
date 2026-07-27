@@ -177,6 +177,59 @@ export interface ExecutionCommandResult {
   readonly run?: RunProjection;
 }
 
+/* Factory-wide execution gate + cancel-all. The execution daemon boots HELD
+ * by default (SF_EXEC_AUTOSTART=1 opts back in), so started runs queue but do
+ * not execute until the gate is released via `resumeExecution`. */
+
+/** Factory-wide execution state (GET /api/execution). */
+export interface ExecutionOverviewResult {
+  readonly execution: {
+    /** False when this server instance has no execution daemon at all. */
+    readonly enabled: boolean;
+    /** True while the drain gate blocks claiming NEW work. */
+    readonly held: boolean;
+    /** True while the daemon claim/execute loop is active. */
+    readonly running: boolean;
+  };
+  readonly queue: {
+    /** Cross-run count of jobs waiting to be claimed. */
+    readonly queued: number;
+    /** Cross-run count of jobs currently leased to the daemon. */
+    readonly leased: number;
+  };
+}
+
+/**
+ * Outcome of a factory-wide resume/hold gate command. Repeats converge: an
+ * already matching gate reports `alreadyActive`/`alreadyHeld` instead of
+ * mutating anything.
+ */
+export interface ExecutionGateResult {
+  readonly resumed?: boolean;
+  readonly alreadyActive?: boolean;
+  readonly held?: boolean;
+  readonly alreadyHeld?: boolean;
+  readonly running?: boolean;
+}
+
+export interface CancelAllRunsInput {
+  /** Recorded on each `run.cancelled` event in the batch. */
+  readonly reason?: string;
+}
+
+/** Batch outcome of POST /api/runs/cancel-all (per-run semantics converge). */
+export interface CancelAllRunsResult {
+  /** Run ids cancelled by THIS command. */
+  readonly cancelled: readonly string[];
+  /** Run ids that were already cancelled (converged, not re-cancelled). */
+  readonly alreadyCancelled: readonly string[];
+  /** Terminal (completed/failed) run ids that keep their recorded outcome. */
+  readonly skippedTerminal: readonly string[];
+  readonly cancelledCount: number;
+  /** Per-run failures, when any run in the batch could not be cancelled. */
+  readonly errors?: readonly { readonly runId: string; readonly message: string }[];
+}
+
 export interface InterventionSummary {
   readonly interventionId: string;
   readonly runId: string;
@@ -280,6 +333,18 @@ export interface ApiClient {
   rerunGates(runId: string, input?: ExecutionCommandInput): Promise<ExecutionCommandResult>;
   /** Projected execution state: queue job, preflight, open interventions. */
   getExecution(runId: string): Promise<Record<string, unknown>>;
+  /** Factory-wide execution state: drain gate + cross-run queue counts. */
+  getExecutionOverview(): Promise<ExecutionOverviewResult>;
+  /**
+   * Release the factory-wide drain gate so queued work starts. The daemon
+   * boots HELD by default (SF_EXEC_AUTOSTART=1 opts back in), so started runs
+   * queue but do not execute until this resume.
+   */
+  resumeExecution(): Promise<ExecutionGateResult>;
+  /** Re-engage the factory-wide drain gate: stop claiming NEW work. */
+  holdExecution(): Promise<ExecutionGateResult>;
+  /** Cancel EVERY cancellable run in one guarded command. */
+  cancelAllRuns(input?: CancelAllRunsInput): Promise<CancelAllRunsResult>;
   listInterventions(query?: ListInterventionsQuery): Promise<ListInterventionsResult>;
   resolveIntervention(
     interventionId: string,
@@ -356,6 +421,58 @@ function toExecutionCommandResult(
     execution: toExecutionSummary(body.execution),
     job: toQueueJobSummary(body.job),
     run: body.run !== undefined ? (body.run as RunProjection) : undefined,
+  };
+}
+
+function toExecutionOverviewResult(body: Record<string, unknown>): ExecutionOverviewResult {
+  const execution = asRecord(body.execution);
+  const queue = asRecord(body.queue);
+  return {
+    execution: {
+      enabled: execution.enabled === true,
+      held: execution.held === true,
+      running: execution.running === true,
+    },
+    queue: {
+      queued: optNum(queue.queued) ?? 0,
+      leased: optNum(queue.leased) ?? 0,
+    },
+  };
+}
+
+function toExecutionGateResult(body: Record<string, unknown>): ExecutionGateResult {
+  return {
+    resumed: optBool(body.resumed),
+    alreadyActive: optBool(body.alreadyActive),
+    held: optBool(body.held),
+    alreadyHeld: optBool(body.alreadyHeld),
+    running: optBool(body.running),
+  };
+}
+
+/** String-only filter for the run-id arrays of the cancel-all batch outcome. */
+function toRunIdList(value: unknown): readonly string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string')
+    : [];
+}
+
+function toCancelAllRunsResult(body: Record<string, unknown>): CancelAllRunsResult {
+  const errors = Array.isArray(body.errors)
+    ? body.errors.flatMap((entry) => {
+        const record = asRecord(entry);
+        const runId = optStr(record.runId);
+        const message = optStr(record.message);
+        return runId !== undefined && message !== undefined ? [{ runId, message }] : [];
+      })
+    : undefined;
+  const cancelled = toRunIdList(body.cancelled);
+  return {
+    cancelled,
+    alreadyCancelled: toRunIdList(body.alreadyCancelled),
+    skippedTerminal: toRunIdList(body.skippedTerminal),
+    cancelledCount: optNum(body.cancelledCount) ?? cancelled.length,
+    ...(errors !== undefined && errors.length > 0 ? { errors } : {}),
   };
 }
 
@@ -605,6 +722,18 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
     },
     async getExecution(runId) {
       return get(`/api/runs/${encodeURIComponent(runId)}/execution`);
+    },
+    async getExecutionOverview() {
+      return toExecutionOverviewResult(await get('/api/execution'));
+    },
+    async resumeExecution() {
+      return toExecutionGateResult(await mutate('/api/execution/resume', {}));
+    },
+    async holdExecution() {
+      return toExecutionGateResult(await mutate('/api/execution/hold', {}));
+    },
+    async cancelAllRuns(input = {}) {
+      return toCancelAllRunsResult(await mutate('/api/runs/cancel-all', { reason: input.reason }));
     },
     async listInterventions(query = {}) {
       const params = new URLSearchParams();

@@ -108,9 +108,19 @@ const TOOLS: readonly McpTool[] = [
     },
   },
   {
+    name: 'software_factory_cancel_all_runs',
+    description:
+      'Cancel EVERY cancellable run in one guarded command (the operator "cancel all tasks" control). Per-run semantics match the single cancel: already-cancelled runs converge, terminal (completed/failed) runs keep their recorded outcome, and each cancellation propagates to queued and in-flight execution work.',
+    inputSchema: {
+      type: 'object',
+      properties: { reason: { type: 'string' } },
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'software_factory_start_run',
     description:
-      'Start execution for a planned run. Runs the dry-run preflight rehearsal first and enqueues the run-execution job for the execution daemon; duplicate starts return the existing queue state.',
+      'Start execution for a planned run. Runs the dry-run preflight rehearsal first and enqueues the run-execution job for the execution daemon; duplicate starts return the existing queue state. NOTE: the daemon boots with the factory-wide drain gate HELD by default (SF_EXEC_AUTOSTART=1 opts back in), so a started run queues but does NOT execute until software_factory_resume_execution releases the gate.',
     inputSchema: {
       type: 'object',
       required: ['runId'],
@@ -190,6 +200,24 @@ const TOOLS: readonly McpTool[] = [
       properties: { runId: { type: 'string' } },
       additionalProperties: false,
     },
+  },
+  {
+    name: 'software_factory_get_execution_overview',
+    description:
+      'Read the factory-wide execution state: whether execution controls are enabled, whether the drain gate is held, whether the daemon loop is running, and cross-run queued/leased job counts. The execution daemon boots HELD by default (SF_EXEC_AUTOSTART=1 opts back in), so a run started via any connector queues but does NOT execute until software_factory_resume_execution releases the gate.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    name: 'software_factory_resume_execution',
+    description:
+      'Release the factory-wide drain gate so queued work starts executing. The execution daemon boots HELD by default (SF_EXEC_AUTOSTART=1 opts back in): runs started via any connector queue but do NOT execute until this resume. The gate is process-local by design — every fresh server process starts held again.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    name: 'software_factory_hold_execution',
+    description:
+      'Re-engage the factory-wide drain gate: stop claiming NEW work across all runs (in-flight work finishes; nothing is aborted). Runs started while held queue but do not execute until software_factory_resume_execution releases the gate again.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   },
   {
     name: 'software_factory_review_decide',
@@ -576,6 +604,31 @@ async function callFactoryTool(
         );
         break;
       }
+      case 'software_factory_cancel_all_runs':
+        // Factory-scoped guarded command: one guard check covers the batch and
+        // the route converges per run (already-cancelled/terminal runs are
+        // reported, never re-cancelled) — no per-run expectedVersion applies.
+        response = await deps.app.handle(
+          internalRequest('POST', '/api/runs/cancel-all', session, { reason: str(args.reason) }),
+        );
+        break;
+      /* Factory-wide drain gate (operator autostart surface): the daemon boots
+       * HELD by default, so these tools are how a remote agent releases or
+       * re-engages the gate. Resume/hold mutate the process daemon through the
+       * SAME guarded routes the web UI uses; the overview is a plain read. */
+      case 'software_factory_get_execution_overview':
+        response = await deps.app.handle(internalRequest('GET', '/api/execution', session));
+        break;
+      case 'software_factory_resume_execution':
+        response = await deps.app.handle(
+          internalRequest('POST', '/api/execution/resume', session, {}),
+        );
+        break;
+      case 'software_factory_hold_execution':
+        response = await deps.app.handle(
+          internalRequest('POST', '/api/execution/hold', session, {}),
+        );
+        break;
       case 'software_factory_review_decide': {
         const runId = str(args.runId);
         if (runId === undefined) {

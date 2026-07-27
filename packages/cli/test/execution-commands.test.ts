@@ -10,6 +10,10 @@
 import { describe, expect, it } from 'vitest';
 import type { ApiClient } from '../src/api-client';
 import {
+  cancelAllRunsCommand,
+  factoryHoldCommand,
+  factoryResumeCommand,
+  factoryStatusCommand,
   interventionsCommand,
   pauseRunCommand,
   resolveInterventionCommand,
@@ -106,6 +110,30 @@ function makeFakeClient(): { client: ApiClient; calls: RecordedCall[] } {
     getExecution(runId) {
       calls.push({ method: 'getExecution', runId });
       return Promise.resolve({ runId, execution: { state: 'queued' } });
+    },
+    getExecutionOverview() {
+      calls.push({ method: 'getExecutionOverview' });
+      return Promise.resolve({
+        execution: { enabled: true, held: true, running: false },
+        queue: { queued: 2, leased: 1 },
+      });
+    },
+    resumeExecution() {
+      calls.push({ method: 'resumeExecution' });
+      return Promise.resolve({ resumed: true, held: false });
+    },
+    holdExecution() {
+      calls.push({ method: 'holdExecution' });
+      return Promise.resolve({ held: true });
+    },
+    cancelAllRuns(input) {
+      calls.push({ method: 'cancelAllRuns', input });
+      return Promise.resolve({
+        cancelled: ['run-1', 'run-2'],
+        alreadyCancelled: ['run-0'],
+        skippedTerminal: ['run-3'],
+        cancelledCount: 2,
+      });
     },
     listInterventions(query) {
       calls.push({ method: 'listInterventions', input: query });
@@ -229,6 +257,58 @@ describe('execution commands — request shape + auto expectedVersion', () => {
     await startRunCommand({ runId: 'run-1' }, { client, io });
     expect(outText()).toContain('run-1');
     expect(outText().toLowerCase()).toContain('queued');
+  });
+});
+
+describe('factory-wide drain gate + cancel-all commands', () => {
+  it('factory-status reports the gate, daemon, and cross-run queue counts', async () => {
+    const { client, calls } = makeFakeClient();
+    const { io, outText } = makeIo();
+    const result = await factoryStatusCommand({}, { client, io });
+
+    expect(calls.map((c) => c.method)).toEqual(['getExecutionOverview']);
+    expect(result.execution.held).toBe(true);
+    // The human summary must surface the drain gate — a held factory queues
+    // started runs without executing them until factory-resume.
+    expect(outText()).toContain('HELD');
+    expect(outText()).toContain('factory-resume');
+    expect(outText()).toContain('2 queued');
+  });
+
+  it('factory-resume releases the gate (no runId, no expectedVersion fetch)', async () => {
+    const { client, calls } = makeFakeClient();
+    const { io, outText } = makeIo();
+    const result = await factoryResumeCommand({ json: true }, { client, io });
+
+    // Factory scope: no getRun version fetch precedes the gate command.
+    expect(calls.map((c) => c.method)).toEqual(['resumeExecution']);
+    expect(result.resumed).toBe(true);
+    expect(JSON.parse(outText())).toMatchObject({ resumed: true, held: false });
+  });
+
+  it('factory-hold re-engages the gate', async () => {
+    const { client, calls } = makeFakeClient();
+    const { io, outText } = makeIo();
+    const result = await factoryHoldCommand({}, { client, io });
+
+    expect(calls.map((c) => c.method)).toEqual(['holdExecution']);
+    expect(result.held).toBe(true);
+    expect(outText().toLowerCase()).toContain('held');
+  });
+
+  it('cancel-all forwards --reason and summarizes the batch outcome', async () => {
+    const { client, calls } = makeFakeClient();
+    const { io, outText } = makeIo();
+    const result = await cancelAllRunsCommand({ reason: 'shutdown' }, { client, io });
+
+    expect(calls.find((c) => c.method === 'cancelAllRuns')?.input).toMatchObject({
+      reason: 'shutdown',
+    });
+    expect(result.cancelledCount).toBe(2);
+    expect(outText()).toContain('Cancelled 2 run(s)');
+    expect(outText()).toContain('1 already cancelled');
+    expect(outText()).toContain('1 terminal');
+    expect(outText()).toContain('cancelled run-1');
   });
 });
 

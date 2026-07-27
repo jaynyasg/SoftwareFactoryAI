@@ -12,6 +12,8 @@
  *   software-factory status   <runId> [--json]
  *   software-factory events   <runId> [--follow] [--since <n>] [--json]
  *   software-factory artifacts <runId> [--json]
+ *   software-factory factory-status | factory-resume | factory-hold [--json]
+ *   software-factory cancel-all [--reason <text>] [--json]
  *
  * Global: --base-url <url> (or SF_BASE_URL, default http://127.0.0.1:3000),
  *         --operator-token <t> (or SF_OPERATOR_TOKEN; else the shared
@@ -39,6 +41,10 @@ import { artifactsCommand } from './commands/artifacts';
 import { startCommand } from './commands/start';
 import type { SpawnedBackend } from './commands/start';
 import {
+  cancelAllRunsCommand,
+  factoryHoldCommand,
+  factoryResumeCommand,
+  factoryStatusCommand,
   interventionsCommand,
   pauseRunCommand,
   rerunGatesCommand,
@@ -221,6 +227,14 @@ enqueue/mutate state and print projected results):
   software-factory interventions [--run <id>] [--kind <k>] [--stage <s>] [--open] [--json]
   software-factory resolve      <interventionId> --resolution <r> [--note <n>] [--json]
 
+Factory-wide drain gate (the daemon boots HELD: started runs queue but do NOT
+execute until factory-resume releases the gate; set SF_EXEC_AUTOSTART=1 to opt
+a deployment back into drain-on-start):
+  software-factory factory-status  [--json]          gate state + cross-run queue counts
+  software-factory factory-resume  [--json]          release the gate; queued work starts
+  software-factory factory-hold    [--json]          re-engage the gate; stop claiming new work
+  software-factory cancel-all      [--reason <text>] [--json]  cancel every cancellable run
+
 Review (unblock a human-review run):
   software-factory review       <runId> --decision approved|rejected [--rationale <r>]
                                 [--risk-tier low|medium|high] [--expected-version <n>] [--json]
@@ -392,6 +406,31 @@ export async function runCli(argv: readonly string[], deps: RunCliDeps = {}): Pr
         }
         return 0;
       }
+      // Factory-wide drain gate + cancel-all: no runId — the gate is
+      // process-local daemon state and cancel-all is explicitly cross-run.
+      case 'factory-status':
+      case 'factory-resume':
+      case 'factory-hold': {
+        const client = await buildClient();
+        const deps = { client, io };
+        switch (command) {
+          case 'factory-status':
+            await factoryStatusCommand({ json }, deps);
+            break;
+          case 'factory-resume':
+            await factoryResumeCommand({ json }, deps);
+            break;
+          default:
+            await factoryHoldCommand({ json }, deps);
+            break;
+        }
+        return 0;
+      }
+      case 'cancel-all': {
+        const client = await buildClient();
+        await cancelAllRunsCommand({ reason: flagStr(flags, 'reason'), json }, { client, io });
+        return 0;
+      }
       case 'interventions': {
         const client = await buildClient();
         await interventionsCommand(
@@ -540,6 +579,10 @@ export {
   rerunGatesCommand,
   interventionsCommand,
   resolveInterventionCommand,
+  factoryStatusCommand,
+  factoryResumeCommand,
+  factoryHoldCommand,
+  cancelAllRunsCommand,
 } from './commands/execution';
 export { reviewCommand, isReviewDecision, isRiskTier } from './commands/review';
 export { materializeWorkspaceCommand, workspaceStatusCommand } from './commands/workspace';

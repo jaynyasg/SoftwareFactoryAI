@@ -46,6 +46,7 @@ const EXPECTED_TOOLS = [
   'software_factory_get_run',
   'software_factory_get_events',
   'software_factory_cancel_run',
+  'software_factory_cancel_all_runs',
   'software_factory_review_decide',
   'software_factory_materialize_workspace',
   'software_factory_get_workspace',
@@ -55,6 +56,9 @@ const EXPECTED_TOOLS = [
   'software_factory_retry_run',
   'software_factory_rerun_gates',
   'software_factory_get_execution',
+  'software_factory_get_execution_overview',
+  'software_factory_resume_execution',
+  'software_factory_hold_execution',
   'software_factory_list_interventions',
   'software_factory_resolve_intervention',
   'software_factory_trigger_research',
@@ -476,6 +480,95 @@ describe('MCP repeated commands return existing state', () => {
     });
     expect(again.isError).toBe(false);
     expect(again.body.alreadyResolved).toBe(true);
+  });
+});
+
+/* ----------------------------------------------------------------------------
+ * Factory-wide drain gate + cancel-all (connector parity): the daemon boots
+ * HELD by default, so a remote agent must be able to inspect and release the
+ * gate — and cancel everything — through the SAME guarded routes as the UI.
+ * ------------------------------------------------------------------------- */
+
+describe('MCP factory-wide execution gate tools', () => {
+  it('reads the execution overview (gate state + cross-run queue counts)', async () => {
+    const ctx = makeMcp();
+    const res = await callTool(ctx, 'software_factory_get_execution_overview', {});
+    expect(res.isError).toBe(false);
+    const execution = record(res.body.execution);
+    expect(execution.enabled).toBe(true);
+    expect(typeof execution.held).toBe('boolean');
+    const queue = record(res.body.queue);
+    expect(queue.queued).toBe(0);
+    expect(queue.leased).toBe(0);
+  });
+
+  it('hold engages the drain gate and resume releases it; repeats converge', async () => {
+    const ctx = makeMcp();
+    const held = await callTool(ctx, 'software_factory_hold_execution', {});
+    expect(held.isError).toBe(false);
+    expect(held.body.held).toBe(true);
+
+    const heldAgain = await callTool(ctx, 'software_factory_hold_execution', {});
+    expect(heldAgain.isError).toBe(false);
+    expect(heldAgain.body.alreadyHeld).toBe(true);
+
+    const overview = await callTool(ctx, 'software_factory_get_execution_overview', {});
+    expect(record(overview.body.execution).held).toBe(true);
+
+    const resumed = await callTool(ctx, 'software_factory_resume_execution', {});
+    expect(resumed.isError).toBe(false);
+    expect(resumed.body.resumed).toBe(true);
+    expect(resumed.body.held).toBe(false);
+
+    const resumedAgain = await callTool(ctx, 'software_factory_resume_execution', {});
+    expect(resumedAgain.isError).toBe(false);
+    expect(resumedAgain.body.alreadyActive).toBe(true);
+  });
+
+  it('rejects an unauthorized hold before the gate is touched', async () => {
+    const ctx = makeMcp();
+    const denied = await callTool(ctx, 'software_factory_hold_execution', {}, 'wrong-token');
+    expect(denied.isError).toBe(true);
+    expect(JSON.stringify(denied.body)).toContain('Operator token is invalid');
+
+    const overview = await callTool(ctx, 'software_factory_get_execution_overview', {});
+    expect(record(overview.body.execution).held).toBe(false);
+  });
+});
+
+describe('MCP cancel-all tool', () => {
+  it('cancels every cancellable run and converges on repeat', async () => {
+    const ctx = makeMcp();
+    const first = await createRunViaTool(ctx);
+    const second = await createRunViaTool(ctx);
+
+    const res = await callTool(ctx, 'software_factory_cancel_all_runs', { reason: 'shutdown' });
+    expect(res.isError).toBe(false);
+    expect(res.body.cancelled).toEqual(expect.arrayContaining([first, second]));
+    expect(res.body.cancelledCount).toBe(2);
+    expect(res.body.alreadyCancelled).toEqual([]);
+    expect(res.body.skippedTerminal).toEqual([]);
+
+    // Repeat converges: nothing is re-cancelled, no duplicate run.cancelled.
+    const again = await callTool(ctx, 'software_factory_cancel_all_runs', {});
+    expect(again.isError).toBe(false);
+    expect(again.body.cancelledCount).toBe(0);
+    expect(again.body.alreadyCancelled).toEqual(expect.arrayContaining([first, second]));
+
+    const cancelledEvents = (await ctx.store.readRun(first)).filter(
+      (event) => event.type === 'run.cancelled',
+    );
+    expect(cancelledEvents).toHaveLength(1);
+  });
+
+  it('rejects an unauthorized cancel-all before any run is touched', async () => {
+    const ctx = makeMcp();
+    const runId = await createRunViaTool(ctx);
+    const denied = await callTool(ctx, 'software_factory_cancel_all_runs', {}, 'wrong-token');
+    expect(denied.isError).toBe(true);
+    expect((await ctx.store.readRun(runId)).map((event) => event.type)).not.toContain(
+      'run.cancelled',
+    );
   });
 });
 

@@ -312,6 +312,92 @@ describe('execution command extraction', () => {
   });
 });
 
+describe('factory-wide gate + cancel-all extraction', () => {
+  it('getExecutionOverview reads the drain gate and cross-run queue counts', async () => {
+    const { fetchImpl, calls } = mockFetch(() => ({
+      status: 200,
+      body: {
+        execution: { enabled: true, held: true, running: false },
+        queue: { queued: 3, leased: 1 },
+      },
+    }));
+    const client = createApiClient({ baseUrl: 'http://x', fetchImpl });
+
+    const overview = await client.getExecutionOverview();
+    expect(calls[0].url).toBe('http://x/api/execution');
+    expect(calls[0].method).toBe('GET');
+    expect(overview.execution).toEqual({ enabled: true, held: true, running: false });
+    expect(overview.queue).toEqual({ queued: 3, leased: 1 });
+  });
+
+  it('getExecutionOverview degrades a malformed body to a disabled/empty shape', async () => {
+    const { fetchImpl } = mockFetch(() => ({ status: 200, body: { execution: 'junk' } }));
+    const client = createApiClient({ baseUrl: 'http://x', fetchImpl });
+    const overview = await client.getExecutionOverview();
+    expect(overview.execution).toEqual({ enabled: false, held: false, running: false });
+    expect(overview.queue).toEqual({ queued: 0, leased: 0 });
+  });
+
+  it('resumeExecution/holdExecution post guarded gate commands and map repeats', async () => {
+    const { fetchImpl, calls } = mockFetch((call) => ({
+      status: 200,
+      body: call.url.endsWith('/resume') ? { alreadyActive: true, held: false } : { held: true },
+    }));
+    const client = createApiClient({ baseUrl: 'http://x', operatorToken: 'tok', fetchImpl });
+
+    const resumed = await client.resumeExecution();
+    expect(calls[0].url).toBe('http://x/api/execution/resume');
+    expect(calls[0].headers['x-operator-token']).toBe('tok');
+    expect(resumed.alreadyActive).toBe(true);
+    expect(resumed.held).toBe(false);
+    expect(resumed.resumed).toBeUndefined();
+
+    const held = await client.holdExecution();
+    expect(calls[1].url).toBe('http://x/api/execution/hold');
+    expect(held.held).toBe(true);
+    expect(held.alreadyHeld).toBeUndefined();
+  });
+
+  it('surfaces the no-daemon 503 as a typed execution_disabled ApiError', async () => {
+    const { fetchImpl } = mockFetch(() => ({
+      status: 503,
+      body: { error: 'execution_disabled', message: 'no daemon' },
+    }));
+    const client = createApiClient({ baseUrl: 'http://x', operatorToken: 'tok', fetchImpl });
+    try {
+      await client.resumeExecution();
+      expect.unreachable('should have thrown');
+    } catch (error) {
+      expect(error).toBeInstanceOf(ApiError);
+      expect((error as ApiError).code).toBe('execution_disabled');
+    }
+  });
+
+  it('cancelAllRuns posts the reason and extracts the batch arrays + errors', async () => {
+    const { fetchImpl, calls } = mockFetch(() => ({
+      status: 200,
+      body: {
+        cancelled: ['run-1', 'run-2', 42],
+        alreadyCancelled: ['run-0'],
+        skippedTerminal: [],
+        cancelledCount: 2,
+        errors: [{ runId: 'run-9', message: 'boom' }, { junk: true }],
+      },
+    }));
+    const client = createApiClient({ baseUrl: 'http://x', operatorToken: 'tok', fetchImpl });
+
+    const result = await client.cancelAllRuns({ reason: 'shutdown' });
+    expect(calls[0].url).toBe('http://x/api/runs/cancel-all');
+    expect(calls[0].body).toEqual({ reason: 'shutdown' });
+    // Non-string ids and malformed error entries are dropped, never surfaced.
+    expect(result.cancelled).toEqual(['run-1', 'run-2']);
+    expect(result.alreadyCancelled).toEqual(['run-0']);
+    expect(result.skippedTerminal).toEqual([]);
+    expect(result.cancelledCount).toBe(2);
+    expect(result.errors).toEqual([{ runId: 'run-9', message: 'boom' }]);
+  });
+});
+
 describe('intervention extraction', () => {
   const GOOD_ITEM = {
     interventionId: 'i-1',

@@ -60,6 +60,36 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CreateRunResponse'
+  /api/runs/cancel-all:
+    post:
+      operationId: cancelAllRuns
+      summary: >-
+        Cancel EVERY cancellable run in one guarded command (the operator's
+        "cancel all tasks" control). Per-run semantics match the single
+        cancel: already-cancelled runs converge, terminal (completed/failed)
+        runs keep their recorded outcome, and each cancellation propagates to
+        queued and in-flight execution work.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CancelAllRunsRequest'
+      responses:
+        '200':
+          description: >-
+            Batch outcome: which runs were cancelled, which were already
+            cancelled, and which terminal runs were skipped.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CancelAllRunsResponse'
+        '401':
+          description: Operator token missing or invalid (command guard denial).
+          content:
+            application/json:
+              schema:
+                type: object
   /api/runs/{runId}:
     get:
       operationId: getRun
@@ -352,6 +382,88 @@ paths:
             application/json:
               schema:
                 type: object
+  /api/execution:
+    get:
+      operationId: getExecutionOverview
+      summary: >-
+        Read the factory-wide execution state: whether execution controls are
+        enabled, whether the drain gate is held, whether the daemon loop is
+        running, and cross-run queued/leased job counts. The execution daemon
+        boots HELD by default (SF_EXEC_AUTOSTART=1 opts back in), so a started
+        run queues but does NOT execute until resumeExecution releases the
+        gate.
+      responses:
+        '200':
+          description: >-
+            Factory-wide execution overview. `execution.enabled: false` means
+            this server instance has no execution daemon at all.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecutionOverview'
+  /api/execution/resume:
+    post:
+      operationId: resumeExecution
+      summary: >-
+        Release the factory-wide drain gate so queued work starts executing.
+        The execution daemon boots HELD by default (SF_EXEC_AUTOSTART=1 opts
+        back in): runs started via any caller queue but do NOT execute until
+        this resume. The gate is process-local by design — every fresh server
+        process starts held again.
+      responses:
+        '200':
+          description: >-
+            Gate released (`resumed: true`) or already released
+            (`alreadyActive: true`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecutionGateResponse'
+        '401':
+          description: Operator token missing or invalid (command guard denial).
+          content:
+            application/json:
+              schema:
+                type: object
+        '503':
+          description: >-
+            Execution controls are not enabled on this server instance
+            (`execution_disabled`).
+          content:
+            application/json:
+              schema:
+                type: object
+  /api/execution/hold:
+    post:
+      operationId: holdExecution
+      summary: >-
+        Re-engage the factory-wide drain gate: stop claiming NEW work across
+        all runs (in-flight work finishes; nothing is aborted). Runs started
+        while held queue but do not execute until resumeExecution releases the
+        gate again.
+      responses:
+        '200':
+          description: >-
+            Gate engaged (`held: true`) or already engaged
+            (`alreadyHeld: true`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecutionGateResponse'
+        '401':
+          description: Operator token missing or invalid (command guard denial).
+          content:
+            application/json:
+              schema:
+                type: object
+        '503':
+          description: >-
+            Execution controls are not enabled on this server instance
+            (`execution_disabled`).
+          content:
+            application/json:
+              schema:
+                type: object
   /api/runs/{runId}/research:
     post:
       operationId: triggerResearch
@@ -543,6 +655,92 @@ components:
         reason:
           type: string
       additionalProperties: false
+    CancelAllRunsRequest:
+      type: object
+      properties:
+        reason:
+          type: string
+          description: Recorded on each `run.cancelled` event in the batch.
+      additionalProperties: false
+    CancelAllRunsResponse:
+      type: object
+      properties:
+        cancelled:
+          type: array
+          items:
+            type: string
+          description: Run ids cancelled by THIS command.
+        alreadyCancelled:
+          type: array
+          items:
+            type: string
+          description: Run ids that were already cancelled (converged, not re-cancelled).
+        skippedTerminal:
+          type: array
+          items:
+            type: string
+          description: >-
+            Terminal (completed/failed) run ids that keep their recorded
+            outcome — a terminal run cannot be cancelled retroactively.
+        cancelledCount:
+          type: integer
+          description: Length of `cancelled`.
+        errors:
+          type: array
+          description: Per-run failures, when any run in the batch could not be cancelled.
+          items:
+            type: object
+            properties:
+              runId:
+                type: string
+              message:
+                type: string
+    ExecutionOverview:
+      type: object
+      description: >-
+        Factory-wide execution state. The daemon boots with the drain gate
+        HELD by default (SF_EXEC_AUTOSTART=1 opts a deployment back into
+        drain-on-start), so queued work does not execute until the gate is
+        released via resumeExecution.
+      properties:
+        execution:
+          type: object
+          properties:
+            enabled:
+              type: boolean
+              description: False when this server instance has no execution daemon.
+            held:
+              type: boolean
+              description: True while the drain gate blocks claiming NEW work.
+            running:
+              type: boolean
+              description: True while the daemon claim/execute loop is active.
+        queue:
+          type: object
+          properties:
+            queued:
+              type: integer
+              description: Cross-run count of jobs waiting to be claimed.
+            leased:
+              type: integer
+              description: Cross-run count of jobs currently leased to the daemon.
+    ExecutionGateResponse:
+      type: object
+      description: >-
+        Outcome of a resume/hold gate command. Repeats converge: an already
+        matching gate reports `alreadyActive`/`alreadyHeld` instead of
+        mutating anything.
+      properties:
+        resumed:
+          type: boolean
+        alreadyActive:
+          type: boolean
+        held:
+          type: boolean
+        alreadyHeld:
+          type: boolean
+        running:
+          type: boolean
     CreateRunRequest:
       type: object
       properties:

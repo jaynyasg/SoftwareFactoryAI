@@ -24,6 +24,7 @@ const REQUIRED_OPERATIONS: Readonly<Record<string, readonly [string, string]>> =
   getRun: ['get', '/api/runs/{runId}'],
   getRunEvents: ['get', '/api/runs/{runId}/events'],
   cancelRun: ['post', '/api/runs/{runId}/cancel'],
+  cancelAllRuns: ['post', '/api/runs/cancel-all'],
   reviewRun: ['post', '/api/runs/{runId}/review'],
   materializeWorkspace: ['post', '/api/runs/{runId}/workspace'],
   getWorkspace: ['get', '/api/runs/{runId}/workspace'],
@@ -33,6 +34,9 @@ const REQUIRED_OPERATIONS: Readonly<Record<string, readonly [string, string]>> =
   retryRun: ['post', '/api/runs/{runId}/retry'],
   rerunGates: ['post', '/api/runs/{runId}/gates/rerun'],
   getExecution: ['get', '/api/runs/{runId}/execution'],
+  getExecutionOverview: ['get', '/api/execution'],
+  resumeExecution: ['post', '/api/execution/resume'],
+  holdExecution: ['post', '/api/execution/hold'],
   listInterventions: ['get', '/api/interventions'],
   resolveIntervention: ['post', '/api/interventions/{interventionId}/resolve'],
   triggerResearch: ['post', '/api/runs/{runId}/research'],
@@ -228,5 +232,50 @@ describe('ChatGPT Action schema (integrations/chatgpt/actions.openai.yaml)', () 
       expect.arrayContaining(['setup_required', 'health_failed', 'hosted_ready']),
     );
     expect(rec(deploy.retryable).type).toBe('boolean');
+  });
+
+  it('factory execution gate operations document the held-by-default boot and its errors', () => {
+    const paths = rec(resolved.paths);
+    // Agent callers MUST learn from the schema that a started run queues but
+    // does not execute until the drain gate is released (held-by-default boot).
+    for (const path of ['/api/execution', '/api/execution/resume']) {
+      const operation = rec(rec(rec(paths[path]))[path === '/api/execution' ? 'get' : 'post']);
+      expect(String(operation.summary), `${path} summary lacks the drain gate`).toMatch(
+        /HELD by default/,
+      );
+      expect(String(operation.summary)).toMatch(/SF_EXEC_AUTOSTART/);
+    }
+    // Resume/hold surface the guard denial and the no-daemon 503.
+    for (const path of ['/api/execution/resume', '/api/execution/hold']) {
+      const responses = rec(rec(rec(rec(paths[path])).post).responses);
+      expect(Object.keys(responses), `${path} responses`).toEqual(
+        expect.arrayContaining(['200', '401', '503']),
+      );
+      expect(String(rec(responses['503']).description)).toMatch(/execution_disabled/);
+    }
+    // Gate responses model the converged repeat fields.
+    const schemas = rec(rec(resolved.components).schemas);
+    const gate = rec(rec(schemas.ExecutionGateResponse).properties);
+    for (const field of ['resumed', 'alreadyActive', 'held', 'alreadyHeld']) {
+      expect(rec(gate[field]).type, `ExecutionGateResponse.${field}`).toBe('boolean');
+    }
+    const overview = rec(rec(schemas.ExecutionOverview).properties);
+    const execution = rec(rec(rec(overview.execution)).properties);
+    expect(rec(execution.enabled).type).toBe('boolean');
+    expect(rec(execution.held).type).toBe('boolean');
+    const queue = rec(rec(rec(overview.queue)).properties);
+    expect(rec(queue.queued).type).toBe('integer');
+    expect(rec(queue.leased).type).toBe('integer');
+  });
+
+  it('cancel-all models the batch outcome arrays and optional per-run errors', () => {
+    const schemas = rec(rec(resolved.components).schemas);
+    const response = rec(rec(schemas.CancelAllRunsResponse).properties);
+    for (const field of ['cancelled', 'alreadyCancelled', 'skippedTerminal', 'errors']) {
+      expect(rec(response[field]).type, `CancelAllRunsResponse.${field}`).toBe('array');
+    }
+    expect(rec(response.cancelledCount).type).toBe('integer');
+    const request = rec(rec(schemas.CancelAllRunsRequest).properties);
+    expect(rec(request.reason).type).toBe('string');
   });
 });
