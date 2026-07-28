@@ -67,3 +67,10 @@ add --path <dir>` (no `--url`): URL-managed sources can auto-reclone, and the
 sync code walk for them requires an explicit `--allow-reclone` opt-in.
 
 <!-- gstack-gbrain-search-guidance:end -->
+
+## Documented Solutions
+
+`docs/solutions/` — documented solutions to past problems (bugs, best practices,
+design patterns, workflow learnings), organized by category with YAML frontmatter
+(`module`, `tags`, `problem_type`). Relevant when implementing or debugging in
+documented areas.
