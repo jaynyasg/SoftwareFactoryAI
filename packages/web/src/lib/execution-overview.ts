@@ -15,12 +15,14 @@ import type { ExecutionOverview } from './types';
 export const DISABLED_EXECUTION_OVERVIEW: ExecutionOverview = {
   execution: { enabled: false, held: false, running: false },
   queue: { queued: 0, leased: 0 },
+  resetGeneration: 0,
 };
 
 /**
  * Structurally parse an execution-overview body. Every field is checked, and
  * malformed/missing values degrade to the disabled defaults instead of
- * rendering `undefined` into the command bar.
+ * rendering `undefined` into the command bar. `resetGeneration` degrades to 0
+ * (never-reset) so older server payloads that omit it stay parseable.
  */
 export function parseExecutionOverview(body: Record<string, unknown>): ExecutionOverview {
   const execution = (body.execution ?? {}) as Record<string, unknown>;
@@ -35,5 +37,6 @@ export function parseExecutionOverview(body: Record<string, unknown>): Execution
       queued: typeof queue.queued === 'number' ? queue.queued : 0,
       leased: typeof queue.leased === 'number' ? queue.leased : 0,
     },
+    resetGeneration: typeof body.resetGeneration === 'number' ? body.resetGeneration : 0,
   };
 }

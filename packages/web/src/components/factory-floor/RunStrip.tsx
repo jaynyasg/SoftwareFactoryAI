@@ -3,9 +3,14 @@
 /**
  * RunStrip — the compact cross-run strip (DESIGN.md §5, U9). One chip per
  * projected run: status severity + label, middle-truncated id, and an open
- * intervention count when the run needs a human. Pressing a chip FOCUSES the
+ * intervention count when the run needs a human (the "N open" badge — the
+ * same needs-attention treatment everywhere). Pressing a chip FOCUSES the
  * blueprint on that run — the lanes always render exactly one run, never a
  * mixed view. This is a switcher, not a dashboard: dense, single row, wraps.
+ *
+ * Session lifecycle U5 (R14): the floor feeds this from the LIVE run list, so
+ * runs started on other surfaces appear here within one poll interval — as
+ * chips only, never by stealing focus.
  */
 import type { RunProjection } from '@software-factory/core';
 import { middleTruncate, runStatusSeverity, severityClass } from '../../lib/run-view';

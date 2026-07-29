@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
+  AdapterError,
+  createAdapterCatalog,
   createInMemoryEventStore,
   createInMemoryOperatorTokenStore,
   createOperatorTokenProvider,
+  projectRun,
   type EventStore,
+  type ExecutionAdapter,
   type ResearchProjection,
   type RunProjection,
 } from '@software-factory/core';
@@ -15,6 +19,8 @@ import {
   type RunPlanner,
   type RunResearcher,
 } from '../../src/server/app';
+import { createExecutionDaemon, type ExecutionDaemon } from '../../src/server/execution/daemon';
+import { projectInterventions } from '../../src/server/execution/interventions';
 
 const TOKEN = 'test-operator-token';
 const CSRF = 'test-csrf-token';
@@ -674,5 +680,415 @@ describe('POST /api/runs — run modes (full-factory U3)', () => {
     const events = await store.readRun('run-1');
     expect(events.filter((e) => e.type === 'run.failed')).toHaveLength(1);
     expect(events.some((e) => e.type === 'run.planned')).toBe(false);
+  });
+});
+
+/* ----------------------------------------------------------------------------
+ * Archive / unarchive (session lifecycle U2)
+ * ------------------------------------------------------------------------- */
+
+/** A request with an explicit query (the shared `req` always sends `{}`). */
+function reqQuery(
+  method: string,
+  path: string,
+  query: Record<string, string | undefined>,
+  headers: Record<string, string | undefined>,
+  body?: unknown,
+): ApiRequest {
+  return { method, path, query, headers, body };
+}
+
+/** Mark a run completed the way the scheduler executor does in production. */
+async function completeRun(store: EventStore, runId: string): Promise<void> {
+  await store.append({
+    runId,
+    type: 'run.completed',
+    actor: { kind: 'system', id: 'ticket-executor' },
+    subject: { kind: 'run', id: runId },
+    severity: 'success',
+    idempotencyKey: `${runId}:run.completed`,
+    payload: { summary: 'all done' },
+  });
+}
+
+/** A deterministic, always-ready fake adapter for the preflight catalog. */
+function readyFakeAdapter(id = 'fake-ready'): ExecutionAdapter {
+  return {
+    id,
+    family: 'codex',
+    detectSetup: () => Promise.resolve({ available: true, authenticated: true, capacity: 4 }),
+    execute: () =>
+      Promise.resolve({ ok: false as const, error: AdapterError.unavailable('not used') }),
+    reportCapacity: () => 4,
+  };
+}
+
+/** Timers that never fire — tests drive the daemon manually via `tick()`. */
+function noopTimers() {
+  return {
+    setInterval: () => null,
+    clearInterval: () => undefined,
+  };
+}
+
+/**
+ * An app with a REAL (unstarted) execution daemon and a ready fake adapter
+ * catalog, mirroring execution-routes.test.ts — for archive scenarios that
+ * need queued/in-flight execution work.
+ */
+function makeExecApp(): { app: App; store: EventStore; daemon: ExecutionDaemon } {
+  const det = deterministic();
+  const store = createInMemoryEventStore(det);
+  const provider = createOperatorTokenProvider({
+    store: createInMemoryOperatorTokenStore({ token: TOKEN, createdAt: 0 }),
+  });
+  let runSeq = 0;
+  let leaseSeq = 0;
+  const daemon = createExecutionDaemon({
+    store,
+    clock: det.clock,
+    idGenerator: () => `lease-${(leaseSeq += 1)}`,
+    ownerId: 'daemon-test',
+    timers: noopTimers(),
+  });
+  const app = createApp({
+    store,
+    operatorToken: provider,
+    idGenerator: () => `run-${(runSeq += 1)}`,
+    config: { allowedOrigins: [ORIGIN], csrfToken: CSRF },
+    execution: daemon,
+    adapterCatalog: createAdapterCatalog([readyFakeAdapter()]),
+  });
+  return { app, store, daemon };
+}
+
+async function createPlannedRun(app: App, body: Record<string, unknown> = {}): Promise<string> {
+  const res = await app.handle(
+    req('POST', '/api/runs', authedHeaders(), { prompt: MARKETPLACE_PROMPT, ...body }),
+  );
+  expect(res.status).toBe(201);
+  return record(res).runId as string;
+}
+
+describe('POST /api/runs/:id/archive', () => {
+  it('archives a completed run: run.archived appended, hidden by default, listed with includeArchived', async () => {
+    const { app, store } = makeApp();
+    const runId = await createPlannedRun(app);
+    await completeRun(store, runId);
+
+    const res = await app.handle(
+      req('POST', `/api/runs/${runId}/archive`, authedHeaders(), { reason: 'shipping done' }),
+    );
+    expect(res.status).toBe(200);
+    const run = record(res).run as RunProjection;
+    expect(run.archived).toBe(true);
+    expect(run.archivedAt).toBeDefined();
+    // A terminal run is archived WITHOUT a cancel (R16 applies to live runs).
+    expect(record(res).cancelled).toBeUndefined();
+    expect(run.status).toBe('completed');
+
+    const events = await store.readRun(runId);
+    expect(events.filter((e) => e.type === 'run.archived')).toHaveLength(1);
+    expect(events.some((e) => e.type === 'run.cancelled')).toBe(false);
+    expect(events[events.length - 1].type).toBe('run.archived');
+
+    // Default list: the archived run is GONE (R7 default-view filtering).
+    const defaultList = await app.handle(req('GET', '/api/runs', {}));
+    expect((record(defaultList).runs as RunProjection[]).map((r) => r.runId)).toEqual([]);
+
+    // History opt-in: `includeArchived=1` returns it, still projected archived.
+    const history = await app.handle(reqQuery('GET', '/api/runs', { includeArchived: '1' }, {}));
+    const historyRuns = record(history).runs as RunProjection[];
+    expect(historyRuns.map((r) => r.runId)).toEqual([runId]);
+    expect(historyRuns[0].archived).toBe(true);
+  });
+
+  it('rejects a stale expectedVersion with 409 and appends no archive event', async () => {
+    const { app, store } = makeApp();
+    const runId = await createPlannedRun(app);
+
+    const res = await app.handle(
+      req('POST', `/api/runs/${runId}/archive`, authedHeaders(), { expectedVersion: 1 }),
+    );
+    expect(res.status).toBe(409);
+    expect(record(res).error).toBe('stale_subject_version');
+
+    const types = (await store.readRun(runId)).map((e) => e.type);
+    expect(types).toContain('security.command_rejected');
+    expect(types).not.toContain('run.archived');
+    expect(types).not.toContain('run.cancelled');
+  });
+
+  it('archives a RUNNING (queued) run by cancelling first: one command, queue released, both reported', async () => {
+    const { app, store, daemon } = makeExecApp();
+    const runId = await createPlannedRun(app);
+    const started = await app.handle(req('POST', `/api/runs/${runId}/start`, authedHeaders(), {}));
+    expect(started.status).toBe(202);
+
+    const res = await app.handle(
+      req('POST', `/api/runs/${runId}/archive`, authedHeaders(), { reason: 'clear the floor' }),
+    );
+    expect(res.status).toBe(200);
+    // The response reports BOTH halves of the command (R16).
+    expect(record(res).cancelled).toBe(true);
+    const run = record(res).run as RunProjection;
+    expect(run.status).toBe('cancelled');
+    expect(run.executionState).toBe('cancelled');
+    expect(run.archived).toBe(true);
+
+    const events = await store.readRun(runId);
+    const types = events.map((e) => e.type);
+    // Cancel lands BEFORE archive: never an "archived but still executing" run.
+    expect(types.indexOf('run.cancelled')).toBeGreaterThan(-1);
+    expect(types.indexOf('run.cancelled')).toBeLessThan(types.indexOf('run.archived'));
+    const released = events.find((e) => e.type === 'queue.released');
+    expect((released?.payload as { outcome?: string } | undefined)?.outcome).toBe('cancelled');
+
+    // The daemon never claims work for the cancelled+archived run.
+    const tick = await daemon.tick();
+    expect(tick.claimed).toBe(0);
+  });
+
+  it('archiving a non-terminal run resolves its open interventions (queue drops them)', async () => {
+    const { app, store } = makeExecApp();
+    // A repo-sourced run with no workspace: the failed preflight leaves OPEN
+    // interventions blocking the run.
+    const runId = await createPlannedRun(app, { githubRepo: 'octo/app' });
+    const blocked = await app.handle(req('POST', `/api/runs/${runId}/start`, authedHeaders(), {}));
+    expect(blocked.status).toBe(422);
+    const openBefore = projectInterventions(await store.readRun(runId)).open;
+    expect(openBefore.length).toBeGreaterThan(0);
+
+    const res = await app.handle(req('POST', `/api/runs/${runId}/archive`, authedHeaders(), {}));
+    expect(res.status).toBe(200);
+
+    // Interventions must never pin a hidden run on the factory floor.
+    const projection = projectInterventions(await store.readRun(runId));
+    expect(projection.open).toHaveLength(0);
+    for (const { interventionId } of openBefore) {
+      expect(projection.byId[interventionId]?.status).toBe('resolved');
+      expect(projection.byId[interventionId]?.resolution).toBe('cancelled');
+    }
+    const list = await app.handle(req('GET', '/api/interventions', {}));
+    expect(record(list).openCount).toBe(0);
+  });
+
+  it('archiving a terminal (failed) run resolves its interventions WITHOUT cancelling', async () => {
+    const { app, store } = makeExecApp();
+    const runId = await createPlannedRun(app, { githubRepo: 'octo/app' });
+    const blocked = await app.handle(req('POST', `/api/runs/${runId}/start`, authedHeaders(), {}));
+    expect(blocked.status).toBe(422);
+    // The run fails terminally with its preflight interventions still open.
+    await store.append({
+      runId,
+      type: 'run.failed',
+      actor: { kind: 'system', id: 'execution-daemon' },
+      subject: { kind: 'run', id: runId },
+      severity: 'error',
+      payload: { reason: 'gave up after blocked preflight' },
+    });
+    const openBefore = projectInterventions(await store.readRun(runId)).open;
+    expect(openBefore.length).toBeGreaterThan(0);
+
+    const res = await app.handle(req('POST', `/api/runs/${runId}/archive`, authedHeaders(), {}));
+    expect(res.status).toBe(200);
+    expect(record(res).cancelled).toBeUndefined();
+
+    const events = await store.readRun(runId);
+    expect(events.some((e) => e.type === 'run.cancelled')).toBe(false);
+    const projection = projectInterventions(events);
+    expect(projection.open).toHaveLength(0);
+    for (const { interventionId } of openBefore) {
+      expect(projection.byId[interventionId]?.resolution).toBe('archived');
+    }
+    // The terminal outcome is preserved: archived, still failed.
+    const run = record(res).run as RunProjection;
+    expect(run.status).toBe('failed');
+    expect(run.archived).toBe(true);
+  });
+
+  it('re-archiving converges: alreadyArchived, no duplicate event (AE-idempotency)', async () => {
+    const { app, store } = makeApp();
+    const runId = await createPlannedRun(app);
+    await completeRun(store, runId);
+
+    const first = await app.handle(req('POST', `/api/runs/${runId}/archive`, authedHeaders(), {}));
+    expect(first.status).toBe(200);
+    const second = await app.handle(req('POST', `/api/runs/${runId}/archive`, authedHeaders(), {}));
+    expect(second.status).toBe(200);
+    expect(record(second).alreadyArchived).toBe(true);
+    expect((record(second).run as RunProjection).archived).toBe(true);
+
+    const events = await store.readRun(runId);
+    expect(events.filter((e) => e.type === 'run.archived')).toHaveLength(1);
+  });
+
+  it('a guard rejection (bad token) archives nothing', async () => {
+    const { app, store } = makeApp();
+    const runId = await createPlannedRun(app);
+
+    const res = await app.handle(
+      req('POST', `/api/runs/${runId}/archive`, { origin: ORIGIN, 'x-csrf-token': CSRF }, {}),
+    );
+    expect(res.status).toBe(401);
+
+    const types = (await store.readRun(runId)).map((e) => e.type);
+    expect(types).toContain('security.block');
+    expect(types).not.toContain('run.archived');
+    expect(types).not.toContain('run.cancelled');
+    // The run stays visible in the default list.
+    const list = await app.handle(req('GET', '/api/runs', {}));
+    expect((record(list).runs as RunProjection[]).map((r) => r.runId)).toEqual([runId]);
+  });
+
+  it('AE2: an archived run stays readable via the events and detail routes', async () => {
+    const { app, store } = makeApp();
+    const runId = await createPlannedRun(app);
+    await completeRun(store, runId);
+    await app.handle(req('POST', `/api/runs/${runId}/archive`, authedHeaders(), {}));
+
+    const eventsRes = await app.handle(req('GET', `/api/runs/${runId}/events`, {}));
+    expect(eventsRes.status).toBe(200);
+    const eventTypes = (record(eventsRes).events as { type: string }[]).map((e) => e.type);
+    expect(eventTypes[0]).toBe('run.created');
+    expect(eventTypes).toContain('run.archived');
+
+    const detail = await app.handle(req('GET', `/api/runs/${runId}`, {}));
+    expect(detail.status).toBe(200);
+    const run = record(detail).run as RunProjection;
+    expect(run.archived).toBe(true);
+    expect(run.status).toBe('completed');
+  });
+});
+
+describe('POST /api/runs/:id/unarchive', () => {
+  it('restores visibility only: the run re-enters the default list, execution state untouched', async () => {
+    const { app, store } = makeApp();
+    const runId = await createPlannedRun(app);
+    // Archive-of-active cancels first (R16) — the unarchived run must stay
+    // cancelled (R13: visibility only, cancelled stays terminal).
+    await app.handle(req('POST', `/api/runs/${runId}/archive`, authedHeaders(), {}));
+    const archived = projectRun(await store.readRun(runId), runId);
+    expect(archived.archived).toBe(true);
+    expect(archived.status).toBe('cancelled');
+
+    const res = await app.handle(req('POST', `/api/runs/${runId}/unarchive`, authedHeaders(), {}));
+    expect(res.status).toBe(200);
+    const run = record(res).run as RunProjection;
+    expect(run.archived).toBe(false);
+    expect(run.archivedAt).toBeUndefined();
+    expect(run.status).toBe('cancelled');
+    expect(run.executionState).toBe(archived.executionState);
+
+    const list = await app.handle(req('GET', '/api/runs', {}));
+    expect((record(list).runs as RunProjection[]).map((r) => r.runId)).toEqual([runId]);
+  });
+
+  it('unarchiving a visible run converges: alreadyVisible, no event', async () => {
+    const { app, store } = makeApp();
+    const runId = await createPlannedRun(app);
+
+    const res = await app.handle(req('POST', `/api/runs/${runId}/unarchive`, authedHeaders(), {}));
+    expect(res.status).toBe(200);
+    expect(record(res).alreadyVisible).toBe(true);
+    expect((await store.readRun(runId)).some((e) => e.type === 'run.unarchived')).toBe(false);
+  });
+
+  it('archive -> unarchive -> archive appends a fresh toggle (version-scoped idempotency keys)', async () => {
+    const { app, store } = makeApp();
+    const runId = await createPlannedRun(app);
+    await completeRun(store, runId);
+
+    await app.handle(req('POST', `/api/runs/${runId}/archive`, authedHeaders(), {}));
+    await app.handle(req('POST', `/api/runs/${runId}/unarchive`, authedHeaders(), {}));
+    const rearchive = await app.handle(
+      req('POST', `/api/runs/${runId}/archive`, authedHeaders(), {}),
+    );
+    expect(rearchive.status).toBe(200);
+    expect(record(rearchive).alreadyArchived).toBeUndefined();
+
+    const events = await store.readRun(runId);
+    // A fixed idempotency key would dedup the SECOND archive silently — the
+    // version-scoped key lets the toggle land as a fresh event.
+    expect(events.filter((e) => e.type === 'run.archived')).toHaveLength(2);
+    expect(events.filter((e) => e.type === 'run.unarchived')).toHaveLength(1);
+    expect(projectRun(events, runId).archived).toBe(true);
+  });
+});
+
+describe('POST /api/runs/:id/cancel with archive: true (R10)', () => {
+  it('cancels and archives in ONE command; queue released; single archive event', async () => {
+    const { app, store, daemon } = makeExecApp();
+    const runId = await createPlannedRun(app);
+    await app.handle(req('POST', `/api/runs/${runId}/start`, authedHeaders(), {}));
+
+    const res = await app.handle(
+      req('POST', `/api/runs/${runId}/cancel`, authedHeaders(), {
+        reason: 'operator stop',
+        archive: true,
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(record(res).archived).toBe(true);
+    const run = record(res).run as RunProjection;
+    expect(run.status).toBe('cancelled');
+    expect(run.archived).toBe(true);
+
+    const events = await store.readRun(runId);
+    expect(events.filter((e) => e.type === 'run.cancelled')).toHaveLength(1);
+    expect(events.filter((e) => e.type === 'run.archived')).toHaveLength(1);
+    const released = events.find((e) => e.type === 'queue.released');
+    expect((released?.payload as { outcome?: string } | undefined)?.outcome).toBe('cancelled');
+    expect((await daemon.tick()).claimed).toBe(0);
+  });
+
+  it('archives an ALREADY-cancelled run when asked (converging follow-up), then converges fully', async () => {
+    const { app, store } = makeApp();
+    const runId = await createPlannedRun(app);
+    await app.handle(req('POST', `/api/runs/${runId}/cancel`, authedHeaders(), { reason: 'stop' }));
+
+    const followUp = await app.handle(
+      req('POST', `/api/runs/${runId}/cancel`, authedHeaders(), { archive: true }),
+    );
+    expect(followUp.status).toBe(200);
+    expect(record(followUp).alreadyCancelled).toBe(true);
+    expect(record(followUp).archived).toBe(true);
+    expect((record(followUp).run as RunProjection).archived).toBe(true);
+
+    const again = await app.handle(
+      req('POST', `/api/runs/${runId}/cancel`, authedHeaders(), { archive: true }),
+    );
+    expect(again.status).toBe(200);
+    expect(record(again).alreadyCancelled).toBe(true);
+    expect(record(again).alreadyArchived).toBe(true);
+
+    const events = await store.readRun(runId);
+    expect(events.filter((e) => e.type === 'run.cancelled')).toHaveLength(1);
+    expect(events.filter((e) => e.type === 'run.archived')).toHaveLength(1);
+  });
+
+  it('plain cancel (no flag) archives nothing but returns the fresh run for an immediate archive offer', async () => {
+    const { app, store } = makeApp();
+    const runId = await createPlannedRun(app);
+
+    const res = await app.handle(
+      req('POST', `/api/runs/${runId}/cancel`, authedHeaders(), { reason: 'stop' }),
+    );
+    expect(res.status).toBe(200);
+    expect(record(res).archived).toBeUndefined();
+    const run = record(res).run as RunProjection;
+    expect(run.archived).toBe(false);
+    // The response carries what the UI needs to offer archive in the same
+    // moment (AE5): the projected run with a FRESH lastSequence for
+    // `expectedVersion` on the follow-up archive command.
+    expect(run.lastSequence).toBeGreaterThan(0);
+    const archive = await app.handle(
+      req('POST', `/api/runs/${runId}/archive`, authedHeaders(), {
+        expectedVersion: run.lastSequence,
+      }),
+    );
+    expect(archive.status).toBe(200);
+    expect((record(archive).run as RunProjection).archived).toBe(true);
+    expect((await store.readRun(runId)).filter((e) => e.type === 'run.archived')).toHaveLength(1);
   });
 });

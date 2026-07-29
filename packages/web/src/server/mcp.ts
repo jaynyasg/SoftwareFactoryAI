@@ -66,8 +66,19 @@ const TOOLS: readonly McpTool[] = [
   },
   {
     name: 'software_factory_list_runs',
-    description: 'List projected Software Factory runs, most recent first.',
-    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    description:
+      'List projected Software Factory runs, most recent first. Archived runs are excluded by default; pass includeArchived to read the history view.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        includeArchived: {
+          type: 'boolean',
+          description:
+            'Include archived runs (session-lifecycle history view). Default false: archived runs stay on disk and replayable but leave default lists.',
+        },
+      },
+      additionalProperties: false,
+    },
   },
   {
     name: 'software_factory_get_run',
@@ -95,7 +106,26 @@ const TOOLS: readonly McpTool[] = [
   {
     name: 'software_factory_cancel_run',
     description:
-      'Cancel a run with an expected ledger version for stale-command protection. Cancellation propagates to queued and active execution work.',
+      'Cancel a run with an expected ledger version for stale-command protection. Cancellation propagates to queued and active execution work. Pass archive: true to also archive the run in the SAME command (cancel-then-archive, R10 parity with the CLI --archive flag).',
+    inputSchema: {
+      type: 'object',
+      required: ['runId', 'expectedVersion'],
+      properties: {
+        runId: { type: 'string' },
+        expectedVersion: { type: 'integer', minimum: 0 },
+        reason: { type: 'string' },
+        archive: {
+          type: 'boolean',
+          description: 'Also archive the run in the same command (cancel-then-archive).',
+        },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'software_factory_archive_run',
+    description:
+      'Archive a run: it leaves default run lists but stays on disk, searchable, and replayable (reversible via software_factory_unarchive_run). A non-terminal run is CANCELLED first in the same command — there is no "archived but still executing" state. Re-archiving converges (alreadyArchived).',
     inputSchema: {
       type: 'object',
       required: ['runId', 'expectedVersion'],
@@ -107,6 +137,46 @@ const TOOLS: readonly McpTool[] = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'software_factory_unarchive_run',
+    description:
+      'Unarchive a run so it re-enters default run lists. Visibility ONLY — execution state is never revived (a cancelled run stays terminal). Unarchiving a visible run converges (alreadyVisible).',
+    inputSchema: {
+      type: 'object',
+      required: ['runId', 'expectedVersion'],
+      properties: {
+        runId: { type: 'string' },
+        expectedVersion: { type: 'integer', minimum: 0 },
+        reason: { type: 'string' },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'software_factory_new_session',
+    description:
+      'Start a fresh session in ONE atomic guarded command: hold the drain gate, cancel active runs, clear queued work, archive every visible run, and record a session.started marker. When active runs exist and confirmActive is not true, the command changes NOTHING and returns the active list (error active_runs_present) — re-send with confirmActive: true to cancel-and-archive them. Archived runs stay on disk and replayable.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        confirmActive: {
+          type: 'boolean',
+          description:
+            'Confirm cancelling and archiving ACTIVE runs. Without this, the command aborts (nothing changes) when actives exist and lists them.',
+        },
+        reason: { type: 'string' },
+      },
+      additionalProperties: false,
+    },
+  },
+  // NOTE: there is deliberately NO `software_factory_factory_reset` tool.
+  // Destructive scope: an MCP tool schema would have to spell out the typed
+  // confirmation phrase, and a prompt-injected agent could simply copy it —
+  // the phrase only protects when a HUMAN types it. The UI and CLI keep the
+  // reset because a human types the phrase there; remote model surfaces get
+  // `software_factory_new_session` (reversible archive) instead. Pinned by
+  // mcp.test.ts ("reset tool deliberately absent") and the connector-parity
+  // CONNECTOR_SURFACE exclusion for POST /api/execution/factory-reset.
   {
     name: 'software_factory_cancel_all_runs',
     description:
@@ -553,9 +623,15 @@ async function callFactoryTool(
           internalRequest('POST', '/api/runs', session, { ...args, callerFamily: 'api' }),
         );
         break;
-      case 'software_factory_list_runs':
-        response = await deps.app.handle(internalRequest('GET', '/api/runs', session));
+      case 'software_factory_list_runs': {
+        // `includeArchived=1` opts into the history view; the default list
+        // filters archived runs exactly like the web floor (route-owned rule).
+        const request = internalRequest('GET', '/api/runs', session);
+        response = await deps.app.handle(
+          args.includeArchived === true ? { ...request, query: { includeArchived: '1' } } : request,
+        );
         break;
+      }
       case 'software_factory_get_run':
       case 'software_factory_get_execution':
       case 'software_factory_get_research':
@@ -600,10 +676,45 @@ async function callFactoryTool(
           internalRequest('POST', runPath(runId, 'cancel'), session, {
             expectedVersion: num(args.expectedVersion),
             reason: str(args.reason),
+            // Optional cancel-and-archive as ONE command (R10 parity with the
+            // CLI --archive flag); the route ignores a missing/false flag.
+            ...(args.archive === true ? { archive: true } : {}),
           }),
         );
         break;
       }
+      case 'software_factory_archive_run':
+      case 'software_factory_unarchive_run': {
+        // Thin adapters over the guarded per-run archive routes (session
+        // lifecycle U2/U7): cancel-then-archive for non-terminal runs and the
+        // visibility-only unarchive rule live in the route, never here.
+        const runId = str(args.runId);
+        if (runId === undefined) {
+          return missingRunId();
+        }
+        const subpath = name === 'software_factory_archive_run' ? 'archive' : 'unarchive';
+        response = await deps.app.handle(
+          internalRequest('POST', runPath(runId, subpath), session, {
+            expectedVersion: num(args.expectedVersion),
+            reason: str(args.reason),
+          }),
+        );
+        break;
+      }
+      case 'software_factory_new_session':
+        // Factory-scoped atomic command (U3): the ask-once gate is the ROUTE's
+        // 409 (active_runs_present) — the bridge just forwards confirmActive.
+        response = await deps.app.handle(
+          internalRequest('POST', '/api/execution/new-session', session, {
+            confirmActive: args.confirmActive === true,
+            reason: str(args.reason),
+          }),
+        );
+        break;
+      // NOTE: no `software_factory_factory_reset` case — the destructive wipe
+      // is deliberately absent from MCP (see the TOOLS comment above): a
+      // prompt-injected agent could copy the typed phrase from a schema, so
+      // only surfaces where a human types it (UI, CLI) keep the reset.
       case 'software_factory_cancel_all_runs':
         // Factory-scoped guarded command: one guard check covers the batch and
         // the route converges per run (already-cancelled/terminal runs are

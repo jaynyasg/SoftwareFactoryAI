@@ -62,6 +62,10 @@ function makeFakeClient(options: FakeOptions = {}): {
     },
     getEvents: notUsed,
     cancelRun: notUsed,
+    archiveRun: notUsed,
+    unarchiveRun: notUsed,
+    startNewSession: notUsed,
+    factoryReset: notUsed,
     review(runId, input) {
       calls.push({ method: 'review', runId, input });
       return Promise.resolve(

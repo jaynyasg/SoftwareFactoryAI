@@ -18,6 +18,20 @@
  *   software-factory factory-hold         — re-engage the gate; stop claiming new work
  *   software-factory cancel-all           — cancel every cancellable run
  *
+ * Session lifecycle (U7 connector parity over the U2/U3/U4 routes):
+ *
+ *   software-factory cancel <runId> [--archive] — cancel (and optionally
+ *                                          archive) one run in ONE command
+ *   software-factory archive   <runId>    — reversible: run leaves default views
+ *   software-factory unarchive <runId>    — visibility back; never revives work
+ *   software-factory new-session          — hold + cancel actives + archive all
+ *   software-factory factory-reset        — DESTRUCTIVE wipe; typed phrase
+ *
+ * All are thin wrappers: business rules (cancel-first archive, ask-once
+ * confirmation, the reset phrase + lease refusal) live in the guarded routes.
+ * The ONLY client-side logic is factory-reset's local phrase check, which
+ * exists so a mistyped phrase aborts without ever sending a request.
+ *
  * Commands enqueue or mutate execution state through the guarded HTTP API and
  * print projected state; the execution daemon owns the actual work (E1).
  * Mutating commands resolve a fresh `expectedVersion` automatically (fetching
@@ -26,14 +40,20 @@
  * Factory-scoped commands take no expectedVersion: the gate is process-local
  * daemon state and cancel-all is explicitly cross-run (no per-run stale check).
  */
+import { ApiError } from '../api-client';
 import type {
   ApiClient,
+  ArchiveRunResult,
   CancelAllRunsResult,
+  CancelRunResult,
   ExecutionCommandResult,
   ExecutionGateResult,
   ExecutionOverviewResult,
+  FactoryResetResult,
   ListInterventionsResult,
+  NewSessionResult,
   ResolveInterventionResult,
+  UnarchiveRunResult,
 } from '../api-client';
 import type { CliIo } from '../cli-io';
 
@@ -327,5 +347,245 @@ export async function cancelAllRunsCommand(
   for (const failure of result.errors ?? []) {
     deps.io.err(`  failed ${failure.runId}: ${failure.message}`);
   }
+  return result;
+}
+
+/* ----------------------------------------------------------------------------
+ * Session lifecycle (U7 connector parity over the U2/U3/U4 routes). Thin
+ * wrappers: cancel-first archiving, the ask-once active-runs confirmation, and
+ * the reset guard all live server-side — the CLI forwards inputs and prints
+ * the route-shaped outcome.
+ * ------------------------------------------------------------------------- */
+
+export interface CancelRunCommandArgs {
+  readonly runId: string;
+  readonly expectedVersion?: number;
+  readonly reason?: string;
+  /** Cancel-and-archive in ONE command (R10): `cancel <runId> --archive`. */
+  readonly archive?: boolean;
+  readonly json?: boolean;
+}
+
+export async function cancelRunCommand(
+  args: CancelRunCommandArgs,
+  deps: ExecutionCommandDeps,
+): Promise<CancelRunResult> {
+  const expectedVersion = await resolveExpectedVersion(
+    deps.client,
+    args.runId,
+    args.expectedVersion,
+  );
+  const result = await deps.client.cancelRun(args.runId, {
+    expectedVersion,
+    reason: args.reason,
+    archive: args.archive,
+  });
+  if (args.json === true) {
+    deps.io.out(JSON.stringify(result, null, 2));
+    return result;
+  }
+  const cancelledPart = result.alreadyCancelled === true ? 'already cancelled' : 'cancelled';
+  const archivePart =
+    result.archived === true
+      ? ' and archived'
+      : result.alreadyArchived === true
+        ? ' (already archived)'
+        : '';
+  deps.io.out(`${result.runId}: ${cancelledPart}${archivePart}.`);
+  return result;
+}
+
+export async function archiveRunCommand(
+  args: ExecutionCommandArgs,
+  deps: ExecutionCommandDeps,
+): Promise<ArchiveRunResult> {
+  const expectedVersion = await resolveExpectedVersion(
+    deps.client,
+    args.runId,
+    args.expectedVersion,
+  );
+  const result = await deps.client.archiveRun(args.runId, {
+    expectedVersion,
+    reason: args.reason,
+  });
+  if (args.json === true) {
+    deps.io.out(JSON.stringify(result, null, 2));
+    return result;
+  }
+  deps.io.out(
+    result.alreadyArchived === true
+      ? `${result.runId}: already archived.`
+      : `${result.runId}: archived${
+          result.cancelled === true ? ' (active run was cancelled first)' : ''
+        } — still on disk and replayable; unarchive to restore visibility.`,
+  );
+  return result;
+}
+
+export async function unarchiveRunCommand(
+  args: ExecutionCommandArgs,
+  deps: ExecutionCommandDeps,
+): Promise<UnarchiveRunResult> {
+  const expectedVersion = await resolveExpectedVersion(
+    deps.client,
+    args.runId,
+    args.expectedVersion,
+  );
+  const result = await deps.client.unarchiveRun(args.runId, {
+    expectedVersion,
+    reason: args.reason,
+  });
+  if (args.json === true) {
+    deps.io.out(JSON.stringify(result, null, 2));
+    return result;
+  }
+  deps.io.out(
+    result.alreadyVisible === true
+      ? `${result.runId}: already visible.`
+      : `${result.runId}: visible again (execution state untouched — cancelled stays terminal).`,
+  );
+  return result;
+}
+
+export interface NewSessionCommandArgs {
+  /** Confirm cancelling and archiving ACTIVE runs (the ask-once answer). */
+  readonly confirmActive?: boolean;
+  readonly reason?: string;
+  readonly json?: boolean;
+}
+
+export async function newSessionCommand(
+  args: NewSessionCommandArgs,
+  deps: ExecutionCommandDeps,
+): Promise<NewSessionResult> {
+  let result: NewSessionResult;
+  try {
+    result = await deps.client.startNewSession({
+      confirmActive: args.confirmActive,
+      reason: args.reason,
+    });
+  } catch (error) {
+    // The ask-once refusal (AE1): list the actives with a CLI-flavored hint,
+    // then rethrow so the exit code still reports the aborted command.
+    if (error instanceof ApiError && error.code === 'active_runs_present') {
+      const actives = Array.isArray(error.details?.activeRuns) ? error.details.activeRuns : [];
+      for (const entry of actives) {
+        const active = entry as { runId?: string; title?: string; executionState?: string };
+        deps.io.err(
+          `  active: ${active.runId ?? 'unknown'}${
+            active.title !== undefined ? ` — ${active.title}` : ''
+          } (${active.executionState ?? 'active'})`,
+        );
+      }
+      deps.io.err('Re-run with --confirm-active to cancel and archive them, or cancel first.');
+    }
+    // Partial failure (500 new_session_partial): the batch DID run — print
+    // what landed plus every per-run failure so the operator knows the floor
+    // state, then rethrow so the exit code reports the partial command
+    // instead of pretending success.
+    if (error instanceof ApiError && error.code === 'new_session_partial') {
+      const details = error.details ?? {};
+      const archivedCount = Array.isArray(details.archived) ? details.archived.length : 0;
+      const cancelledCount = Array.isArray(details.cancelled) ? details.cancelled.length : 0;
+      deps.io.err(
+        `New session PARTIAL: archived ${archivedCount} run(s), cancelled ${cancelledCount} ` +
+          'active run(s); some operations failed:',
+      );
+      for (const entry of Array.isArray(details.errors) ? details.errors : []) {
+        const failure = entry as { runId?: string; message?: string };
+        deps.io.err(
+          `  failed ${failure.runId ?? 'unknown'}: ${failure.message ?? 'unknown error'}`,
+        );
+      }
+    }
+    throw error;
+  }
+  if (args.json === true) {
+    deps.io.out(JSON.stringify(result, null, 2));
+    return result;
+  }
+  deps.io.out(
+    `New session: archived ${result.archived.length} run(s), cancelled ` +
+      `${result.cancelled.length} active run(s); drain gate HELD (queued work will not ` +
+      'execute until factory-resume).',
+  );
+  for (const failure of result.errors ?? []) {
+    deps.io.err(`  failed ${failure.runId}: ${failure.message}`);
+  }
+  return result;
+}
+
+/**
+ * The typed confirmation phrase, mirrored from the server contract
+ * (`FACTORY_RESET_PHRASE` in packages/web/src/server/factory-reset.ts). The
+ * SERVER enforces the real contract on every request; this local copy only
+ * lets the CLI abort a mistyped phrase WITHOUT sending a request. Both sides
+ * pin the same literal in their tests, so a drift fails a build, not an
+ * operator.
+ */
+export const FACTORY_RESET_PHRASE = 'reset the factory';
+
+export interface FactoryResetCommandArgs {
+  /** Non-interactive confirmation: `--confirm "reset the factory"`. */
+  readonly confirm?: string;
+  readonly json?: boolean;
+}
+
+export interface FactoryResetCommandDeps extends ExecutionCommandDeps {
+  /**
+   * Interactive prompt for the typed phrase (stdin/readline in the real CLI;
+   * injected in tests). Only consulted when `--confirm` was not given.
+   */
+  readonly promptLine?: (question: string) => Promise<string>;
+}
+
+/**
+ * DESTRUCTIVE factory reset. Returns `null` when aborted locally (phrase not
+ * matched or no way to ask) — in that case NO request was sent. On a match the
+ * phrase is forwarded verbatim; the server re-verifies it and refuses while
+ * queue-job leases are active.
+ */
+export async function factoryResetCommand(
+  args: FactoryResetCommandArgs,
+  deps: FactoryResetCommandDeps,
+): Promise<FactoryResetResult | null> {
+  let phrase = args.confirm;
+  if (phrase === undefined) {
+    if (deps.promptLine === undefined) {
+      deps.io.err(
+        'factory-reset requires confirmation: pass --confirm ' +
+          `"${FACTORY_RESET_PHRASE}" or run interactively.`,
+      );
+      return null;
+    }
+    deps.io.err(
+      'DESTRUCTIVE: this wipes the event ledger (every run, visible or archived), ' +
+        'factory-managed workspaces, and the operator token. It cannot be undone.',
+    );
+    phrase = await deps.promptLine(`Type "${FACTORY_RESET_PHRASE}" to proceed: `);
+  }
+  if (phrase !== FACTORY_RESET_PHRASE) {
+    // Local abort: nothing was sent — a mistyped phrase must not even reach
+    // the server (the server would refuse it too; this spares the round trip).
+    deps.io.err(`Confirmation did not match "${FACTORY_RESET_PHRASE}". Nothing was sent.`);
+    return null;
+  }
+  const result = await deps.client.factoryReset({ confirm: phrase });
+  if (args.json === true) {
+    deps.io.out(JSON.stringify(result, null, 2));
+    return result;
+  }
+  const destroyed = result.destroyed;
+  const runCount = typeof destroyed?.runCount === 'number' ? destroyed.runCount : undefined;
+  const archivedRunCount =
+    typeof destroyed?.archivedRunCount === 'number' ? destroyed.archivedRunCount : undefined;
+  const counts =
+    runCount !== undefined && archivedRunCount !== undefined
+      ? ` Destroyed ${runCount} visible + ${archivedRunCount} archived run(s).`
+      : '';
+  deps.io.out(
+    `Factory reset complete (generation ${result.resetGeneration ?? '?'}); drain gate HELD.` +
+      counts,
+  );
   return result;
 }

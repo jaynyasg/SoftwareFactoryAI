@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  resolveFactoryDir,
   resolveRuntimeConfig,
   resolveScaleDiagnostics,
   scaleSafetyStartupLine,
@@ -74,6 +75,30 @@ describe('resolveRuntimeConfig', () => {
   it('SF_EXEC_AUTOSTART=1 opts the daemon back into drain-on-start', () => {
     const config = resolveRuntimeConfig({ SF_EXEC_AUTOSTART: '1' }, 'C:\\repo');
     expect(config.execution.autoStart).toBe(true);
+  });
+});
+
+describe('resolveFactoryDir — SF_FACTORY_DIR validation (A8)', () => {
+  it('refuses a RELATIVE override at resolve time with a clear message, not only at wipe time', () => {
+    expect(() => resolveFactoryDir({ SF_FACTORY_DIR: 'relative/.factory' }, 'C:\\repo')).toThrow(
+      /SF_FACTORY_DIR must be an absolute path.*relative\/\.factory/,
+    );
+    expect(() => resolveFactoryDir({ SF_FACTORY_DIR: './.factory' }, 'C:\\repo')).toThrow(
+      /absolute/,
+    );
+    // The whole runtime config resolution fails the same way (boot-time, not
+    // armed for a later factory-reset wipe).
+    expect(() => resolveRuntimeConfig({ SF_FACTORY_DIR: 'relative/.factory' }, 'C:\\repo')).toThrow(
+      /SF_FACTORY_DIR must be an absolute path/,
+    );
+  });
+
+  it('keeps an ABSOLUTE override verbatim and derives when unset', () => {
+    expect(resolveFactoryDir({ SF_FACTORY_DIR: '/var/data/.factory' }, 'C:\\repo')).toBe(
+      '/var/data/.factory',
+    );
+    // Unset keeps the derived workspace-walk behavior (ends in .factory).
+    expect(resolveFactoryDir({}, 'C:\\repo')).toMatch(/\.factory$/);
   });
 });
 

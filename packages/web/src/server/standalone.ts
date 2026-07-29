@@ -13,6 +13,13 @@
  * local operator). That is exactly the CLI's calling convention, so the CLI
  * authenticates with the operator token alone — no CSRF handshake required.
  *
+ * Factory Reset (session lifecycle U4/U7) is wired: the HTTP listener
+ * dispatches through a mutable app reference, and the injected
+ * `FactoryResetRuntime.rebuild()` swaps in a fresh store/daemon/app after the
+ * allowlisted wipe — the standalone equivalent of `instance.ts` dropping its
+ * globalThis singletons. The rebuilt daemon boots HELD and a fresh operator
+ * token is minted (existing CLI sessions re-auth, R15).
+ *
  * Run directly with tsx:
  *   tsx packages/web/src/server/standalone.ts [--port <n>]
  * or via env: SF_RUNTIME, PORT/SF_PORT, SF_HOST, SF_FACTORY_DIR,
@@ -22,13 +29,15 @@ import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createDefaultAdapterCatalog, createFileSystemEventStore } from '@software-factory/core';
-import { createApp } from './app';
-import type { RunningServer } from './app';
+import type { EventStore } from '@software-factory/core';
+import { createApp, serveApp } from './app';
+import type { App, RunningServer } from './app';
 import { createExecutionDaemon } from './execution/daemon';
 import type { ExecutionDaemon } from './execution/daemon';
 import { createRuntimeCompletionStage } from './execution/completion-stage';
 import { createRuntimeGateStages } from './execution/gate-stages';
 import { createSchedulerTicketExecutor } from './execution/ticket-executor';
+import type { FactoryResetRuntime } from './factory-reset';
 import {
   createRuntimeOperatorTokenProvider,
   resolveRuntimeConfig,
@@ -78,20 +87,18 @@ export async function startStandaloneServer(
   // One daemon per process: bootstrapped BEFORE the listener so the initial
   // reconcile pass (resume safe queued work, abandon stale leases) runs first.
   // The adapter catalog is shared by the executor and the preflight readiness
-  // check so both resolve the same adapter set (U6).
+  // check so both resolve the same adapter set (U6). The executor holds no
+  // store reference, so the Factory Reset rebuild below reuses it as-is.
   const adapterCatalog = createDefaultAdapterCatalog();
-  const daemon = createExecutionDaemon({
-    store,
-    config: runtime.execution,
+  const executor = createSchedulerTicketExecutor({
+    runtime,
+    adapters: adapterCatalog,
     // U7: gate stages wired for real (post-ticket repair loop + post-run gate).
     // U8: completion stage wired for real (preview, package/provenance, deploy).
-    executor: createSchedulerTicketExecutor({
-      runtime,
-      adapters: adapterCatalog,
-      gateStages: createRuntimeGateStages({ runtime }),
-      completionStage: createRuntimeCompletionStage({ runtime }),
-    }),
+    gateStages: createRuntimeGateStages({ runtime }),
+    completionStage: createRuntimeCompletionStage({ runtime }),
   });
+  const daemon = createExecutionDaemon({ store, config: runtime.execution, executor });
   await daemon.start();
 
   // U11 scale-safety: hosted logs must state the single-instance limit once
@@ -100,27 +107,81 @@ export async function startStandaloneServer(
     console.warn(scaleSafetyStartupLine(runtime));
   }
 
+  const appConfig = {
+    allowedOrigins: runtime.allowedOrigins,
+    runtime,
+    allowSameHostOrigin: true,
+  } as const;
+
+  /**
+   * Mutable factory-state triple (session lifecycle U4/U7): the HTTP listener
+   * dispatches through `current.app`, so the Factory Reset dispose/rebuild
+   * sequence can swap in a fresh store/daemon/app after the wipe — mirroring
+   * how `instance.ts` drops its globalThis singletons. Requests never reach a
+   * disposed store: the swap happens before the reset route responds. Assigned
+   * below (after `createApp`); the closures here only read it lazily.
+   */
+  let current: { store: EventStore; daemon: ExecutionDaemon; app: App };
+
+  const factoryResetRuntime: FactoryResetRuntime = {
+    factoryDir,
+    // Called AFTER the allowlisted paths were deleted (executeFactoryReset):
+    // a fresh store hydrates the EMPTY events dir, a fresh provider mints a
+    // new operator token (the old file was wiped; callers re-auth, R15), and
+    // the fresh daemon boots HELD again (server runtimes never auto-start).
+    rebuild: async () => {
+      const freshStore = createFileSystemEventStore({ baseDir: join(factoryDir, 'events') });
+      const freshProvider = createRuntimeOperatorTokenProvider({ ...runtime, factoryDir });
+      await freshProvider.getOrCreate();
+      const freshDaemon = createExecutionDaemon({
+        store: freshStore,
+        config: runtime.execution,
+        executor,
+      });
+      await freshDaemon.start();
+      const freshApp = createApp({
+        store: freshStore,
+        operatorToken: freshProvider,
+        execution: freshDaemon,
+        adapterCatalog,
+        factoryReset: factoryResetRuntime,
+        config: appConfig,
+      });
+      current = { store: freshStore, daemon: freshDaemon, app: freshApp };
+      return freshStore;
+    },
+  };
+
   // No CSRF token here: the CLI is a non-browser caller authenticated by the
   // operator token. The default genome planner plans every created run.
-  const app = createApp({
+  current = {
     store,
-    operatorToken: provider,
-    execution: daemon,
-    adapterCatalog,
-    config: { allowedOrigins: runtime.allowedOrigins, runtime, allowSameHostOrigin: true },
-  });
+    daemon,
+    app: createApp({
+      store,
+      operatorToken: provider,
+      execution: daemon,
+      adapterCatalog,
+      factoryReset: factoryResetRuntime,
+      config: appConfig,
+    }),
+  };
 
   const port = options.port ?? runtime.port;
   const host = options.host ?? runtime.host;
-  const server = await app.listen(port, host);
+  // Serve through the mutable reference so a reset's rebuilt app takes over
+  // without rebinding the socket.
+  const server = await serveApp((request) => current.app.handle(request), port, host);
   return {
     server,
     factoryDir,
     operatorTokenPath,
     operatorToken: session.token,
-    daemon,
+    get daemon(): ExecutionDaemon {
+      return current.daemon;
+    },
     close: async () => {
-      await daemon.stop();
+      await current.daemon.stop();
       await server.close();
     },
   };

@@ -5,12 +5,26 @@
  *                             an optional idempotency key. Appends `run.created`,
  *                             then (per the requested run mode) research events,
  *                             the supervisor plan, and a build contract.
- *   GET  /api/runs            (read-only) — list projected runs.
+ *   GET  /api/runs            (read-only) — list projected runs. Archived runs
+ *                             are excluded by default (session lifecycle U2);
+ *                             pass `?includeArchived=1` for the history view.
  *   POST /api/runs/cancel-all (mutating, guarded) — cancel every cancellable
  *                             run: appends `run.cancelled` per run FIRST, then
  *                             propagates the whole batch to queued/in-flight
  *                             execution in one daemon call.
  *   POST /api/runs/:id/cancel (mutating, guarded) — append `run.cancelled`.
+ *                             Optional `archive: true` in the body performs
+ *                             cancel-then-archive as ONE command (R10 parity).
+ *   POST /api/runs/:id/archive   (mutating, guarded) — append `run.archived`.
+ *                             A NON-TERMINAL run is cancelled first (R16):
+ *                             cancel + queue release + archive in one command,
+ *                             one daemon `cancelRun` call — there is no
+ *                             "archived but still executing" state. Archiving
+ *                             resolves the run's open interventions so the
+ *                             operator queue never pins hidden runs.
+ *   POST /api/runs/:id/unarchive (mutating, guarded) — append `run.unarchived`.
+ *                             Restores VISIBILITY only; execution state is
+ *                             never revived (cancelled stays terminal — R13).
  *   POST /api/runs/:id/workspace (mutating, guarded) — materialize (or retry
  *                             materializing) the run workspace (full-factory
  *                             U4). Separate from execution so setup failures
@@ -46,6 +60,7 @@ import {
   RUN_MODES,
   isRealRun,
   isRunMode,
+  isVisibleRun,
   projectResearch,
   projectRun,
   researchPlanContext,
@@ -53,7 +68,6 @@ import {
 import type {
   AppendableEvent,
   CallerFamily,
-  EventStore,
   FactoryEvent,
   PlannerResearchContext,
   ResearchProjection,
@@ -66,14 +80,18 @@ import { projectWorkspace } from '@software-factory/worker';
 // (run-outputs + core projections), not the CLI command surface.
 import { buildRunOutputs } from '@software-factory/cli/run-outputs';
 import type { ApiResponse, RouteContext, RouteDef } from '../app';
-import { asRecord, num, reviewMode, str } from './parse';
+import { asRecord, flag, num, reviewMode, str } from './parse';
 import { requestExecutionStart } from './execution';
 import {
-  filterInterventions,
-  projectInterventions,
-  resolveIntervention,
-} from '../execution/interventions';
-import { guardRunCommand, notFound, refreshBuildContract } from './shared';
+  appendArchive,
+  appendRunCancellation,
+  batchCancelRuns,
+  guardRunCommand,
+  notFound,
+  refreshBuildContract,
+  resolveInterventionsForArchivedRun,
+} from './shared';
+import type { BatchCancelEntry } from './shared';
 
 function callerFamily(value: unknown): CallerFamily | undefined {
   return value === 'claude' || value === 'codex' || value === 'api' ? value : undefined;
@@ -339,13 +357,17 @@ async function createRun(ctx: RouteContext): Promise<ApiResponse> {
 }
 
 async function listRunsHandler(ctx: RouteContext): Promise<ApiResponse> {
+  // Archived runs leave the DEFAULT list (session lifecycle U2): archive is a
+  // visibility lifecycle, so hidden runs stay on disk and replayable but never
+  // clutter the floor. `includeArchived=1` opts back in (history view, R7).
+  const includeArchived = flag(ctx.request.query.includeArchived);
   const ids = await ctx.reader.listRuns();
   const runs: RunProjection[] = [];
   for (const id of ids) {
     const run = projectRun(await ctx.reader.readRun(id), id);
     // Drop phantom runs: a runId minted only by a guard denial (a lone security
     // event) or with an empty ledger never reached `run.created`.
-    if (isRealRun(run)) {
+    if (includeArchived ? isRealRun(run) : isVisibleRun(run)) {
       runs.push(run);
     }
   }
@@ -353,26 +375,25 @@ async function listRunsHandler(ctx: RouteContext): Promise<ApiResponse> {
 }
 
 /**
- * Resolve every OPEN intervention on a run that is being cancelled. A
- * cancelled run never resumes, so leaving its interventions 'open'/'blocking'
- * would pin dead entries on the factory floor forever. The resolution event
- * matches the operator resolve route's shape (`intervention.resolved`, actor
- * operator) and `resolveIntervention` is idempotent per interventionId, so a
- * repeated cancel appends nothing new. `events` is the run's ledger as read
- * BEFORE the `run.cancelled` append — cancellation opens no interventions, so
- * the pre-cancel snapshot is the complete open set.
+ * The single-run cancel core shared by the cancel route and archive-of-a-
+ * non-terminal-run (R16): append `run.cancelled`, resolve the run's open
+ * interventions, and propagate ONE daemon `cancelRun` call so queued jobs are
+ * released and in-flight work is aborted. `events` is the pre-cancel ledger
+ * snapshot from the guard read.
  */
-async function resolveInterventionsForCancelledRun(
-  store: EventStore,
-  events: readonly unknown[],
+async function appendCancellation(
+  ctx: RouteContext,
   runId: string,
+  current: RunProjection,
+  events: readonly FactoryEvent[],
+  reason: string | undefined,
 ): Promise<void> {
-  const open = filterInterventions(projectInterventions(events), { runId, openOnly: true });
-  for (const intervention of open) {
-    await resolveIntervention(store, intervention, {
-      resolution: 'cancelled',
-      note: 'Run was cancelled; the intervention no longer blocks any pending work.',
-    });
+  // The shared pair: `run.cancelled` append + open-intervention resolution.
+  await appendRunCancellation(ctx, runId, current, events, reason);
+  // Cancel propagates to queued and active execution work (U5): the daemon
+  // aborts in-flight jobs and releases queued/abandoned ones as cancelled.
+  if (ctx.executionDaemon !== null) {
+    await ctx.executionDaemon.cancelRun(runId);
   }
 }
 
@@ -384,13 +405,37 @@ async function cancelRun(ctx: RouteContext): Promise<ApiResponse> {
     return guarded.response;
   }
   const current = guarded.run;
+  // Optional cancel-and-archive as ONE command (R10): the moment the operator
+  // stops a run is exactly when they may want it off the floor too, so the
+  // body flag folds both into a single guarded command instead of forcing a
+  // second round-trip. Without the flag the response still carries the full
+  // projected run (fresh `lastSequence` for `expectedVersion`, `archived`), so
+  // the UI can offer archive immediately from the cancel confirmation.
+  const wantsArchive = body.archive === true;
 
-  // Repeated cancels converge instead of stacking run.cancelled appends.
+  // Repeated cancels converge instead of stacking run.cancelled appends. With
+  // `archive: true` the archive half still applies (converging like the
+  // dedicated archive route would).
   if (current.status === 'cancelled') {
-    return { status: 200, body: { runId, alreadyCancelled: true, run: current } };
+    if (wantsArchive && !current.archived) {
+      await appendArchive(ctx, runId, current.lastSequence, str(body.reason));
+      const run = projectRun(await ctx.reader.readRun(runId), runId);
+      return { status: 200, body: { runId, alreadyCancelled: true, archived: true, run } };
+    }
+    return {
+      status: 200,
+      body: {
+        runId,
+        alreadyCancelled: true,
+        ...(wantsArchive ? { alreadyArchived: true } : {}),
+        run: current,
+      },
+    };
   }
   // Terminal runs cannot be cancelled retroactively (mirrors the pause/resume
-  // state checks): a completed/failed run keeps its recorded outcome.
+  // state checks): a completed/failed run keeps its recorded outcome. Archiving
+  // a terminal run is the dedicated archive route's job, so `archive: true`
+  // never turns a rejected cancel into a partial archive.
   if (current.status === 'completed' || current.status === 'failed') {
     return {
       status: 422,
@@ -402,23 +447,91 @@ async function cancelRun(ctx: RouteContext): Promise<ApiResponse> {
     };
   }
 
+  await appendCancellation(ctx, runId, current, guarded.events, str(body.reason));
+  if (wantsArchive) {
+    await appendArchive(ctx, runId, current.lastSequence, str(body.reason));
+  }
+  const run = projectRun(await ctx.reader.readRun(runId), runId);
+  return { status: 200, body: { runId, ...(wantsArchive ? { archived: true } : {}), run } };
+}
+
+/**
+ * Archive a run: append `run.archived` so the run leaves default views while
+ * staying on disk, searchable, and replayable (R7). A NON-TERMINAL run is
+ * cancelled first in the SAME command (R16) — cancel append, intervention
+ * resolution, and one daemon `cancelRun` call — because the daemon's drain
+ * check only gates on paused/cancelled: an archived-but-alive run's queued
+ * jobs would execute later. Archiving a terminal run still resolves its open
+ * interventions (e.g. a failed run's preflight entries) so the operator queue
+ * never lists work for a hidden run. Re-archiving converges (alreadyArchived,
+ * no duplicate event), mirroring the alreadyCancelled precedent.
+ */
+async function archiveRun(ctx: RouteContext): Promise<ApiResponse> {
+  const runId = ctx.params.id;
+  const body = asRecord(ctx.request.body);
+  const guarded = await guardRunCommand(ctx, runId, 'run.archive');
+  if (guarded.response !== null) {
+    return guarded.response;
+  }
+  const current = guarded.run;
+
+  if (current.archived) {
+    return { status: 200, body: { runId, alreadyArchived: true, run: current } };
+  }
+
+  const terminal =
+    current.status === 'completed' || current.status === 'failed' || current.status === 'cancelled';
+  if (!terminal) {
+    // Cancel-then-archive in ONE command (R16): there is no "archived but
+    // still executing" state. Queued jobs are released and in-flight work is
+    // aborted by the single daemon call inside the cancel core.
+    await appendCancellation(
+      ctx,
+      runId,
+      current,
+      guarded.events,
+      str(body.reason) ?? 'archived while active',
+    );
+  } else {
+    await resolveInterventionsForArchivedRun(ctx.store, guarded.events, runId);
+  }
+
+  await appendArchive(ctx, runId, current.lastSequence, str(body.reason));
+  const run = projectRun(await ctx.reader.readRun(runId), runId);
+  // `cancelled: true` reports the R16 side effect so surfaces can confirm both
+  // halves of the command from one response.
+  return { status: 200, body: { runId, ...(terminal ? {} : { cancelled: true }), run } };
+}
+
+/**
+ * Unarchive a run: append `run.unarchived` so the run re-enters default views.
+ * Visibility ONLY — execution state is never revived (cancelled stays
+ * terminal, R13). Unarchiving a visible run converges with no event.
+ */
+async function unarchiveRun(ctx: RouteContext): Promise<ApiResponse> {
+  const runId = ctx.params.id;
+  const body = asRecord(ctx.request.body);
+  const guarded = await guardRunCommand(ctx, runId, 'run.unarchive');
+  if (guarded.response !== null) {
+    return guarded.response;
+  }
+  const current = guarded.run;
+
+  if (!current.archived) {
+    return { status: 200, body: { runId, alreadyVisible: true, run: current } };
+  }
+
   await ctx.writer.append({
     runId,
-    type: 'run.cancelled',
+    type: 'run.unarchived',
     actor: { kind: 'operator', id: 'operator' },
     subject: { kind: 'run', id: runId, version: current.lastSequence },
-    severity: 'warn',
-    idempotencyKey: `${runId}:run.cancelled`,
+    severity: 'info',
+    // Version-scoped for the same reason as `run.archived` (see appendArchive):
+    // retries dedup, later toggles append.
+    idempotencyKey: `${runId}:run.unarchived:${current.lastSequence}`,
     payload: { reason: str(body.reason) },
   });
-  // A cancelled run's open interventions are dead: resolve them so the
-  // operator queue never carries blocking entries for a run that ended.
-  await resolveInterventionsForCancelledRun(ctx.store, guarded.events, runId);
-  // Cancel propagates to queued and active execution work (U5): the daemon
-  // aborts in-flight jobs and releases queued/abandoned ones as cancelled.
-  if (ctx.executionDaemon !== null) {
-    await ctx.executionDaemon.cancelRun(runId);
-  }
   const run = projectRun(await ctx.reader.readRun(runId), runId);
   return { status: 200, body: { runId, run } };
 }
@@ -463,10 +576,9 @@ async function cancelAllRuns(ctx: RouteContext): Promise<ApiResponse> {
     }
   }
 
-  const cancelled: string[] = [];
   const alreadyCancelled: string[] = [];
   const skippedTerminal: string[] = [];
-  const errors: { runId: string; message: string }[] = [];
+  const cancellable: BatchCancelEntry[] = [];
   for (const [runId, events] of eventsByRun) {
     const run = projectRun(events, runId);
     if (!isRealRun(run)) {
@@ -480,44 +592,13 @@ async function cancelAllRuns(ctx: RouteContext): Promise<ApiResponse> {
       skippedTerminal.push(runId);
       continue;
     }
-    let cancelAppended = false;
-    try {
-      await ctx.writer.append({
-        runId,
-        type: 'run.cancelled',
-        actor: { kind: 'operator', id: 'operator' },
-        subject: { kind: 'run', id: runId, version: run.lastSequence },
-        severity: 'warn',
-        idempotencyKey: `${runId}:run.cancelled`,
-        payload: { reason },
-      });
-      cancelAppended = true;
-      // A cancelled run's open interventions are dead: resolve them so the
-      // operator queue never carries blocking entries for a run that ended.
-      await resolveInterventionsForCancelledRun(ctx.store, events, runId);
-    } catch (error) {
-      // One run's append failure must not 500 the batch with earlier
-      // cancellations already committed: record it and keep cancelling.
-      const message = error instanceof Error ? error.message : String(error);
-      errors.push({ runId, message });
-    }
-    if (cancelAppended) {
-      cancelled.push(runId);
-    }
+    cancellable.push({ runId, run, events });
   }
 
-  // ONE daemon propagation for the whole batch (aborts every in-flight
-  // executor before the single chained release pass). A propagation failure
-  // is reported, not thrown: the `run.cancelled` events are already durable
-  // and the daemon's reconcile/drain passes release cancelled work anyway.
-  if (ctx.executionDaemon !== null && cancelled.length > 0) {
-    try {
-      await ctx.executionDaemon.cancelRuns(cancelled);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      errors.push({ runId: 'factory', message: `daemon cancel propagation failed: ${message}` });
-    }
-  }
+  // The shared two-phase batch core: every `run.cancelled` appended first
+  // (per-run failures collected, never a mid-batch 500), then ONE daemon
+  // propagation over the successfully cancelled runs.
+  const { cancelled, errors } = await batchCancelRuns(ctx, cancellable, { reason });
 
   return {
     status: 200,
@@ -611,6 +692,8 @@ export function runRoutes(): RouteDef[] {
     { method: 'GET', pattern: '/api/runs', handler: listRunsHandler },
     { method: 'POST', pattern: '/api/runs/cancel-all', handler: cancelAllRuns },
     { method: 'POST', pattern: '/api/runs/:id/cancel', handler: cancelRun },
+    { method: 'POST', pattern: '/api/runs/:id/archive', handler: archiveRun },
+    { method: 'POST', pattern: '/api/runs/:id/unarchive', handler: unarchiveRun },
     { method: 'POST', pattern: '/api/runs/:id/workspace', handler: materializeWorkspaceRoute },
     { method: 'GET', pattern: '/api/runs/:id/workspace', handler: getWorkspace },
     { method: 'GET', pattern: '/api/runs/:id/outputs', handler: getRunOutputs },

@@ -296,7 +296,9 @@ test('intervention queue spans runs, filters, focuses, and links to ledger evide
   });
 });
 
-test('focus run switches the blueprint and clear view preserves focus', async ({ page }) => {
+test('focus run switches the blueprint and the history toggle preserves focus', async ({
+  page,
+}) => {
   const runA = await seedFullFactoryRun(page.request, 'e2e-focus-a');
   const runB = await seedMarketplaceRun(page.request, 'e2e-focus-b');
   await page.goto('/');
@@ -304,13 +306,15 @@ test('focus run switches the blueprint and clear view preserves focus', async ({
   await focusRun(page, runA);
   await focusRun(page, runB);
 
-  // Clearing run history hides the list but never drops the focused blueprint.
-  await page.getByRole('button', { name: 'Clear view' }).click();
-  await expect(page.getByText(/Run history is hidden for this screen/)).toBeVisible();
+  // U6 replaced the ephemeral "Clear view" with the real archive lifecycle:
+  // RunBoard hosts history behind a "Show archived" toggle. Toggling the
+  // history host never drops the focused blueprint.
+  await page.getByTestId('history-toggle').click();
+  await expect(page.getByTestId('archived-history')).toBeVisible();
   await expect(page.getByTestId('blueprint-run').locator(`[data-full="${runB}"]`)).toBeVisible();
 
-  // Restoring the history brings the list back, focus still intact.
-  await page.getByRole('button', { name: 'Show history' }).click();
+  // Collapsing the archived section keeps the list and focus intact.
+  await page.getByTestId('history-toggle').click();
   await expect(page.getByTestId('blueprint-run').locator(`[data-full="${runB}"]`)).toBeVisible();
 });
 

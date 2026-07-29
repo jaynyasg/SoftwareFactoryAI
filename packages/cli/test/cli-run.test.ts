@@ -111,6 +111,18 @@ function makeFakeBackend(opts: { failCreateWith?: ApiError } = {}): FakeBackend 
     cancelRun() {
       return Promise.reject(new Error('not used'));
     },
+    archiveRun() {
+      return Promise.reject(new Error('not used'));
+    },
+    unarchiveRun() {
+      return Promise.reject(new Error('not used'));
+    },
+    startNewSession() {
+      return Promise.reject(new Error('not used'));
+    },
+    factoryReset() {
+      return Promise.reject(new Error('not used'));
+    },
     review() {
       return Promise.reject(new Error('not used'));
     },

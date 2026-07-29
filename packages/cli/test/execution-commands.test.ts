@@ -8,19 +8,26 @@
  * the caller pins one explicitly, so stale-command protection stays on.
  */
 import { describe, expect, it } from 'vitest';
+import { ApiError } from '../src/api-client';
 import type { ApiClient } from '../src/api-client';
 import {
+  FACTORY_RESET_PHRASE,
+  archiveRunCommand,
   cancelAllRunsCommand,
+  cancelRunCommand,
   factoryHoldCommand,
+  factoryResetCommand,
   factoryResumeCommand,
   factoryStatusCommand,
   interventionsCommand,
+  newSessionCommand,
   pauseRunCommand,
   resolveInterventionCommand,
   resumeRunCommand,
   retryRunCommand,
   rerunGatesCommand,
   startRunCommand,
+  unarchiveRunCommand,
 } from '../src/commands/execution';
 import { runCli } from '../src/index';
 import type { CliIo } from '../src/cli-io';
@@ -58,7 +65,39 @@ function makeFakeClient(): { client: ApiClient; calls: RecordedCall[] } {
       return Promise.resolve(run);
     },
     getEvents: notUsed,
-    cancelRun: notUsed,
+    cancelRun(runId, input) {
+      calls.push({ method: 'cancelRun', runId, input });
+      return Promise.resolve({
+        runId,
+        run,
+        ...(input.archive === true ? { archived: true } : {}),
+      });
+    },
+    archiveRun(runId, input) {
+      calls.push({ method: 'archiveRun', runId, input });
+      return Promise.resolve({ runId, cancelled: true, run });
+    },
+    unarchiveRun(runId, input) {
+      calls.push({ method: 'unarchiveRun', runId, input });
+      return Promise.resolve({ runId, run });
+    },
+    startNewSession(input) {
+      calls.push({ method: 'startNewSession', input });
+      return Promise.resolve({
+        archived: ['run-1', 'run-2'],
+        cancelled: ['run-1'],
+        held: true,
+      });
+    },
+    factoryReset(input) {
+      calls.push({ method: 'factoryReset', input });
+      return Promise.resolve({
+        reset: true,
+        resetGeneration: 3,
+        held: true,
+        destroyed: { runCount: 2, archivedRunCount: 1 },
+      });
+    },
     review: notUsed,
     materializeWorkspace: notUsed,
     getWorkspace: notUsed,
@@ -325,5 +364,203 @@ describe('execution commands via runCli — argument validation', () => {
     const code = await runCli(['resolve'], { io });
     expect(code).toBe(2);
     expect(errText().toLowerCase()).toContain('intervention');
+  });
+
+  it('cancel and archive require a runId', async () => {
+    for (const command of ['cancel', 'archive', 'unarchive']) {
+      const { io, errText } = makeIo();
+      const code = await runCli([command], { io });
+      expect(code, command).toBe(2);
+      expect(errText(), command).toContain('runId');
+    }
+  });
+});
+
+/* ----------------------------------------------------------------------------
+ * Session lifecycle commands (U7 connector parity): thin wrappers over the
+ * guarded U2/U3/U4 routes — the only client-side rule is factory-reset's
+ * local phrase check, which must abort WITHOUT sending any request.
+ * ------------------------------------------------------------------------- */
+
+describe('session lifecycle commands', () => {
+  it('archive resolves a fresh expectedVersion and posts the archive command', async () => {
+    const { client, calls } = makeFakeClient();
+    const { io, outText } = makeIo();
+    const result = await archiveRunCommand({ runId: 'run-1' }, { client, io });
+
+    expect(calls.map((c) => c.method)).toEqual(['getRun', 'archiveRun']);
+    expect(calls[1].input).toMatchObject({ expectedVersion: 7 });
+    expect(result.cancelled).toBe(true);
+    // The human summary names the reversible contract, not a fake deletion.
+    expect(outText()).toContain('archived');
+    expect(outText()).toContain('replayable');
+  });
+
+  it('unarchive posts the unarchive command with a fresh expectedVersion', async () => {
+    const { client, calls } = makeFakeClient();
+    const { io, outText } = makeIo();
+    await unarchiveRunCommand({ runId: 'run-1' }, { client, io });
+
+    expect(calls.map((c) => c.method)).toEqual(['getRun', 'unarchiveRun']);
+    expect(calls[1].input).toMatchObject({ expectedVersion: 7 });
+    expect(outText()).toContain('visible again');
+  });
+
+  it('cancel --archive performs cancel-then-archive in ONE client command', async () => {
+    const { client, calls } = makeFakeClient();
+    const { io, outText } = makeIo();
+    const result = await cancelRunCommand(
+      { runId: 'run-1', archive: true, reason: 'done here' },
+      { client, io },
+    );
+
+    // Exactly one mutation: the archive rides on the cancel body (R10), never
+    // a second round-trip.
+    expect(calls.map((c) => c.method)).toEqual(['getRun', 'cancelRun']);
+    expect(calls[1].input).toMatchObject({
+      expectedVersion: 7,
+      archive: true,
+      reason: 'done here',
+    });
+    expect(result.archived).toBe(true);
+    expect(outText()).toContain('cancelled and archived');
+  });
+
+  it('new-session forwards --confirm-active and reports the held gate', async () => {
+    const { client, calls } = makeFakeClient();
+    const { io, outText } = makeIo();
+    const result = await newSessionCommand({ confirmActive: true }, { client, io });
+
+    expect(calls.map((c) => c.method)).toEqual(['startNewSession']);
+    expect(calls[0].input).toMatchObject({ confirmActive: true });
+    expect(result.held).toBe(true);
+    expect(outText()).toContain('archived 2 run(s)');
+    expect(outText()).toContain('HELD');
+  });
+
+  it('new-session surfaces the ask-once refusal with a --confirm-active hint', async () => {
+    const { client } = makeFakeClient();
+    const refusing: ApiClient = {
+      ...client,
+      startNewSession: () =>
+        Promise.reject(
+          new ApiError(409, 'active_runs_present', '1 run(s) are still active.', {
+            error: 'active_runs_present',
+            activeRuns: [{ runId: 'run-9', title: 'Live build', executionState: 'started' }],
+          }),
+        ),
+    };
+    const { io, errText } = makeIo();
+
+    await expect(newSessionCommand({}, { client: refusing, io })).rejects.toMatchObject({
+      code: 'active_runs_present',
+    });
+    // The refusal is actionable: it lists the actives and names the CLI flag.
+    expect(errText()).toContain('run-9');
+    expect(errText()).toContain('--confirm-active');
+  });
+
+  it('new-session surfaces a partial batch (500 new_session_partial) and still fails the command', async () => {
+    const { client } = makeFakeClient();
+    const partial: ApiClient = {
+      ...client,
+      startNewSession: () =>
+        Promise.reject(
+          new ApiError(500, 'new_session_partial', 'New Session completed with failures.', {
+            error: 'new_session_partial',
+            archived: ['run-1'],
+            cancelled: [],
+            held: true,
+            errors: [{ runId: 'run-2', message: 'ledger write refused' }],
+          }),
+        ),
+    };
+    const { io, errText } = makeIo();
+
+    // A partial batch must NEVER read as success: the command rethrows so the
+    // exit code reports it — but only AFTER printing what landed + what failed.
+    await expect(
+      newSessionCommand({ confirmActive: true }, { client: partial, io }),
+    ).rejects.toMatchObject({
+      code: 'new_session_partial',
+    });
+    expect(errText()).toContain('PARTIAL');
+    expect(errText()).toContain('archived 1 run(s)');
+    expect(errText()).toContain('failed run-2: ledger write refused');
+  });
+});
+
+describe('factory-reset command — typed phrase contract', () => {
+  it('pins the CLI mirror of the server phrase (drift fails the build)', () => {
+    expect(FACTORY_RESET_PHRASE).toBe('reset the factory');
+  });
+
+  it('sends the request when --confirm carries the exact phrase', async () => {
+    const { client, calls } = makeFakeClient();
+    const { io, outText } = makeIo();
+    const result = await factoryResetCommand({ confirm: FACTORY_RESET_PHRASE }, { client, io });
+
+    expect(calls.map((c) => c.method)).toEqual(['factoryReset']);
+    expect(calls[0].input).toMatchObject({ confirm: FACTORY_RESET_PHRASE });
+    expect(result).not.toBeNull();
+    expect(outText()).toContain('generation 3');
+    expect(outText()).toContain('HELD');
+  });
+
+  it('aborts locally on a wrong --confirm phrase — NO request is sent', async () => {
+    const { client, calls } = makeFakeClient();
+    const { io, errText } = makeIo();
+    const result = await factoryResetCommand({ confirm: 'reset everything' }, { client, io });
+
+    expect(result).toBeNull();
+    expect(calls).toEqual([]);
+    expect(errText()).toContain('Nothing was sent');
+  });
+
+  it('prompts for the phrase when --confirm is absent; a mismatch aborts locally', async () => {
+    const { client, calls } = makeFakeClient();
+    const { io } = makeIo();
+    const asked: string[] = [];
+    const result = await factoryResetCommand(
+      {},
+      {
+        client,
+        io,
+        promptLine: (question) => {
+          asked.push(question);
+          return Promise.resolve('nope');
+        },
+      },
+    );
+
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toContain(FACTORY_RESET_PHRASE);
+    expect(result).toBeNull();
+    expect(calls).toEqual([]);
+  });
+
+  it('prompted exact phrase proceeds to the request', async () => {
+    const { client, calls } = makeFakeClient();
+    const { io } = makeIo();
+    const result = await factoryResetCommand(
+      {},
+      { client, io, promptLine: () => Promise.resolve(FACTORY_RESET_PHRASE) },
+    );
+
+    expect(result).not.toBeNull();
+    expect(calls.map((c) => c.method)).toEqual(['factoryReset']);
+  });
+
+  it('runCli factory-reset exits 2 on a mismatched interactive phrase without HTTP', async () => {
+    const { io, errText } = makeIo();
+    // A guaranteed-unreachable base URL plus an env token: an accidental HTTP
+    // attempt would throw a connection error instead of exiting cleanly.
+    const code = await runCli(['factory-reset'], {
+      io,
+      env: { SF_BASE_URL: 'http://127.0.0.1:9', SF_OPERATOR_TOKEN: 'test-token' },
+      promptLine: () => Promise.resolve('not the phrase'),
+    });
+    expect(code).toBe(2);
+    expect(errText()).toContain('Nothing was sent');
   });
 });

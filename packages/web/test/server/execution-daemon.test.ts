@@ -82,7 +82,12 @@ describe('daemon singleton — Next-mounted instance (instance.ts)', () => {
       delete globalRef.__softwareFactory__;
       await rm(tmp, { recursive: true, force: true });
     }
-  });
+    // Generous timeout: this test boots the real instance graph (store, app,
+    // daemon) and takes ~3s alone. Under full-suite parallel load the 5s
+    // default can abandon it mid-boot, and its late continuation then leaks a
+    // daemon into the NEXT test's freshly-reset module counter — a cascade
+    // that reads as "expected 2 to be 1" there.
+  }, 30_000);
 });
 
 describe('daemon singleton — standalone API server (standalone.ts)', () => {
@@ -108,7 +113,10 @@ describe('daemon singleton — standalone API server (standalone.ts)', () => {
       await rm(tmp, { recursive: true, force: true });
     }
     expect(started.daemon.running).toBe(false);
-  });
+    // Same load headroom as the instance-singleton test above: a real
+    // listen(0) server boot must never be abandoned mid-flight by the 5s
+    // default when the suite saturates the machine.
+  }, 30_000);
 });
 
 describe('daemon lifecycle + U6 executor seam', () => {
@@ -393,5 +401,58 @@ describe('daemon lifecycle + U6 executor seam', () => {
     expect(seen).not.toContain('execution.completed');
     const interventions = projectInterventions(events);
     expect(interventions.open.length).toBeGreaterThan(0);
+  });
+});
+
+describe('cancelRuns as the New Session queue-clear (session lifecycle U3)', () => {
+  it('releases queued jobs for targeted runs even when the run itself is NOT cancelled', async () => {
+    // New Session reuses cancelRuns to clear queued work factory-wide (R8):
+    // its phase-2 release must not depend on the run projecting `cancelled`,
+    // or stale queued work on TERMINAL runs (e.g. a completed run's queued
+    // gate re-run) would survive the session and execute after a later
+    // resume — against an archived run. This pins the property the command
+    // relies on.
+    const { createExecutionDaemon } = await import('../../src/server/execution/daemon');
+    const { projectExecutionQueue } = await import('../../src/server/execution/queue');
+    const store = createInMemoryEventStore();
+
+    // A COMPLETED run (never cancelled) with a stale queued gate re-run.
+    await store.append({
+      runId: 'run-done',
+      type: 'run.created',
+      actor: { kind: 'operator', id: 'operator' },
+      subject: { kind: 'run', id: 'run-done', version: 0 },
+      severity: 'info',
+      payload: { prompt: 'x' },
+    });
+    await store.append({
+      runId: 'run-done',
+      type: 'run.completed',
+      actor: { kind: 'system', id: 'executor' },
+      subject: { kind: 'run', id: 'run-done' },
+      severity: 'success',
+      payload: { summary: 'done' },
+    });
+    await store.append({
+      runId: 'run-done',
+      type: 'queue.enqueued',
+      actor: { kind: 'system', id: 'test' },
+      subject: { kind: 'queue-job', id: 'run-done:gate-rerun' },
+      severity: 'info',
+      payload: { jobId: 'run-done:gate-rerun', jobKind: 'gate-rerun', attempt: 1 },
+    });
+    // An UNtargeted run's queued job must be left alone.
+    await seedPlannedStartableRun(store, 'run-other');
+
+    const daemon = createExecutionDaemon({ store, timers: noopTimers() });
+    await daemon.cancelRuns(['run-done']);
+
+    const queue = projectExecutionQueue(await store.readAll());
+    expect(queue.byJobId['run-done:gate-rerun'].status).toBe('cancelled');
+    expect(queue.byJobId['run-other:execution'].status).toBe('queued');
+    const released = (await store.readRun('run-done')).find((e) => e.type === 'queue.released');
+    expect((released?.payload as { outcome?: string } | undefined)?.outcome).toBe('cancelled');
+    // The run's recorded outcome is untouched — only its queued work cleared.
+    expect((await store.readRun('run-done')).some((e) => e.type === 'run.cancelled')).toBe(false);
   });
 });

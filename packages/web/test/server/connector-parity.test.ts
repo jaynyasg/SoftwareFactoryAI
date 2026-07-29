@@ -55,6 +55,16 @@ const CONNECTOR_SURFACE: Readonly<Record<string, ConnectorMapping>> = {
     mcp: 'software_factory_cancel_all_runs',
   },
   'POST /api/runs/:id/cancel': { action: 'cancelRun', mcp: 'software_factory_cancel_run' },
+  // Session lifecycle (U2 routes, U7 parity): archive is reversible
+  // visibility, so it rides on every connector like cancel does.
+  'POST /api/runs/:id/archive': {
+    action: 'archiveRun',
+    mcp: 'software_factory_archive_run',
+  },
+  'POST /api/runs/:id/unarchive': {
+    action: 'unarchiveRun',
+    mcp: 'software_factory_unarchive_run',
+  },
   'GET /api/runs/:id': { action: 'getRun', mcp: 'software_factory_get_run' },
   'GET /api/runs/:id/events': { action: 'getRunEvents', mcp: 'software_factory_get_events' },
   'GET /api/runs/:id/outputs': { action: 'getRunOutputs', mcp: 'software_factory_get_outputs' },
@@ -102,6 +112,28 @@ const CONNECTOR_SURFACE: Readonly<Record<string, ConnectorMapping>> = {
     mcp: 'software_factory_resume_execution',
   },
   'POST /api/execution/hold': { action: 'holdExecution', mcp: 'software_factory_hold_execution' },
+  // Session lifecycle (U3 route, U7 parity): the atomic New Session command
+  // is reversible (archive, not wipe), so it rides on every connector.
+  'POST /api/execution/new-session': {
+    action: 'startNewSession',
+    mcp: 'software_factory_new_session',
+  },
+  // Session lifecycle (U4 route, U7 parity decision): the destructive Factory
+  // Reset is excluded from BOTH remote model connectors (ChatGPT Action AND
+  // MCP) by destructive-scope policy. A connector tool/operation schema would
+  // have to spell out the typed confirmation phrase, and a prompt-injected
+  // agent could simply copy it — the phrase only protects when a HUMAN types
+  // it. The UI and CLI keep the reset because a human types the phrase there
+  // (see the NOTE comments in packages/web/src/server/mcp.ts and
+  // integrations/chatgpt/actions.openai.yaml; mcp.test.ts pins the tool's
+  // deliberate absence).
+  'POST /api/execution/factory-reset': {
+    excluded:
+      'Destructive-scope policy: excluded from BOTH the ChatGPT Action and MCP. A connector ' +
+      'schema would spell out the typed confirmation phrase and a prompt-injected agent could ' +
+      'copy it; only surfaces where a human types the phrase (operator UI, CLI) expose the ' +
+      'wipe — this entry records that reviewed decision, not drift.',
+  },
   // Operator intervention queue.
   'GET /api/interventions': {
     action: 'listInterventions',

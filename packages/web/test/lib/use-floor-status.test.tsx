@@ -18,6 +18,7 @@ const HELD: FloorStatus = {
   overview: {
     execution: { enabled: true, held: true, running: true },
     queue: { queued: 2, leased: 0 },
+    resetGeneration: 0,
   },
   interventionQueue: {
     interventions: [

@@ -188,15 +188,74 @@ export function toLedgerRow(event: FactoryEvent): LedgerRow {
   };
 }
 
+/** Per-run visibility fold used by archive-aware latest-run resolution. */
+interface RunVisibilityFold {
+  /** Sequence of the earliest `run.created` seen (0 while none seen). */
+  createdSequence: number;
+  /** Timestamp of that earliest `run.created`; unset for phantom streams. */
+  createdAt: number | undefined;
+  /** Sequence of the latest archive/unarchive toggle seen (0 while none). */
+  archiveSequence: number;
+  /** Whether the latest toggle left the run archived. */
+  archived: boolean;
+}
+
 /**
- * Resolve the run a projection should fold over: the explicit `runId`, else the
- * run of the earliest event, else `null`.
+ * Resolve the run a projection should fold over: the explicit `runId` always
+ * wins. Without one, latest-run resolution is ARCHIVE-AWARE (session lifecycle
+ * U1): among runs that reached `run.created` and are not currently archived,
+ * the newest wins (latest `run.created` timestamp, ties broken by run id), so
+ * default views never land on an archived run or a phantom stream (e.g. the
+ * reserved `factory` marker stream). When no run qualifies — a single archived
+ * run's ledger, or marker-only reads — the earliest event's run remains the
+ * fallback so archived ledgers stay replayable without an explicit id (AE2).
  */
 export function resolveTargetRunId(events: readonly FactoryEvent[], runId?: string): string | null {
   if (runId !== undefined) {
     return runId;
   }
-  return events.length > 0 ? events[0].runId : null;
+  if (events.length === 0) {
+    return null;
+  }
+
+  const byRun = new Map<string, RunVisibilityFold>();
+  for (const event of events) {
+    let fold = byRun.get(event.runId);
+    if (fold === undefined) {
+      fold = { createdSequence: 0, createdAt: undefined, archiveSequence: 0, archived: false };
+      byRun.set(event.runId, fold);
+    }
+    if (
+      event.type === 'run.created' &&
+      (fold.createdAt === undefined || event.sequence < fold.createdSequence)
+    ) {
+      fold.createdSequence = event.sequence;
+      fold.createdAt = event.timestamp;
+    } else if (
+      (event.type === 'run.archived' || event.type === 'run.unarchived') &&
+      event.sequence > fold.archiveSequence
+    ) {
+      // The highest-sequence toggle wins, independent of read order.
+      fold.archiveSequence = event.sequence;
+      fold.archived = event.type === 'run.archived';
+    }
+  }
+
+  let newestVisible: string | null = null;
+  let newestCreatedAt = Number.NEGATIVE_INFINITY;
+  for (const [candidate, fold] of byRun) {
+    if (fold.createdAt === undefined || fold.archived) {
+      continue;
+    }
+    if (
+      fold.createdAt > newestCreatedAt ||
+      (fold.createdAt === newestCreatedAt && (newestVisible === null || candidate > newestVisible))
+    ) {
+      newestVisible = candidate;
+      newestCreatedAt = fold.createdAt;
+    }
+  }
+  return newestVisible ?? events[0].runId;
 }
 
 /* ----------------------------------------------------------------------------
@@ -288,6 +347,14 @@ export interface RunProjection {
   readonly startedAt?: number;
   readonly completedAt?: number;
   readonly failureReason?: string;
+  /**
+   * Archive VISIBILITY state (session lifecycle U1). Orthogonal to `status`:
+   * archiving hides a run from default views without touching execution
+   * state, and unarchiving restores visibility only (R7/R13).
+   */
+  readonly archived: boolean;
+  /** When the run was archived (epoch ms); unset while visible. */
+  readonly archivedAt?: number;
   readonly supervisorDecisions: SupervisorDecisionView[];
   readonly ledger: LedgerRow[];
   readonly lastSequence: number;
@@ -321,6 +388,8 @@ export function projectRun(raw: readonly unknown[], runId?: string): RunProjecti
   let startedAt: number | undefined;
   let completedAt: number | undefined;
   let failureReason: string | undefined;
+  let archived = false;
+  let archivedAt: number | undefined;
   let lastSequence = 0;
   // Execution fold (U5): derived exclusively from recorded execution/queue/
   // preflight events. `undefined` means no execution activity was recorded.
@@ -404,6 +473,24 @@ export function projectRun(raw: readonly unknown[], runId?: string): RunProjecti
           executionFold = 'cancelled';
           executionReason = event.payload.reason ?? executionReason;
         }
+        break;
+      case 'run.archived':
+        // Archive toggles VISIBILITY regardless of status — it never touches
+        // the status or execution folds (R7). Re-archiving an already-archived
+        // run is idempotent: the first archive's timestamp stands. Later
+        // lifecycle events (e.g. a stray `run.started`) never un-archive; only
+        // an explicit `run.unarchived` restores visibility.
+        if (!archived) {
+          archived = true;
+          archivedAt = event.timestamp;
+        }
+        break;
+      case 'run.unarchived':
+        // Unarchive restores VISIBILITY only; execution state is never revived
+        // (cancelled stays TERMINAL — R13). On a never-archived run this is a
+        // no-op with no diagnostic.
+        archived = false;
+        archivedAt = undefined;
         break;
       case 'queue.enqueued':
         if (event.payload.jobKind === 'run-execution' && executionFold !== 'paused') {
@@ -530,6 +617,8 @@ export function projectRun(raw: readonly unknown[], runId?: string): RunProjecti
     startedAt,
     completedAt,
     failureReason,
+    archived,
+    archivedAt,
     supervisorDecisions,
     ledger,
     lastSequence,
@@ -545,4 +634,28 @@ export function projectRun(raw: readonly unknown[], runId?: string): RunProjecti
  */
 export function isRealRun(run: RunProjection): boolean {
   return run.ledger.length > 0 && run.status !== 'unknown';
+}
+
+/**
+ * Whether a projected run belongs in DEFAULT run lists: a real run (see
+ * `isRealRun`) that is not archived. Archive is a visibility lifecycle, not an
+ * execution one — archived runs remain on disk, searchable, and replayable
+ * (R7); they only leave the default view until `run.unarchived` (R13).
+ */
+export function isVisibleRun(run: RunProjection): boolean {
+  return isRealRun(run) && !run.archived;
+}
+
+/**
+ * Newest-first ordering for run lists: most recently STARTED first, with
+ * `lastSequence` as the tie-break for runs that never started (or started in
+ * the same instant). Pure — safe in the browser bundle — and the single
+ * definition every run-list surface (SSR loader, browser poller) sorts with,
+ * so "newest visible run" means the same thing on every tick.
+ */
+export function compareRunsNewestFirst(
+  a: Pick<RunProjection, 'startedAt' | 'lastSequence'>,
+  b: Pick<RunProjection, 'startedAt' | 'lastSequence'>,
+): number {
+  return (b.startedAt ?? 0) - (a.startedAt ?? 0) || b.lastSequence - a.lastSequence;
 }
