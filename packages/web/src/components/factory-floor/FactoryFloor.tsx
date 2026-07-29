@@ -20,16 +20,11 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 import type { RunProjection } from '@software-factory/core';
-import type {
-  ExecutionOverview,
-  InterventionQueueSnapshot,
-  RunAggregate,
-  SetupStatus,
-} from '../../lib/types';
+import type { FloorStatus, RunAggregate, SetupStatus } from '../../lib/types';
 import { DISABLED_EXECUTION_OVERVIEW } from '../../lib/execution-overview';
 import { deriveFactoryPulse } from '../../lib/run-view';
 import { useRunAggregate } from '../../lib/use-run-aggregate';
-import { useInterventionQueue } from '../../lib/use-intervention-queue';
+import { useFloorStatus } from '../../lib/use-floor-status';
 import { fetchAggregate } from '../../lib/api-client';
 import { RunControl } from './RunControl';
 import { SetupChecklist } from './SetupChecklist';
@@ -42,7 +37,11 @@ import { FactoryCommandBar } from './FactoryCommandBar';
 import { InterventionQueue } from './InterventionQueue';
 import { StateBlock } from './primitives';
 
-const EMPTY_QUEUE: InterventionQueueSnapshot = { interventions: [], openCount: 0 };
+/** Safe default when the server provided no floor payload (tests, degraded SSR). */
+const EMPTY_FLOOR: FloorStatus = {
+  overview: DISABLED_EXECUTION_OVERVIEW,
+  queue: { interventions: [], openCount: 0 },
+};
 
 /** The live blueprint for one focused run (owns the run's polling). */
 function LiveBlueprint({
@@ -179,32 +178,34 @@ export function FactoryFloor({
   initialRuns,
   setup,
   latest,
-  initialInterventions = EMPTY_QUEUE,
-  initialExecution = DISABLED_EXECUTION_OVERVIEW,
+  initialFloor = EMPTY_FLOOR,
 }: {
   readonly initialRuns: readonly RunProjection[];
   readonly setup: SetupStatus;
   readonly latest: RunAggregate | null;
-  readonly initialInterventions?: InterventionQueueSnapshot;
-  readonly initialExecution?: ExecutionOverview;
+  /** Server-rendered combined floor payload (overview + intervention queue). */
+  readonly initialFloor?: FloorStatus;
 }) {
   const router = useRouter();
   const [historyCleared, setHistoryCleared] = useState(false);
   const [focusedRunId, setFocusedRunId] = useState<string | null>(
     latest?.run.runId ?? initialRuns[0]?.runId ?? null,
   );
-  const queue = useInterventionQueue(initialInterventions);
+  // ONE poll loop feeds the command bar AND the intervention queue (the
+  // focused blueprint keeps its own run-scoped loop) — one request and one
+  // server-side ledger read per tick instead of two.
+  const live = useFloorStatus(initialFloor);
 
   const visibleRuns = historyCleared ? [] : initialRuns;
   const openByRun = useMemo(() => {
     const counts: Record<string, number> = {};
-    for (const item of queue.snapshot.interventions) {
+    for (const item of live.floor.queue.interventions) {
       if (item.status === 'open') {
         counts[item.runId] = (counts[item.runId] ?? 0) + 1;
       }
     }
     return counts;
-  }, [queue.snapshot.interventions]);
+  }, [live.floor.queue.interventions]);
 
   const operatorHref =
     focusedRunId !== null ? `/operator?runId=${encodeURIComponent(focusedRunId)}` : '/operator';
@@ -228,22 +229,24 @@ export function FactoryFloor({
       {/* 0 — factory-wide controls: the held/resume gate (nothing runs
           automatically on open) and the destructive cancel-all command. */}
       <FactoryCommandBar
-        initial={initialExecution}
+        overview={live.floor.overview}
+        reconnecting={live.reconnecting}
+        onRefresh={live.refresh}
         onChanged={() => {
           // A resume/hold/cancel-all changes every run's projected state:
-          // re-render the server-provided props and re-poll the queue.
-          queue.refresh();
+          // re-render the server-provided props (the floor loop already
+          // re-polled via onRefresh).
           router.refresh();
         }}
       />
 
       {/* 1 — anything blocking on a human, across every run, always first. */}
       <InterventionQueue
-        snapshot={queue.snapshot}
-        reconnecting={queue.reconnecting}
+        snapshot={live.floor.queue}
+        reconnecting={live.reconnecting}
         focusedRunId={focusedRunId}
         onFocusRun={setFocusedRunId}
-        onResolved={queue.refresh}
+        onResolved={live.refresh}
       />
 
       {/* 2 — the focused run's blueprint: lanes + contract/preflight handoff. */}

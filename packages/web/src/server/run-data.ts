@@ -23,7 +23,7 @@ import {
   projectTickets,
 } from '@software-factory/core';
 import type { FactoryEvent, RunProjection } from '@software-factory/core';
-import { getApp, getStore } from './instance';
+import { getApp } from './instance';
 import type { ApiResponse } from './app';
 import { filterInterventions, projectInterventions } from './execution/interventions';
 import type { InterventionView } from './execution/interventions';
@@ -41,8 +41,8 @@ import {
 import type { BlockedStageView } from '../lib/run-view';
 import type {
   ExecutionOverview,
+  FloorStatus,
   InterventionItem,
-  InterventionQueueSnapshot,
   OperatorAggregate,
   RunAggregate,
   SetupStatus,
@@ -150,17 +150,25 @@ function toInterventionItem(view: InterventionView): InterventionItem {
 }
 
 /**
- * Load the cross-run operator intervention queue (X4) with the SAME pure
- * projection the `/api/interventions` route folds (projectInterventions over
- * the store), so the initial render and every poll see identical state —
- * without a JSON round-trip through `handle()` (and its untyped body cast) or
- * a duplicate `readAll` on the SSR path.
+ * Load the combined floor payload (execution overview + intervention queue)
+ * through the same GET /api/floor route the client polls, so the initial
+ * render and every poll see identical state — and the SSR path pays ONE
+ * ledger read for both halves, exactly like a client tick. The route body's
+ * `interventions` are in-process `InterventionView`s (no JSON round-trip),
+ * so the typed field-by-field mapper applies directly.
  */
-export async function loadInterventionQueue(): Promise<InterventionQueueSnapshot> {
-  const projection = projectInterventions(await getStore().readAll());
+export async function loadFloorStatus(): Promise<FloorStatus> {
+  const res = await getApp().handle({ method: 'GET', path: '/api/floor', query: {}, headers: {} });
+  const body = bodyOf(res);
+  const interventions = (
+    Array.isArray(body.interventions) ? (body.interventions as InterventionView[]) : []
+  ).map(toInterventionItem);
   return {
-    interventions: projection.interventions.map(toInterventionItem),
-    openCount: projection.open.length,
+    overview: parseExecutionOverview(body),
+    queue: {
+      interventions,
+      openCount: typeof body.openCount === 'number' ? body.openCount : 0,
+    },
   };
 }
 

@@ -6,7 +6,11 @@
  * the shared parseExecutionOverview (structural degrade, typed HTTP error).
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fetchExecutionOverview, fetchInterventions } from '../../src/lib/api-client';
+import {
+  fetchExecutionOverview,
+  fetchFloorStatus,
+  fetchInterventions,
+} from '../../src/lib/api-client';
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -118,5 +122,57 @@ describe('fetchExecutionOverview', () => {
       vi.fn(() => Promise.resolve(jsonResponse({}, 502))),
     );
     await expect(fetchExecutionOverview()).rejects.toThrow('execution_fetch_failed:502');
+  });
+});
+
+describe('fetchFloorStatus', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('parses the combined union body with the SAME validators as the standalone endpoints', async () => {
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(
+        jsonResponse({
+          execution: { enabled: true, held: true, running: false },
+          queue: { queued: 3, leased: 1 },
+          interventions: [GOOD_ITEM, { interventionId: 42 }, 'junk'],
+          openCount: 1,
+        }),
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const floor = await fetchFloorStatus();
+    expect(fetchMock).toHaveBeenCalledWith('/api/floor', expect.anything());
+    expect(floor.overview).toEqual({
+      execution: { enabled: true, held: true, running: false },
+      queue: { queued: 3, leased: 1 },
+    });
+    // Malformed intervention rows drop exactly as fetchInterventions drops them.
+    expect(floor.queue.interventions.map((item) => item.interventionId)).toEqual(['i-1']);
+    expect(floor.queue.openCount).toBe(1);
+  });
+
+  it('degrades a malformed body to disabled overview + empty queue instead of throwing', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(jsonResponse({ execution: 'nope', interventions: 'nope' }))),
+    );
+    await expect(fetchFloorStatus()).resolves.toEqual({
+      overview: {
+        execution: { enabled: false, held: false, running: false },
+        queue: { queued: 0, leased: 0 },
+      },
+      queue: { interventions: [], openCount: 0 },
+    });
+  });
+
+  it('throws a typed error on an HTTP failure (poll loop reports reconnecting)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(jsonResponse({}, 500))),
+    );
+    await expect(fetchFloorStatus()).rejects.toThrow('floor_fetch_failed:500');
   });
 });

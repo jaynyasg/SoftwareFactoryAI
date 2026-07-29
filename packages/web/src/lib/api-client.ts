@@ -18,6 +18,7 @@ import type {
 } from '@software-factory/core';
 import type {
   ExecutionOverview,
+  FloorStatus,
   InterventionItem,
   InterventionQueueSnapshot,
   RunAggregate,
@@ -338,6 +339,21 @@ function toInterventionItem(value: unknown): InterventionItem | null {
   };
 }
 
+/**
+ * Structurally parse an intervention-queue body (`interventions` +
+ * `openCount`). Shared by the standalone queue poll and the combined floor
+ * poll so the two can never drift on validation.
+ */
+function parseInterventionQueue(body: Record<string, unknown>): InterventionQueueSnapshot {
+  const interventions = (Array.isArray(body.interventions) ? body.interventions : [])
+    .map(toInterventionItem)
+    .filter((item): item is InterventionItem => item !== null);
+  return {
+    interventions,
+    openCount: typeof body.openCount === 'number' ? body.openCount : 0,
+  };
+}
+
 /** Poll the cross-run operator intervention queue (read-only, no token). */
 export async function fetchInterventions(): Promise<InterventionQueueSnapshot> {
   const res = await fetch('/api/interventions', {
@@ -347,14 +363,25 @@ export async function fetchInterventions(): Promise<InterventionQueueSnapshot> {
   if (!res.ok) {
     throw new Error(`interventions_fetch_failed:${res.status}`);
   }
+  return parseInterventionQueue(await readJson(res));
+}
+
+/**
+ * Poll the combined floor status (read-only, no token): the execution
+ * overview and the intervention queue in ONE request. The body is the exact
+ * union of GET /api/execution and GET /api/interventions, so each half goes
+ * through the same structural parser as its standalone endpoint.
+ */
+export async function fetchFloorStatus(): Promise<FloorStatus> {
+  const res = await fetch('/api/floor', {
+    headers: { accept: 'application/json' },
+    cache: 'no-store',
+  });
+  if (!res.ok) {
+    throw new Error(`floor_fetch_failed:${res.status}`);
+  }
   const body = await readJson(res);
-  const interventions = (Array.isArray(body.interventions) ? body.interventions : [])
-    .map(toInterventionItem)
-    .filter((item): item is InterventionItem => item !== null);
-  return {
-    interventions,
-    openCount: typeof body.openCount === 'number' ? body.openCount : 0,
-  };
+  return { overview: parseExecutionOverview(body), queue: parseInterventionQueue(body) };
 }
 
 export function resolveInterventionItem(

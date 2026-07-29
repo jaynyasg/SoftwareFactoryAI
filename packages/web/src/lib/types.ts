@@ -155,6 +155,16 @@ export interface ExecutionOverview {
   readonly queue: { readonly queued: number; readonly leased: number };
 }
 
+/**
+ * Combined floor payload (shape of GET /api/floor): the execution overview
+ * plus the cross-run intervention queue, folded server-side from ONE ledger
+ * read so the Factory Floor polls a single endpoint per tick.
+ */
+export interface FloorStatus {
+  readonly overview: ExecutionOverview;
+  readonly queue: InterventionQueueSnapshot;
+}
+
 /** The read-only setup status feeding the checklist (shape of GET /api/setup). */
 export interface SetupStatus {
   readonly operatorToken: { readonly present: boolean };
