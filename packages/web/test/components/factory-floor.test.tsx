@@ -17,8 +17,13 @@ import {
   buildMarketplaceRunEvents,
 } from '../../../../tests/fixtures/marketplace-run';
 import { aggregateFromEvents } from '../_helpers/aggregate';
+import { buildRetryPendingEvents, buildRetryResolvedEvents } from '../_helpers/events';
 import { projectInterventions } from '../../src/server/execution/interventions';
-import { deriveBlueprintLanes, deriveFactoryPulse } from '../../src/lib/run-view';
+import {
+  deriveBlueprintLanes,
+  deriveFactoryPulse,
+  deriveStatusHeadline,
+} from '../../src/lib/run-view';
 import { useFloorStatus } from '../../src/lib/use-floor-status';
 import { DISABLED_EXECUTION_OVERVIEW } from '../../src/lib/execution-overview';
 import type {
@@ -100,6 +105,25 @@ function pulseOf(aggregate: RunAggregate) {
     preflight: aggregate.preflight,
     interventions: aggregate.interventions,
   });
+}
+
+function headlineOf(aggregate: RunAggregate) {
+  return deriveStatusHeadline({
+    ...blueprintInputs(aggregate),
+    reviews: aggregate.reviews,
+    interventions: aggregate.interventions,
+  });
+}
+
+/** Render BlueprintLanes exactly as LiveBlueprint wires it (derived props). */
+function renderLanes(aggregate: RunAggregate) {
+  return render(
+    <BlueprintLanes
+      inputs={blueprintInputs(aggregate)}
+      pulse={pulseOf(aggregate)}
+      headline={headlineOf(aggregate)}
+    />,
+  );
 }
 
 function interventionItemsOf(events: readonly FactoryEvent[]): InterventionItem[] {
@@ -440,7 +464,7 @@ describe('FactoryFloor empty state', () => {
 describe('BlueprintLanes (U9)', () => {
   it('renders all eight pipeline lanes from replayed projections', () => {
     const { aggregate } = buildFullAggregate();
-    render(<BlueprintLanes inputs={blueprintInputs(aggregate)} pulse={pulseOf(aggregate)} />);
+    renderLanes(aggregate);
 
     for (const lane of [
       'research',
@@ -467,7 +491,7 @@ describe('BlueprintLanes (U9)', () => {
 
   it('shows research findings and source evidence without raw JSON', () => {
     const { aggregate } = buildFullAggregate();
-    render(<BlueprintLanes inputs={blueprintInputs(aggregate)} pulse={pulseOf(aggregate)} />);
+    renderLanes(aggregate);
 
     const researchLane = screen.getByTestId('lane-research');
     fireEvent.click(within(researchLane).getByText('evidence'));
@@ -484,7 +508,7 @@ describe('BlueprintLanes (U9)', () => {
 
   it('shows the pulse with capacity, queue, throttle reason, and blocking item', () => {
     const { aggregate } = buildFullAggregate();
-    render(<BlueprintLanes inputs={blueprintInputs(aggregate)} pulse={pulseOf(aggregate)} />);
+    renderLanes(aggregate);
 
     const pulse = screen.getByTestId('factory-pulse');
     expect(within(pulse).getByText('3 active')).toBeVisible();
@@ -1300,5 +1324,251 @@ describe('FactoryFloor blueprint-first hierarchy (U9/KTD7)', () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe('Status headline + stage pipeline (U5, R2–R5)', () => {
+  it('AE4: a pending failed-gate retry names ONE needs-you item in the headline', () => {
+    const runId = 'run-ae4';
+    const aggregate = aggregateFromEvents(buildRetryPendingEvents(runId), runId);
+    renderLanes(aggregate);
+
+    expect(screen.getByTestId('status-headline')).toHaveTextContent('Gate "unit-test" failed.');
+    const needsYou = screen.getByTestId('headline-needs-you');
+    expect(within(needsYou).getByText('1 needs you')).toBeInTheDocument();
+    // The items are one expand away, named in plain words.
+    fireEvent.click(within(needsYou).getByText('1 needs you'));
+    const items = screen.getAllByTestId('needs-you-item');
+    expect(items).toHaveLength(1);
+    expect(items[0]).toHaveTextContent(/gates/);
+    expect(screen.queryByTestId('headline-idle')).toBeNull();
+  });
+
+  it('AE4: resolving the decision renders the explicit designed idle state', () => {
+    const runId = 'run-ae4-done';
+    const aggregate = aggregateFromEvents(buildRetryResolvedEvents(runId), runId);
+    renderLanes(aggregate);
+
+    // The idle state is a DESIGNED state (label + badge), not absent content.
+    expect(screen.getByTestId('headline-idle')).toHaveTextContent(/nothing needs you in this run/i);
+    expect(screen.queryByTestId('headline-needs-you')).toBeNull();
+  });
+
+  it('marks the furthest live stage as current and opens only that lane card', () => {
+    const { aggregate } = buildFullAggregate('run-current');
+    renderLanes(aggregate);
+
+    // Full fixture: deploy setup blocks — the marker sits on the deploy lane.
+    const deploy = screen.getByTestId('lane-deploy');
+    expect(screen.getAllByTestId('current-stage')).toHaveLength(1);
+    expect(within(deploy).getByTestId('current-stage')).toHaveTextContent('current stage');
+    expect(deploy).toHaveAttribute('aria-current', 'step');
+    // The current lane opens by default (R4) — its existing panel is visible.
+    expect(within(deploy).getByTestId('deploy-phase')).toBeVisible();
+  });
+
+  it('collapses non-current lane cards; expanding renders the existing panel unchanged', () => {
+    const { aggregate } = buildFullAggregate('run-collapse');
+    renderLanes(aggregate);
+
+    const workers = screen.getByTestId('lane-workers');
+    // Collapsed by default: the WorkerBoard panel content is present but hidden…
+    expect(within(workers).getByText('cap is system-gated')).not.toBeVisible();
+    // …while the lane's status + metric stay readable without expanding.
+    expect(within(workers).getByText(/capacity 3\/5/)).toBeVisible();
+
+    fireEvent.click(within(workers).getByText('details'));
+    // Expanded: the EXISTING WorkerBoard panel renders its exact content —
+    // same strings the standalone panel test asserts (no ledger-fidelity loss).
+    expect(within(workers).getByText('cap is system-gated')).toBeVisible();
+    expect(within(workers).getByText('capacity 3 / 5')).toBeVisible();
+  });
+});
+
+describe('FactoryFloor live run list (U5, R14)', () => {
+  const setup: SetupStatus = {
+    operatorToken: { present: true },
+    sandbox: { status: 'available' },
+    adapters: { status: 'ready', detected: ['codex-cli'] },
+    deploy: { status: 'required' },
+    workspace: { root: 'C:\\repo\\software-factory' },
+  };
+
+  const FLOOR_BODY = {
+    execution: { enabled: false, held: false, running: false },
+    queue: { queued: 0, leased: 0 },
+    interventions: [],
+    openCount: 0,
+  };
+
+  function jsonResponse(body: unknown): Response {
+    return new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  }
+
+  /** Stub fetch: run-list + floor polls answer; run aggregates stay pending. */
+  function stubPolls(runsBody: unknown): ReturnType<typeof vi.fn> {
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith('/api/runs')) {
+        return Promise.resolve(jsonResponse(runsBody));
+      }
+      if (url.startsWith('/api/floor')) {
+        return Promise.resolve(jsonResponse(FLOOR_BODY));
+      }
+      // Focused-run aggregate fetches stay pending: the honest loading state.
+      return new Promise<Response>(() => {});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  }
+
+  it('refocuses the newest visible run when the focused run is archived elsewhere', async () => {
+    vi.useFakeTimers();
+    const events = buildFullFactoryRunEvents('run-arch-a');
+    const aggregate = aggregateFromEvents(events, 'run-arch-a');
+    const other = projectRun(buildMarketplaceRunEvents('run-arch-b'), 'run-arch-b');
+    stubPolls({ runs: [other] });
+    try {
+      render(
+        withSession(
+          <FactoryFloor
+            initialRuns={[aggregate.run, other]}
+            setup={setup}
+            latest={aggregate}
+            initialFloor={{
+              overview: DISABLED_EXECUTION_OVERVIEW,
+              interventionQueue: { interventions: [], openCount: 0 },
+            }}
+          />,
+        ),
+      );
+      expect(screen.getByTestId('blueprint-run')).toHaveTextContent(/run-arch-a/);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1500);
+      });
+
+      // The floor refocuses the newest VISIBLE run and says why, explicitly.
+      expect(screen.getByTestId('archived-elsewhere-notice')).toHaveTextContent(
+        /archived from another surface/,
+      );
+      expect(screen.getByTestId('blueprint-loading')).toHaveTextContent(/run-arch-b/);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
+  });
+
+  it('shows the empty state with a history notice when no visible runs remain', async () => {
+    vi.useFakeTimers();
+    const events = buildFullFactoryRunEvents('run-arch-last');
+    const aggregate = aggregateFromEvents(events, 'run-arch-last');
+    stubPolls({ runs: [] });
+    try {
+      render(
+        withSession(
+          <FactoryFloor initialRuns={[aggregate.run]} setup={setup} latest={aggregate} />,
+        ),
+      );
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1500);
+      });
+
+      expect(screen.getByTestId('archived-elsewhere-notice')).toBeInTheDocument();
+      expect(screen.getByText('No visible runs')).toBeInTheDocument();
+      // The empty state itself carries the history pointer (unique copy).
+      expect(
+        screen.getByText(/open it from run history, or start a fresh run/),
+      ).toBeInTheDocument();
+      expect(screen.queryByTestId('blueprint-run')).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
+  });
+
+  it('shows an externally started run in the strip WITHOUT stealing focus', async () => {
+    vi.useFakeTimers();
+    const events = buildFullFactoryRunEvents('run-ext-a');
+    const aggregate = aggregateFromEvents(events, 'run-ext-a');
+    const external = projectRun(buildMarketplaceRunEvents('run-ext-b'), 'run-ext-b');
+    stubPolls({ runs: [external, aggregate.run] });
+    try {
+      render(
+        withSession(
+          <FactoryFloor initialRuns={[aggregate.run]} setup={setup} latest={aggregate} />,
+        ),
+      );
+      const strip = () => screen.getByRole('group', { name: 'Focus run' });
+      expect(within(strip()).queryByRole('button', { name: 'Focus run run-ext-b' })).toBeNull();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1500);
+      });
+
+      // The external run appears as a chip; focus stays where the operator put it.
+      expect(
+        within(strip()).getByRole('button', { name: 'Focus run run-ext-b' }),
+      ).toBeInTheDocument();
+      expect(screen.getByTestId('blueprint-run')).toHaveTextContent(/run-ext-a/);
+      expect(screen.queryByTestId('archived-elsewhere-notice')).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
+  });
+
+  it('auto-focuses a new run ONLY when the floor is empty', async () => {
+    vi.useFakeTimers();
+    const first = projectRun(buildMarketplaceRunEvents('run-first'), 'run-first');
+    stubPolls({ runs: [first] });
+    try {
+      render(withSession(<FactoryFloor initialRuns={[]} setup={setup} latest={null} />));
+      expect(screen.getByText('No active run')).toBeInTheDocument();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1500);
+      });
+
+      // Empty floor: the first run to appear takes focus (loading its blueprint).
+      expect(screen.getByTestId('blueprint-loading')).toHaveTextContent(/run-first/);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
+  });
+
+  it('factory-wide needs-you unions other runs’ interventions with the focused subset', () => {
+    const runId = 'run-multi-a';
+    const events = buildFullFactoryRunEvents(runId);
+    const aggregate = aggregateFromEvents(events, runId);
+    const otherItems = interventionItemsOf(buildFullFactoryRunEvents('run-multi-b'));
+    const items = [...interventionItemsOf(events), ...otherItems];
+    render(
+      withSession(
+        <FactoryFloor
+          initialRuns={[aggregate.run]}
+          setup={setup}
+          latest={aggregate}
+          initialFloor={{
+            overview: DISABLED_EXECUTION_OVERVIEW,
+            interventionQueue: { interventions: items, openCount: items.length },
+          }}
+        />,
+      ),
+    );
+
+    // Focused subset in the headline: run-multi-a's open intervention + its
+    // unpaired pending review = 2.
+    expect(
+      within(screen.getByTestId('headline-needs-you')).getByText('2 need you'),
+    ).toBeInTheDocument();
+    // Factory-wide: both runs' open interventions (2) + the focused run's
+    // unpaired review (1) = 3 — the OTHER run's intervention is never hidden.
+    expect(screen.getByTestId('factory-needs-you')).toHaveTextContent('3 need you');
   });
 });

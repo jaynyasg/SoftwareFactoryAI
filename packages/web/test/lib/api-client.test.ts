@@ -6,7 +6,7 @@
  * the shared parseExecutionOverview (structural degrade, typed HTTP error).
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fetchExecutionOverview, fetchFloorStatus } from '../../src/lib/api-client';
+import { fetchExecutionOverview, fetchFloorStatus, fetchRunList } from '../../src/lib/api-client';
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -71,6 +71,61 @@ describe('fetchExecutionOverview', () => {
       vi.fn(() => Promise.resolve(jsonResponse({}, 502))),
     );
     await expect(fetchExecutionOverview()).rejects.toThrow('execution_fetch_failed:502');
+  });
+});
+
+describe('fetchRunList (U5 live run list)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const RUN_ROW = {
+    runId: 'run-old',
+    status: 'completed',
+    lastSequence: 10,
+    startedAt: 1000,
+    archived: false,
+  };
+
+  it('drops malformed and archived rows and sorts newest-first like loadRunList', async () => {
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(
+        jsonResponse({
+          runs: [
+            RUN_ROW,
+            { ...RUN_ROW, runId: 'run-new', startedAt: 2000 },
+            { ...RUN_ROW, runId: 'run-archived', archived: true }, // hidden (R7)
+            { runId: 42 }, // wrong types
+            'junk',
+            null,
+            { ...RUN_ROW, runId: 'run-bad-seq', lastSequence: 'nope' },
+          ],
+        }),
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const runs = await fetchRunList();
+    expect(fetchMock).toHaveBeenCalledWith('/api/runs', expect.anything());
+    expect(runs.map((run) => run.runId)).toEqual(['run-new', 'run-old']);
+  });
+
+  it('FAILS the tick on a body without a runs array (never a synthetic empty floor)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(jsonResponse({ nope: true }))),
+    );
+    // An empty list drives focus changes, so it must never be fabricated from
+    // a malformed body — the poll reports reconnecting instead.
+    await expect(fetchRunList()).rejects.toThrow('runs_parse_failed');
+  });
+
+  it('throws a typed error on an HTTP failure (poll loop reports reconnecting)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(jsonResponse({}, 503))),
+    );
+    await expect(fetchRunList()).rejects.toThrow('runs_fetch_failed:503');
   });
 });
 

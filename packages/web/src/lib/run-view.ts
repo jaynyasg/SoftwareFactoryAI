@@ -779,6 +779,333 @@ export function deriveFactoryPulse(inputs: {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Stage pipeline + status headline (session lifecycle U5)                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Pipeline order of the blueprint lanes — the eight lanes ARE the pipeline
+ * (R2, resolved planning decision). Repair sits AFTER gates deliberately: a
+ * gate-failure retry renders within its own lane, never as regression to an
+ * earlier stage.
+ */
+export const PIPELINE_STAGE_ORDER: readonly BlueprintLaneId[] = [
+  'research',
+  'planning',
+  'queue',
+  'workers',
+  'gates',
+  'repair',
+  'package',
+  'deploy',
+];
+
+/**
+ * How one pipeline stage participates in the run RIGHT NOW. Folded from the
+ * same replayed projections `deriveBlueprintLanes` reads — nothing invented:
+ * - `active`  — work is happening (or honestly waiting to happen) here.
+ * - `blocked` — the stage recorded a failure/block that has not recovered.
+ * - `done`    — the stage completed and nothing in it is still running.
+ * - `idle`    — no events reached this stage yet.
+ */
+export type StageActivity = 'active' | 'blocked' | 'done' | 'idle';
+
+function researchActivity(research: ResearchProjection): StageActivity {
+  switch (research.status) {
+    case 'none':
+      return 'idle';
+    case 'requested':
+    case 'in_progress':
+      return 'active';
+    case 'failed':
+      return 'blocked';
+    case 'completed':
+      return 'done';
+    default: {
+      // Exhaustiveness: a new ResearchStatus member must fail compile here.
+      const exhaustive: never = research.status;
+      return exhaustive;
+    }
+  }
+}
+
+function planningActivity(run: RunProjection): StageActivity {
+  switch (run.status) {
+    case 'unknown':
+      return 'idle';
+    case 'created':
+      return 'active';
+    case 'planned':
+    case 'running':
+    case 'completed':
+      return 'done';
+    case 'failed':
+    case 'cancelled':
+      // A run that died before `run.planned` never had a plan; one that died
+      // after keeps its completed planning stage in the pipeline.
+      return run.plannedTicketCount !== undefined ? 'done' : 'idle';
+    default: {
+      const exhaustive: never = run.status;
+      return exhaustive;
+    }
+  }
+}
+
+function deployActivity(deploy: DeployView): StageActivity {
+  switch (deploy.status) {
+    case 'idle':
+      return 'idle';
+    case 'health_pending':
+      return 'active';
+    case 'hosted_ready':
+      return 'done';
+    case 'setup_required':
+    case 'config_invalid':
+    case 'provider_failed':
+    case 'migration_failed':
+    case 'health_failed':
+      return 'blocked';
+    default: {
+      const exhaustive: never = deploy.status;
+      return exhaustive;
+    }
+  }
+}
+
+/**
+ * Classify every pipeline stage's current activity from the blueprint inputs.
+ * Pure and projection-only — the same no-invention rule as the lanes.
+ */
+export function deriveStageActivities(
+  inputs: BlueprintInputs,
+): Readonly<Record<BlueprintLaneId, StageActivity>> {
+  const { run, tickets, research, gates, repairs, packageView, deploy } = inputs;
+  const board = deriveWorkerBoard(tickets);
+
+  const queue: StageActivity =
+    board.queued.length > 0 ? 'active' : tickets.length > 0 ? 'done' : 'idle';
+
+  const workers: StageActivity =
+    board.active.length > 0
+      ? 'active'
+      : board.blocked.length > 0
+        ? 'blocked'
+        : board.done.length > 0
+          ? 'done'
+          : 'idle';
+
+  const gatesActivity: StageActivity =
+    gates.length === 0
+      ? 'idle'
+      : gates.some((g) => g.status === 'running')
+        ? 'active'
+        : gates.some((g) => g.status === 'failed')
+          ? 'blocked'
+          : 'done';
+
+  const repair: StageActivity =
+    repairs.length === 0
+      ? 'idle'
+      : repairs.some((r) => r.status === 'repairing')
+        ? 'active'
+        : repairs.some((r) => r.status === 'exhausted')
+          ? 'blocked'
+          : 'done';
+
+  return {
+    research: researchActivity(research),
+    planning: planningActivity(run),
+    queue,
+    workers,
+    gates: gatesActivity,
+    repair,
+    package: packageView.status === 'packaged' ? 'done' : 'idle',
+    deploy: deployActivity(deploy),
+  };
+}
+
+/**
+ * The current pipeline stage (R2): the FURTHEST stage with live work (active
+ * or blocked), falling back to the furthest completed stage; `null` only when
+ * no events reached any stage. Retries never regress the marker — repair is
+ * its own lane after gates.
+ */
+export function deriveCurrentStage(inputs: BlueprintInputs): BlueprintLaneId | null {
+  const activity = deriveStageActivities(inputs);
+  for (let i = PIPELINE_STAGE_ORDER.length - 1; i >= 0; i -= 1) {
+    const stage = PIPELINE_STAGE_ORDER[i];
+    if (activity[stage] === 'active' || activity[stage] === 'blocked') {
+      return stage;
+    }
+  }
+  for (let i = PIPELINE_STAGE_ORDER.length - 1; i >= 0; i -= 1) {
+    const stage = PIPELINE_STAGE_ORDER[i];
+    if (activity[stage] === 'done') {
+      return stage;
+    }
+  }
+  return null;
+}
+
+/** One item the operator must decide on, named in plain words. */
+export interface NeedsYouItem {
+  /** Where the decision lives: an open intervention or a pending review. */
+  readonly kind: 'intervention' | 'review';
+  readonly label: string;
+}
+
+/** The one-line truthful run headline (R3/R5, AE4). */
+export interface StatusHeadline {
+  /** Plain words for what the run is doing NOW — traced to projections only. */
+  readonly text: string;
+  /** This run's needs-you count (see the union rule on `deriveStatusHeadline`). */
+  readonly needsYou: number;
+  /** The named items behind the count, one expand away. */
+  readonly items: readonly NeedsYouItem[];
+  /**
+   * Pending reviews NOT already represented by an open intervention. The floor
+   * adds this to the cross-run open-intervention count for the factory-wide
+   * needs-you number (`deriveFactoryNeedsYou`).
+   */
+  readonly unpairedReviewCount: number;
+}
+
+/** Everything the headline folds over: the blueprint inputs + decisions. */
+export interface HeadlineInputs extends BlueprintInputs {
+  readonly reviews: readonly ReviewItem[];
+  /** OPEN interventions blocking this run (server-filtered, like the aggregate). */
+  readonly interventions: readonly BlockedStageView[];
+}
+
+function headlineStageText(
+  inputs: BlueprintInputs,
+  stage: BlueprintLaneId | null,
+  activity: Readonly<Record<BlueprintLaneId, StageActivity>>,
+): string {
+  if (stage === null) {
+    return 'No run activity recorded yet.';
+  }
+  const board = deriveWorkerBoard(inputs.tickets);
+  const state = activity[stage];
+  switch (stage) {
+    case 'research':
+      return state === 'blocked'
+        ? 'Research failed — see the research lane.'
+        : state === 'done'
+          ? 'Research brief complete.'
+          : 'Researching sources for the plan.';
+    case 'planning':
+      return state === 'active' ? 'Supervisor is planning the run.' : 'Run planned.';
+    case 'queue':
+      return `${board.queued.length} ticket(s) queued, waiting for workers.`;
+    case 'workers':
+      return state === 'active'
+        ? `${board.active.length} worker(s) building tickets.`
+        : state === 'blocked'
+          ? `${board.blocked.length} ticket(s) blocked or failed.`
+          : 'All tickets completed.';
+    case 'gates': {
+      // Whether a DECISION is pending is the needs-you count's job (union
+      // rule) — the text states only what the ledger recorded.
+      const failed = inputs.gates.find((g) => g.status === 'failed');
+      return state === 'active'
+        ? 'Running gates.'
+        : state === 'blocked' && failed !== undefined
+          ? `Gate "${failed.gate}" failed.`
+          : 'Gates passing.';
+    }
+    case 'repair': {
+      const repairing = inputs.repairs.filter((r) => r.status === 'repairing').length;
+      return state === 'active'
+        ? `Repairing ${repairing} ticket(s) after gate failures.`
+        : state === 'blocked'
+          ? 'Repair attempts exhausted.'
+          : 'Repairs recovered.';
+    }
+    case 'package':
+      return 'Packaged and ready to hand off.';
+    case 'deploy':
+      return state === 'active'
+        ? 'Deploy health check pending.'
+        : state === 'blocked'
+          ? `Deploy ${DEPLOY_LANE_STATUS[inputs.deploy.status]}.`
+          : 'Hosted and healthy.';
+    default: {
+      const exhaustive: never = stage;
+      return exhaustive;
+    }
+  }
+}
+
+/**
+ * Derive the one-line truthful headline for ONE run (R3): what it is doing
+ * now, plus how many items need the operator.
+ *
+ * Needs-you UNION rule (Key Technical Decision): open interventions and
+ * unpaired pending `review.requested` both count — interventions alone lie
+ * when a review awaits a decision. Pairing dedupe: one failed gate emits BOTH
+ * a `retry_choice` intervention and a stage review (ticket-executor), so a
+ * pending review whose `stage` matches an open intervention's blocking stage
+ * is the SAME decision and counts once (as the intervention item). Plain
+ * risk-tier reviews (no stage) always count.
+ */
+export function deriveStatusHeadline(inputs: HeadlineInputs): StatusHeadline {
+  const { run, interventions, reviews } = inputs;
+
+  const pendingReviews = reviews.filter((review) => review.status === 'pending');
+  const pairedStages = new Set(interventions.map((item) => item.blockingStage));
+  const unpairedReviews = pendingReviews.filter(
+    (review) => review.stage === undefined || !pairedStages.has(review.stage),
+  );
+  const items: NeedsYouItem[] = [
+    ...interventions.map(
+      (item): NeedsYouItem => ({
+        kind: 'intervention',
+        label: `${item.blockingStage}: ${item.requiredAction}`,
+      }),
+    ),
+    ...unpairedReviews.map(
+      (review): NeedsYouItem => ({
+        kind: 'review',
+        label: review.summary ?? `${review.riskTier}-risk review awaiting decision`,
+      }),
+    ),
+  ];
+
+  let text: string;
+  if (run.status === 'cancelled') {
+    text = 'Run cancelled — nothing is executing.';
+  } else if (run.status === 'failed') {
+    text = run.failureReason !== undefined ? `Run failed: ${run.failureReason}` : 'Run failed.';
+  } else if (run.status === 'completed') {
+    text =
+      inputs.deploy.status === 'hosted_ready'
+        ? 'Run completed — hosted and healthy.'
+        : 'Run completed.';
+  } else if (run.executionState === 'paused') {
+    text = 'Execution paused by the operator.';
+  } else {
+    const activity = deriveStageActivities(inputs);
+    text = headlineStageText(inputs, deriveCurrentStage(inputs), activity);
+  }
+
+  return { text, needsYou: items.length, items, unpairedReviewCount: unpairedReviews.length };
+}
+
+/**
+ * Factory-wide needs-you count (R3): OPEN interventions across every run plus
+ * the focused run's unpaired pending reviews. Reviews for non-focused runs are
+ * not in the floor payload, so this is an honest floor — the count never
+ * invents items it cannot see, and the focused-run headline carries the rest.
+ */
+export function deriveFactoryNeedsYou(
+  interventions: readonly InterventionItem[],
+  focused: Pick<StatusHeadline, 'unpairedReviewCount'> | null,
+): number {
+  const open = interventions.filter((item) => item.status === 'open').length;
+  return open + (focused?.unpairedReviewCount ?? 0);
+}
+
+/* -------------------------------------------------------------------------- */
 /* Cross-run intervention queue filtering (X4, client mirror of the server)   */
 /* -------------------------------------------------------------------------- */
 

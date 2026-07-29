@@ -328,6 +328,53 @@ export function resolveInterventionItem(
   });
 }
 
+/**
+ * Row-level structural check for one wire run projection (session lifecycle
+ * U5). The list poll only needs the identity/status/recency fields the strip
+ * and board render; a malformed row drops instead of rendering `undefined`.
+ * Archived runs are re-filtered client-side (defense-in-depth — the default
+ * route already excludes them, R7).
+ */
+function isRunListRow(value: unknown): value is RunProjection {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+  const row = value as Record<string, unknown>;
+  return (
+    typeof row.runId === 'string' &&
+    typeof row.status === 'string' &&
+    typeof row.lastSequence === 'number' &&
+    row.archived !== true
+  );
+}
+
+/**
+ * Poll the VISIBLE run list (read-only, no token) — the live feed behind the
+ * run strip and run board (R14). A missing/non-array `runs` key FAILS the
+ * tick (reconnecting, last good data kept) rather than degrading to an empty
+ * list: an empty list is a real state ("floor is empty") that drives focus
+ * changes, so it must never be synthesized from a malformed body. Sorted
+ * newest-first exactly like the SSR `loadRunList`, so "newest visible run"
+ * means the same thing on every tick.
+ */
+export async function fetchRunList(): Promise<readonly RunProjection[]> {
+  const res = await fetch('/api/runs', {
+    headers: { accept: 'application/json' },
+    cache: 'no-store',
+    signal: AbortSignal.timeout(POLL_FETCH_TIMEOUT_MS),
+  });
+  if (!res.ok) {
+    throw new Error(`runs_fetch_failed:${res.status}`);
+  }
+  const body = await readPolledJson(res, 'runs');
+  if (!Array.isArray(body.runs)) {
+    throw new Error('runs_parse_failed');
+  }
+  return body.runs
+    .filter(isRunListRow)
+    .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0) || b.lastSequence - a.lastSequence);
+}
+
 /** Poll the projected run view, resuming the ledger from `afterSequence`. */
 export async function fetchAggregate(runId: string, afterSequence: number): Promise<RunAggregate> {
   const res = await fetch(
