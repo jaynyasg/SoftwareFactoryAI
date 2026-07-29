@@ -1,6 +1,9 @@
 # AgentOps session artifacts
 /.agents/
 
+# Per-session agent worktrees (harness-managed, never committed)
+.claude/worktrees/
+
 # Office/editor temporary files
 ~$*.docx
 ~WRL*.tmp

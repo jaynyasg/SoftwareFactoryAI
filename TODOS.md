@@ -1,17 +1,5 @@
 # TODOs
 
-## P2: Factory Floor Polling Consolidation
-
-**What:** Merge the floor's three concurrent 1.5s poll loops (run aggregate, intervention queue, execution overview) into fewer endpoints (e.g. a combined floor-status payload), and extract the thrice-copied polling hook pattern (`use-run-aggregate`, `use-intervention-queue`, `use-execution-overview`) into a shared `usePolledResource<T>` in `lib/polling.ts`.
-
-**Why:** Each open tab currently triggers two full-ledger readAll + projection folds every 1.5s (interventions + execution overview) plus a run read; cost grows with ledger size and open tabs. The hook triplication crossed the rule of three.
-
-**Context:** Deferred from the 2026-07 pre-landing review (decision D6) — poll consolidation changes the floor's data-flow architecture and deserves its own change, not a review side-effect. The cheap mitigations (queue-event pre-filter in GET /api/execution) already landed.
-
-**Effort:** M human / S with CC+gstack.
-
-**Depends on:** Stable ExecutionOverview contract and the drain-gate feature landing.
-
 ## P1: Existing-Repo Feature Insertion
 
 **What:** Add a mode where the factory can apply a feature spec to an existing repository instead of only generating a greenfield app.
