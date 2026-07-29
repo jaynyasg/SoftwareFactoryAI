@@ -55,6 +55,20 @@ const CONNECTOR_SURFACE: Readonly<Record<string, ConnectorMapping>> = {
     mcp: 'software_factory_cancel_all_runs',
   },
   'POST /api/runs/:id/cancel': { action: 'cancelRun', mcp: 'software_factory_cancel_run' },
+  // Session lifecycle (U2). INTERIM exclusions: the archive/unarchive routes
+  // ship server-first; connector parity (MCP tools + Action operations + CLI
+  // wrappers) lands in U7 of the same plan, which replaces these entries with
+  // real mappings. These are staged markers, not decisions to stay web-only.
+  'POST /api/runs/:id/archive': {
+    excluded:
+      'Session-lifecycle U2 ships the route server-first; U7 (connector parity unit of the same ' +
+      'plan) adds the MCP tool + Action operation and replaces this staged exclusion.',
+  },
+  'POST /api/runs/:id/unarchive': {
+    excluded:
+      'Session-lifecycle U2 ships the route server-first; U7 (connector parity unit of the same ' +
+      'plan) adds the MCP tool + Action operation and replaces this staged exclusion.',
+  },
   'GET /api/runs/:id': { action: 'getRun', mcp: 'software_factory_get_run' },
   'GET /api/runs/:id/events': { action: 'getRunEvents', mcp: 'software_factory_get_events' },
   'GET /api/runs/:id/outputs': { action: 'getRunOutputs', mcp: 'software_factory_get_outputs' },

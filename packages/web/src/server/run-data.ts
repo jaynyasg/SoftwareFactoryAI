@@ -16,6 +16,7 @@ import {
   computeOperatorMetrics,
   computeRunDiagnostics,
   isRealRun,
+  isVisibleRun,
   projectArtifacts,
   projectOperator,
   projectResearch,
@@ -179,16 +180,32 @@ export async function loadOperatorAggregate(runId?: string): Promise<OperatorAgg
   return { runId: run.runId, run, operator, metrics, diagnostics, tickets };
 }
 
-/** List every projected run (most-recent first). */
-export async function loadRunList(): Promise<RunProjection[]> {
-  const res = await getApp().handle({ method: 'GET', path: '/api/runs', query: {}, headers: {} });
+export interface LoadRunListOptions {
+  /**
+   * Include ARCHIVED runs (session lifecycle U2). Default false: every default
+   * surface (floor props, latest-run resolution) sees only visible runs; the
+   * history view opts in to render archived runs alongside visible ones.
+   */
+  readonly includeArchived?: boolean;
+}
+
+/** List every projected VISIBLE run (most-recent first); see the options. */
+export async function loadRunList(options: LoadRunListOptions = {}): Promise<RunProjection[]> {
+  const includeArchived = options.includeArchived === true;
+  const res = await getApp().handle({
+    method: 'GET',
+    path: '/api/runs',
+    query: includeArchived ? { includeArchived: '1' } : {},
+    headers: {},
+  });
   if (res.status !== 200) {
     return [];
   }
   const runs = (bodyOf(res).runs as RunProjection[]) ?? [];
-  // Defense-in-depth: drop phantom/empty runs even if the API ever returns one.
+  // Defense-in-depth: drop phantom/empty (and, by default, archived) runs even
+  // if the API ever returns one — the same filter the route applies.
   return runs
-    .filter(isRealRun)
+    .filter(includeArchived ? isRealRun : isVisibleRun)
     .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0) || b.lastSequence - a.lastSequence);
 }
 
