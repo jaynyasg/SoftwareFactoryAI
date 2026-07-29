@@ -178,7 +178,10 @@
 }
 
 .pulse__item--wide {
-  flex-basis: 100%;
+  /* Throttle + blocking SHARE overflow rows (ellipsized, full text in the
+     title tooltip) instead of each owning a whole row — the pulse must not
+     spend three rows of the KTD7 fold budget. */
+  flex: 1 1 240px;
   min-width: 0;
 }
 
@@ -238,7 +241,9 @@
 }
 
 .lane__expand {
-  flex: 1 1 160px;
+  /* Closed: the summary token takes only its own width so a lane never wraps
+     to a second row just to reserve expansion space (laptop fold budget). */
+  flex: 0 1 auto;
   min-width: 0;
 }
 
@@ -259,6 +264,75 @@
   border-radius: var(--radius-sm);
   background: var(--bg-inset);
   padding: var(--space-8);
+  /* Fold budget (KTD7): the CURRENT stage auto-opens (R4), so an expanded
+     card must never push the pipeline past one screen — whatever the stage's
+     panel renders, the card scrolls internally instead of growing the page. */
+  max-height: clamp(140px, 24vh, 260px);
+  overflow-y: auto;
+}
+
+/* U5 legibility: one-line truthful headline + designed idle state (R3/R5). */
+.blueprint__headline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-4) var(--space-8);
+  padding: var(--space-2) var(--space-4);
+  font-size: var(--fs-xs);
+  min-width: 0;
+}
+
+.blueprint__headline-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.blueprint__needs-you > summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.blueprint__needs-you-items {
+  margin: var(--space-2) 0 0;
+  padding: var(--space-4) var(--space-8);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-inset);
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  font-size: var(--fs-2xs);
+}
+
+/* Current-stage marker: text label + aria-current, never color alone (§7). */
+.lane--current {
+  background: var(--bg-inset);
+}
+
+.lane__current {
+  flex: none;
+}
+
+/* Projection-faithful gate/repair rows inside an expanded lane card. */
+.lane__rows {
+  margin: var(--space-4) 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.lane__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2) var(--space-8);
+  font-size: var(--fs-2xs);
+  min-width: 0;
 }
 
 /* Research evidence rows (findings/sources/assumptions/gaps). */
@@ -357,12 +431,20 @@
   margin: 0;
 }
 
-/* Cross-run strip: one chip per run; pressing focuses the blueprint. */
+/* Cross-run strip: one chip per run; pressing focuses the blueprint. ONE row
+   always — overflow scrolls horizontally like a tab strip, so a busy factory
+   never spends extra vertical rows of the KTD7 fold budget on chips. */
 .run-strip {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: var(--space-8);
   min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.run-strip .run-chip {
+  flex: none;
 }
 
 .run-chip {

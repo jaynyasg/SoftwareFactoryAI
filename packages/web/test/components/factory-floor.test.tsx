@@ -1355,7 +1355,7 @@ describe('Status headline + stage pipeline (U5, R2–R5)', () => {
     expect(screen.queryByTestId('headline-needs-you')).toBeNull();
   });
 
-  it('marks the furthest live stage as current and opens only that lane card', () => {
+  it('marks the furthest live stage as current, collapsed until expanded on demand', () => {
     const { aggregate } = buildFullAggregate('run-current');
     renderLanes(aggregate);
 
@@ -1364,7 +1364,11 @@ describe('Status headline + stage pipeline (U5, R2–R5)', () => {
     expect(screen.getAllByTestId('current-stage')).toHaveLength(1);
     expect(within(deploy).getByTestId('current-stage')).toHaveTextContent('current stage');
     expect(deploy).toHaveAttribute('aria-current', 'step');
-    // The current lane opens by default (R4) — its existing panel is visible.
+    // The current lane collapses like every other (KTD7 fold budget) — the
+    // headline answers "what's happening" without expansion. Expanding on
+    // demand renders the existing deploy panel.
+    expect(within(deploy).getByTestId('deploy-phase')).not.toBeVisible();
+    fireEvent.click(within(deploy).getByText('details'));
     expect(within(deploy).getByTestId('deploy-phase')).toBeVisible();
   });
 
@@ -1865,16 +1869,28 @@ describe('FactoryCommandBar factory reset (U6, AE3, R9)', () => {
   const resetCalls = (fetchMock: ReturnType<typeof vi.fn>) =>
     fetchMock.mock.calls.filter(([url]) => String(url) === '/api/execution/factory-reset');
 
-  it('R9: the reset control is its own danger section, never beside New Session', () => {
-    render(withSession(<FactoryCommandBar overview={ACTIVE} />));
+  it('R9: the reset control is its own danger section, never beside New Session', async () => {
+    const fetchMock = resetFetchMock();
+    try {
+      render(withSession(<FactoryCommandBar overview={ACTIVE} />));
 
-    const commandsRow = screen.getByRole('group', { name: 'Factory-wide execution commands' });
-    expect(within(commandsRow).getByTestId('new-session')).toBeInTheDocument();
-    expect(within(commandsRow).queryByTestId('factory-reset-arm')).toBeNull();
+      const commandsRow = screen.getByRole('group', { name: 'Factory-wide execution commands' });
+      expect(within(commandsRow).getByTestId('new-session')).toBeInTheDocument();
+      expect(within(commandsRow).queryByTestId('factory-reset-arm')).toBeNull();
 
-    const zone = screen.getByLabelText('Factory reset');
-    expect(within(zone).getByTestId('factory-reset-arm')).toBeInTheDocument();
-    expect(zone).toHaveTextContent(/this is not New Session/);
+      // Resting state is one compact row (fold budget); the full blast-radius
+      // explainer renders once the control is ARMED.
+      const zone = screen.getByLabelText('Factory reset');
+      expect(within(zone).getByTestId('factory-reset-arm')).toBeInTheDocument();
+      expect(zone).not.toHaveTextContent(/this is not New Session/);
+      await act(async () => {
+        fireEvent.click(within(zone).getByTestId('factory-reset-arm'));
+      });
+      expect(zone).toHaveTextContent(/this is not New Session/);
+    } finally {
+      vi.unstubAllGlobals();
+      void fetchMock;
+    }
   });
 
   it('AE3: opening pre-flights with an EMPTY confirm and renders literal counts and paths', async () => {

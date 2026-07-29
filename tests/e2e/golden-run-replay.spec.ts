@@ -110,6 +110,9 @@ test.describe('golden run — replay determinism (no browser)', () => {
 
 test.describe('golden run — UI replay', () => {
   test('run page + operator dashboard render the seeded golden states', async ({ page }) => {
+    // Composed two-page flow: dev-mode cold compiles of /runs/[runId] AND
+    // /operator can eat most of the default 30s budget before assertions run.
+    test.slow();
     const runId = `golden-e2e-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
     await seedRun(page.request, reidentify(loadGolden(), runId));
 

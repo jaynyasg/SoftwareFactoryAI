@@ -803,6 +803,8 @@ function FactoryResetControl({
       }}
     >
       {!open ? (
+        // Resting state stays ONE compact row (KTD7 fold budget): the full
+        // blast-radius explainer renders inside the armed panel instead.
         <div className="row">
           <button
             ref={armRef}
@@ -814,10 +816,6 @@ function FactoryResetControl({
           >
             Factory reset…
           </button>
-          <span className="muted" style={{ fontSize: 'var(--fs-2xs)' }}>
-            Destroys every run, the whole ledger, and generated workspaces on this machine. Archived
-            runs do not survive — this is not New Session.
-          </span>
         </div>
       ) : (
         <div
@@ -831,6 +829,10 @@ function FactoryResetControl({
             }
           }}
         >
+          <span className="muted" style={{ fontSize: 'var(--fs-2xs)' }}>
+            Destroys every run, the whole ledger, and generated workspaces on this machine. Archived
+            runs do not survive — this is not New Session.
+          </span>
           {preflight.kind === 'loading' ? (
             <span className="muted">Checking what a reset would destroy…</span>
           ) : null}

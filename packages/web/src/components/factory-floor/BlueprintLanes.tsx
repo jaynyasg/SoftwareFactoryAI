@@ -226,10 +226,12 @@ function LaneCard({
       ) : null}
       <SeverityBadge severity={lane.severity} label={lane.status} />
       {lane.metric ? <span className="lane__metric mono">{lane.metric}</span> : null}
-      {/* Collapsed by default (R4); the CURRENT stage opens. React only syncs
-          `open` when the prop value changes, so operator toggles survive
-          re-renders from the poll loop. */}
-      <details className="lane__expand" open={current || undefined}>
+      {/* ALL cards collapse by default (R4) — including the current stage.
+          The headline already answers "what's happening / what needs me"
+          without expansion (R3), and an auto-opened panel would blow the
+          one-screen fold budget (KTD7) the desktop specs pin. Uncontrolled
+          `<details>`, so operator toggles survive poll-loop re-renders. */}
+      <details className="lane__expand">
         <summary>{lane.id === 'research' ? 'evidence' : 'details'}</summary>
         {lane.detail ? (
           <span className="lane__detail" title={lane.detail}>
