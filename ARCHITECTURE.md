@@ -315,6 +315,7 @@ Important event families:
 | Family       | Examples                                                                          |
 | ------------ | --------------------------------------------------------------------------------- |
 | Run          | `run.created`, `run.planned`, `run.completed`, `run.cancelled`                    |
+| Lifecycle    | `run.archived`, `run.unarchived`, `session.started`, `factory.reset_completed`    |
 | Research     | `research.requested`, `research.finding_recorded`, `research.brief_completed`     |
 | Knowledge    | `knowledge.entry_recorded`, `knowledge.entry_redacted`                            |
 | Supervisor   | `supervisor.decision`                                                             |
@@ -336,6 +337,16 @@ Important event families:
 | Deploy       | `deploy.setup_required`, `deploy.health_pending`, `deploy.hosted_ready`           |
 | Security     | `security.block`, `security.command_rejected`                                     |
 | Operator     | `operator.health_sample`                                                          |
+
+Lifecycle events follow two conventions. Archive is a VISIBILITY lifecycle,
+orthogonal to run status: `run.archived`/`run.unarchived` append to the run's
+own ledger and toggle default-view visibility without touching execution state
+(unarchive never revives a cancelled run). Factory-scoped markers
+(`session.started`, `factory.reset_completed`) live on the reserved `factory`
+stream — the same stream guard denials use — so they never join run lists;
+`factory.reset_completed` opens each post-reset ledger with a monotonic
+`resetGeneration` so the discontinuity is explicit and stale tabs can detect
+it via the polled execution overview.
 
 Projections fold events into read models:
 

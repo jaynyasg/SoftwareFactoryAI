@@ -47,14 +47,32 @@ instance never drains queued runs unattended.
   held) to opt a deployment back into unattended drain-on-start. The shipped
   `render.yaml` keeps it commented out.
 
+### Session lifecycle on hosted instances
+
+- **New Session** (`POST /api/execution/new-session`) is the safe hosted
+  cleanup: it re-holds the gate, cancels actives, clears queued work, and
+  archives every run non-destructively. Archived runs stay on the persistent
+  disk and remain replayable through the history view. If runs are active it
+  asks once (409 with the active list; re-send with `confirmActive: true`).
+- **Factory Reset** (`POST /api/execution/factory-reset`) destroys the hosted
+  ledger, managed workspaces, and the operator token under `SF_FACTORY_DIR` —
+  treat it as a dev/staging tool, not a hosted operation. It requires the exact
+  typed phrase `reset the factory`, refuses while any job holds a lease, and
+  mints a fresh operator token, so any CLI or skill using `SF_OPERATOR_TOKEN`
+  must be re-provisioned afterwards. Open tabs detect the reset via the
+  `resetGeneration` field on `GET /api/execution` / `GET /api/floor` and show
+  a forced-reload banner. The ChatGPT Action deliberately does NOT expose
+  factory-reset; the MCP connector and CLI do (phrase still enforced
+  server-side).
+
 Required env:
 
-| Key                                 | Purpose                                                                            |
-| ----------------------------------- | ---------------------------------------------------------------------------------- |
-| `SF_RUNTIME=cloud`                  | Enables hosted defaults.                                                           |
-| `SF_FACTORY_DIR=/var/data/.factory` | Keeps the ledger and token state on the persistent disk.                           |
-| `SF_OPERATOR_TOKEN`                 | Stable secret for CLI and skill mutations. The blueprint generates one.            |
-| `SF_PUBLIC_BASE_URL`                | Optional but recommended hosted URL, e.g. `https://software-factory.onrender.com`. |
+| Key                                 | Purpose                                                                                    |
+| ----------------------------------- | ------------------------------------------------------------------------------------------ |
+| `SF_RUNTIME=cloud`                  | Enables hosted defaults.                                                                   |
+| `SF_FACTORY_DIR=/var/data/.factory` | Keeps the ledger and token state on the persistent disk.                                   |
+| `SF_OPERATOR_TOKEN`                 | Stable secret for CLI and skill mutations. The blueprint generates one.                    |
+| `SF_PUBLIC_BASE_URL`                | Optional but recommended hosted URL, e.g. `https://software-factory.onrender.com`.         |
 | `SF_EXEC_AUTOSTART`                 | Optional. Unset (default) boots execution HELD; `1`/`true`/`yes` opts into drain-on-start. |
 
 ## Cloud Setup Diagnostics

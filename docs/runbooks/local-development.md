@@ -76,6 +76,31 @@ commands require a local operator token/session plus origin, CSRF, and stale-com
 checks. The token lifecycle and setup flow are implemented in U3; this section will be
 expanded there.
 
+## Session lifecycle: New Session and Factory Reset
+
+Two operator actions clear the floor, with very different blast radii. Both are
+available with parity on the floor UI, the CLI, and the MCP connector.
+
+**New Session** (`POST /api/execution/new-session`, CLI `new-session`) is the
+default fresh start and is non-destructive: it snapshots the current run set,
+re-holds the drain gate, cancels active runs, clears queued-but-unstarted work,
+archives every run, and records a `session.started` marker. Archived runs stay
+on disk, searchable, and replayable — the Run history view (`Show archived`)
+lists them, and `unarchive` restores visibility without reviving execution
+(a cancelled run stays cancelled). If runs are still active, the command asks
+once (409 with the active list; confirm with `--confirm-active` on the CLI).
+
+**Factory Reset** (`POST /api/execution/factory-reset`, CLI `factory-reset`) is
+the destructive dev-machine wipe. It requires the exact typed phrase
+`reset the factory` (enforced server-side; the CLI aborts locally without a
+request on a mismatch), refuses while any queue job holds a lease, and deletes
+ONLY factory-managed paths under the factory dir (`events/`, managed
+`workspaces/`, `operator-token.json`). User-supplied `localFolder` workspace
+targets are never touched. The fresh ledger opens with a
+`factory.reset_completed` marker carrying a monotonic `resetGeneration`; open
+tabs detect the bump through the polled execution overview and show a forced
+reload banner (the old operator token is invalid — a fresh one is minted).
+
 ## Troubleshooting
 
 | Symptom                                                      | Fix                                                                                                                                                     |
