@@ -1,5 +1,5 @@
 ---
-title: "feat: Run-focused floor and session lifecycle"
+title: 'feat: Run-focused floor and session lifecycle'
 type: feat
 status: active
 date: 2026-07-28
@@ -137,7 +137,7 @@ Carried from origin:
 
 ## High-Level Technical Design
 
-> *This illustrates the intended approach and is directional guidance for review, not implementation specification. The implementing agent should treat it as context, not code to reproduce.*
+> _This illustrates the intended approach and is directional guidance for review, not implementation specification. The implementing agent should treat it as context, not code to reproduce._
 
 Run visibility lifecycle (orthogonal to run status; archive of non-terminal implies cancel first):
 
@@ -183,20 +183,24 @@ sequenceDiagram
 **Dependencies:** None
 
 **Files:**
+
 - Modify: `packages/core/src/events/event-types.ts`
 - Modify: `packages/core/src/projections/run-projection.ts`
 - Test: `packages/core/test/projections/run-projection.test.ts`
 
 **Approach:**
+
 - Payload interfaces + `EventPayloadMap` + `EVENT_TYPES` entries (compile-time exhaustiveness enforces agreement).
 - `RunProjection` gains `archived: boolean` and `archivedAt`; fold rules explicit in the "cancellation is terminal" style: archive/unarchive toggle visibility regardless of status; unarchive never revives execution state.
 - Add a `isVisibleRun`-style helper (real AND not archived); make `resolveTargetRunId` skip archived runs.
 - `session.started` / `factory.reset_completed` are factory-stream events; verify projection diagnostics tolerate them on the reserved stream (they never join run lists — `isRealRun` already excludes the stream).
 
 **Patterns to follow:**
+
 - Terminal-cancel fold rules in `projectRun`; `knowledge.entry_redacted` reversible-visibility precedent.
 
 **Test scenarios:**
+
 - Happy path: archive then unarchive a completed run → `archived` toggles, status unchanged.
 - Edge case: `run.archived` on an already-archived run is idempotent; unarchive on a never-archived run is a no-op with no diagnostic.
 - Edge case: Covers AE2. archived run's events replay identically (deep-equal double projection) with zero diagnostics.
@@ -205,6 +209,7 @@ sequenceDiagram
 - Integration: golden marketplace fixture still projects deep-equal with zero diagnostics (no archive events present).
 
 **Verification:**
+
 - Core test suite green including replay determinism; exhaustiveness check compiles; failure-registry test unaffected (names avoid the regex).
 
 ---
@@ -218,11 +223,13 @@ sequenceDiagram
 **Dependencies:** U1
 
 **Files:**
+
 - Modify: `packages/web/src/server/routes/runs.ts`
 - Modify: `packages/web/src/server/run-data.ts`
 - Test: `packages/web/test/server/run-routes.test.ts`
 
 **Approach:**
+
 - `POST /api/runs/:id/archive` and `POST /api/runs/:id/unarchive`, guarded per-run (subject + version, stale-command protected).
 - Archive of a non-terminal run performs cancel-then-archive in one command (reuse the cancel path, then append `run.archived`; single daemon `cancelRun` call).
 - Archiving resolves the run's open interventions (mirror `resolveInterventionsForCancelledRun`).
@@ -230,9 +237,11 @@ sequenceDiagram
 - Cancel response/`run.cancelled` handling extended so UI can offer archive immediately (R10 server support; optional `archive: true` option on cancel for parity with U7's CLI flag).
 
 **Patterns to follow:**
+
 - `cancelAllRuns` guard/idempotency structure; existing route tests' in-process `createApp` style.
 
 **Test scenarios:**
+
 - Happy path: archive a completed run → 200, `run.archived` appended, excluded from default list, included with `includeArchived`.
 - Happy path: unarchive → visible again; execution state untouched.
 - Error path: archive with stale version → stale-command rejection; no event appended.
@@ -241,6 +250,7 @@ sequenceDiagram
 - Integration: Covers AE2. archived run's events remain readable via `GET /api/runs/:id/events`.
 
 **Verification:**
+
 - Route tests green; default list never contains archived runs; archived detail/replay still served.
 
 ---
@@ -254,18 +264,21 @@ sequenceDiagram
 **Dependencies:** U1, U2
 
 **Files:**
+
 - Modify: `packages/web/src/server/routes/execution.ts`
 - Modify: `packages/web/src/server/execution/daemon.ts`
 - Test: `packages/web/test/server/execution-routes.test.ts`
 - Test: `packages/web/test/server/execution-daemon.test.ts`
 
 **Approach:**
+
 - `POST /api/execution/new-session`, factory-scoped guard, command `session.start_new`, audited via `auditFactoryCommand`.
 - Body carries `confirmActive: boolean`; if actives exist (per the R-decision definition) and `confirmActive` is false, respond 409-style with the active list so surfaces can confirm once (AE1's ask-once).
 - Execution order per the sequence diagram; queued-job release reuses the `cancelRuns` phase-2 chained-pass discipline; archive appends use idempotency keys (`${runId}:run.archived`).
 - Response: `{archived, cancelled, held: true}` for immediate UI confirmation via the standard post-mutation poll.
 
 **Test scenarios:**
+
 - Happy path: Covers AE1 / F2. three completed + one active, `confirmActive: true` → all archived, gate held, queue empty, `session.started` on factory stream.
 - Edge case: active runs present with `confirmActive: false` → nothing changes, response lists actives.
 - Edge case: run created between confirm and execution is included (snapshot at execution) — simulate by appending a run before the command lands.
@@ -274,6 +287,7 @@ sequenceDiagram
 - Integration: daemon in-flight job aborted and its queued siblings released as cancelled before archive events land (ordering observable in the ledger).
 
 **Verification:**
+
 - AE1 reproduced as a route test; ledger shows hold-cancel-release-archive-marker ordering; execution overview reports held + zero queued.
 
 ---
@@ -287,6 +301,7 @@ sequenceDiagram
 **Dependencies:** U1
 
 **Files:**
+
 - Create: `packages/web/src/server/factory-reset.ts`
 - Modify: `packages/web/src/server/routes/execution.ts`
 - Modify: `packages/web/src/server/instance.ts`
@@ -296,6 +311,7 @@ sequenceDiagram
 - Test: `packages/web/test/server/factory-reset.test.ts`
 
 **Approach:**
+
 - `POST /api/execution/factory-reset` with server-side typed-confirmation phrase in the body; mismatch → rejection, nothing deleted (AE3 enforced server-side, not just UI).
 - Refuse while any job lease is active; respond with the leased jobs so the operator can cancel first.
 - Sequence: hold → daemon stop (awaits chained passes) → dispose/rebuild globalThis singletons (store cache and sequence high-water marks must not survive) → delete allowlisted factory-managed paths only → rebuild store → append `factory.reset_completed` + `session.started` → bump reset generation.
@@ -305,6 +321,7 @@ sequenceDiagram
 **Execution note:** Test-first — write the refusal and allowlist tests before the deletion code; this unit is the plan's highest-blast-radius surface.
 
 **Test scenarios:**
+
 - Error path: Covers AE3. wrong/missing confirmation phrase → nothing deleted, state untouched.
 - Error path: leased job active → refusal listing the lease; nothing deleted.
 - Happy path: Covers F3. valid reset → factory dir wiped per allowlist, fresh ledger contains reset marker + session marker, response carries new generation.
@@ -313,6 +330,7 @@ sequenceDiagram
 - Integration: reset generation visible via `GET /api/execution` after reset; differs from pre-reset value.
 
 **Verification:**
+
 - Reset is impossible accidentally (phrase + lease refusal), destroys exactly the allowlist, and the fresh state explains itself via the marker.
 
 ---
@@ -326,6 +344,7 @@ sequenceDiagram
 **Dependencies:** U1, U2 (visible-run filtering)
 
 **Files:**
+
 - Modify: `packages/web/src/lib/run-view.ts`
 - Modify: `packages/web/src/lib/types.ts`
 - Modify: `packages/web/src/components/factory-floor/FactoryFloor.tsx`
@@ -336,6 +355,7 @@ sequenceDiagram
 - Test: `packages/web/test/components/factory-floor.test.tsx`
 
 **Approach:**
+
 - New pure helpers: `deriveCurrentStage(aggregate)` (precedence over the eight lanes) and `deriveStatusHeadline(aggregate, interventions, reviews)` (focused-run subset + factory-wide needs-you count) in the `deriveBlueprintLanes` no-invention style with `never` exhaustiveness.
 - Needs-you unions open interventions and unpaired `review.requested` (Key Technical Decisions).
 - `BlueprintLanes` gains the current-stage marker and collapsed-by-default lane cards (expand on demand); focused blueprint keeps the §5 "exactly one focused run" rule.
@@ -344,9 +364,11 @@ sequenceDiagram
 - Update `docs/design/DESIGN.md` §5 surface table before implementing (Documentation Plan).
 
 **Patterns to follow:**
+
 - `deriveBlueprintLanes` / `deriveFactoryPulse`; polling hook triad; `severityClass` + color-never-alone.
 
 **Test scenarios:**
+
 - Happy path: Covers AE4 / F1. aggregate with a failed-gate retry decision pending → headline names one needs-you item; resolving it with nothing else pending → explicit idle state rendered.
 - Happy path: current-stage marker moves as events advance stages (created→planned→running gates→deploy fixtures).
 - Edge case: multiple active runs — headline shows focused subset, needs-you count includes the other run's intervention.
@@ -356,6 +378,7 @@ sequenceDiagram
 - Integration: lane cards collapsed by default; expanding one renders the existing panel content unchanged (no ledger-fidelity loss).
 
 **Verification:**
+
 - Component suite green; a seeded multi-run floor answers "what's happening / what needs me" from the headline alone; jsdom tests assert the idle state exists as a designed state, not absence of content.
 
 ---
@@ -369,6 +392,7 @@ sequenceDiagram
 **Dependencies:** U2, U3, U4, U5
 
 **Files:**
+
 - Modify: `packages/web/src/components/factory-floor/FactoryCommandBar.tsx`
 - Modify: `packages/web/src/components/factory-floor/RunCommandBar.tsx`
 - Modify: `packages/web/src/components/factory-floor/RunBoard.tsx`
@@ -377,6 +401,7 @@ sequenceDiagram
 - Test: `packages/web/test/components/factory-floor.test.tsx`
 
 **Approach:**
+
 - New Session control in `FactoryCommandBar` using the existing arm/confirm keyboard-contract pattern; when actives exist, the confirm names them (and warns "deployed artifacts remain live" when applicable).
 - Factory Reset control visually separated (R9), typed-confirmation modal rendering the server's pre-flight enumeration (counts + literal paths); reset success → forced-reload banner path (R15 client side).
 - `RunCommandBar` cancel gains the immediate-state + archive-offer moment (AE5) via the existing immediate-poll confirmation; no optimistic UI.
@@ -384,9 +409,11 @@ sequenceDiagram
 - Stale-tab banner: `use-execution-overview` compares reset generation and renders the forced-reload/re-auth banner.
 
 **Patterns to follow:**
+
 - `FactoryCommandBar#CancelAllControl` (arm/confirm, focus contract, Escape disarms); `MutationResult` client pattern; DESIGN.md §6/§8.
 
 **Test scenarios:**
+
 - Happy path: Covers AE1. New Session with no actives → single click + confirm, floor empties, held banner shows.
 - Edge case: actives present → confirm lists them; abort leaves everything untouched.
 - Error path: Covers AE3. reset modal with wrong phrase → confirm disabled/rejected; nothing sent or server rejects.
@@ -395,6 +422,7 @@ sequenceDiagram
 - Edge case: reset generation change → banner rendered, mutations disabled until reload.
 
 **Verification:**
+
 - All floor lifecycle actions confirmed from events; keyboard/focus contract holds for both destructive controls; history is reachable within one click of the board.
 
 ---
@@ -408,6 +436,7 @@ sequenceDiagram
 **Dependencies:** U2, U3, U4
 
 **Files:**
+
 - Modify: `packages/cli/src/commands/execution.ts`
 - Modify: `packages/cli/src/api-client.ts`
 - Modify: `packages/cli/src/index.ts`
@@ -418,12 +447,14 @@ sequenceDiagram
 - Test: `packages/cli/test/execution-commands.test.ts`
 
 **Approach:**
+
 - CLI: `software-factory archive <runId>` / `unarchive <runId>` / `new-session [--confirm-active]` / `factory-reset` (prompting for the typed phrase) / `cancel --archive`; thin wrappers per the ARCHITECTURE.md rule.
 - MCP: TOOLS entries + `tools/call` cases delegating via `deps.app.handle(internalRequest(...))` — never reimplementing logic.
 - Action: operations with mapped operationIds on matching method+path; schema stays valid OpenAPI 3.1.
 - `CONNECTOR_SURFACE` entries for every new route (or written exclusions >10 chars — expected: factory-reset excluded from the ChatGPT Action surface with a written destructive-scope reason, mirroring how high-blast-radius ops are treated).
 
 **Test scenarios:**
+
 - Happy path: parity test passes with all new routes mapped or explicitly excluded with reasons.
 - Happy path: MCP `tools/call` for archive/new-session round-trips through the internal app and returns route-shaped results.
 - Happy path: CLI new-session against a seeded in-process server archives and holds (mirror of AE1).
@@ -431,6 +462,7 @@ sequenceDiagram
 - Edge case: `cancel --archive` performs cancel-then-archive in one command from the CLI.
 
 **Verification:**
+
 - `connector-parity.test.ts`, `mcp.test.ts`, `chatgpt-action-schema.test.ts`, and CLI suites green; no surface can drift silently.
 
 ---
@@ -444,20 +476,24 @@ sequenceDiagram
 **Dependencies:** U3, U4, U5, U6, U7
 
 **Files:**
+
 - Create: `tests/e2e/session-lifecycle.spec.ts`
 - Modify: `tests/e2e/seed-run.ts` (archive-state seeding helper if needed)
 
 **Approach:**
+
 - Isolated `app.listen(0)` servers for new-session and reset specs (never flip the shared dev server's gate — `factory-gate.spec.ts` precedent); shared-server spec for the focused-floor/headline read-only assertions.
 - Golden-run replay spec must remain untouched and green.
 
 **Test scenarios:**
+
 - Integration: Covers AE1 / F2. seeded multi-run floor → New Session → floor empty, held banner, history shows archived runs.
 - Integration: Covers AE4 / F1. seeded run with pending intervention → headline + needs-you count render; resolve → explicit idle state.
 - Integration: Covers AE3 / F3. reset spec on isolated server: wrong phrase rejected; right phrase wipes and fresh floor shows reset marker provenance; stale tab shows the reload banner.
 - Integration: Covers AE2. archived run replay: open archived run from history, events render in the detail view.
 
 **Verification:**
+
 - e2e suite green locally; golden-run replay unchanged; no spec mutates the shared dev server's gate.
 
 ---
@@ -475,14 +511,14 @@ sequenceDiagram
 
 ## Risk Analysis & Mitigation
 
-| Risk | Likelihood | Impact | Mitigation |
-|------|-----------|--------|------------|
-| Factory reset deletes user data outside factory scope | Low | Critical | Allowlist-only deletion; `localFolder` targets excluded by construction; path-enumeration test (U4); typed server-side confirmation |
-| Reset races daemon; cached singletons resurrect the old ledger | Med | High | Pinned sequence (stop → dispose → delete → rebuild → marker); refuse-while-leased; fresh-sequence test |
-| Archived run's queued work executes later | Med | High | R16 cancel-first at the route layer; queue-release reuse of the chained-pass discipline; ledger-ordering test (U3) |
-| Floor reshape regresses existing panels/tests | Med | Med | Reuse existing focus model; collapsed cards render existing panels unchanged; component suite extended, not replaced |
-| Parity drift across four surfaces (floor UI, CLI, MCP, ChatGPT Action) | Low | Med | Route-derived parity test fails the build on drift; exclusions require written reasons |
-| Headline lies ("nothing needs you" while a review waits) | Med | High | Needs-you union rule + AE4 tests at unit, component, and e2e layers |
+| Risk                                                                   | Likelihood | Impact   | Mitigation                                                                                                                          |
+| ---------------------------------------------------------------------- | ---------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| Factory reset deletes user data outside factory scope                  | Low        | Critical | Allowlist-only deletion; `localFolder` targets excluded by construction; path-enumeration test (U4); typed server-side confirmation |
+| Reset races daemon; cached singletons resurrect the old ledger         | Med        | High     | Pinned sequence (stop → dispose → delete → rebuild → marker); refuse-while-leased; fresh-sequence test                              |
+| Archived run's queued work executes later                              | Med        | High     | R16 cancel-first at the route layer; queue-release reuse of the chained-pass discipline; ledger-ordering test (U3)                  |
+| Floor reshape regresses existing panels/tests                          | Med        | Med      | Reuse existing focus model; collapsed cards render existing panels unchanged; component suite extended, not replaced                |
+| Parity drift across four surfaces (floor UI, CLI, MCP, ChatGPT Action) | Low        | Med      | Route-derived parity test fails the build on drift; exclusions require written reasons                                              |
+| Headline lies ("nothing needs you" while a review waits)               | Med        | High     | Needs-you union rule + AE4 tests at unit, component, and e2e layers                                                                 |
 
 ---
 
