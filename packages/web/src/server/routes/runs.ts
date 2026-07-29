@@ -68,7 +68,6 @@ import {
 import type {
   AppendableEvent,
   CallerFamily,
-  EventStore,
   FactoryEvent,
   PlannerResearchContext,
   ResearchProjection,
@@ -84,11 +83,13 @@ import type { ApiResponse, RouteContext, RouteDef } from '../app';
 import { asRecord, num, reviewMode, str } from './parse';
 import { requestExecutionStart } from './execution';
 import {
-  filterInterventions,
-  projectInterventions,
-  resolveIntervention,
-} from '../execution/interventions';
-import { guardRunCommand, notFound, refreshBuildContract } from './shared';
+  appendArchive,
+  guardRunCommand,
+  notFound,
+  refreshBuildContract,
+  resolveInterventionsForArchivedRun,
+  resolveInterventionsForCancelledRun,
+} from './shared';
 
 function callerFamily(value: unknown): CallerFamily | undefined {
   return value === 'claude' || value === 'codex' || value === 'api' ? value : undefined;
@@ -377,40 +378,6 @@ async function listRunsHandler(ctx: RouteContext): Promise<ApiResponse> {
 }
 
 /**
- * Resolve every OPEN intervention on a run that is leaving the operator's
- * view (cancelled or archived). Leaving them 'open'/'blocking' would pin dead
- * entries on the factory floor forever. The resolution event matches the
- * operator resolve route's shape (`intervention.resolved`, actor operator) and
- * `resolveIntervention` is idempotent per interventionId, so a repeated
- * command appends nothing new. `events` is the run's ledger as read BEFORE the
- * lifecycle append — neither cancellation nor archiving opens interventions,
- * so the pre-command snapshot is the complete open set.
- */
-async function resolveOpenInterventionsForRun(
-  store: EventStore,
-  events: readonly unknown[],
-  runId: string,
-  input: { readonly resolution: string; readonly note: string },
-): Promise<void> {
-  const open = filterInterventions(projectInterventions(events), { runId, openOnly: true });
-  for (const intervention of open) {
-    await resolveIntervention(store, intervention, input);
-  }
-}
-
-/** The cancel flavor: a cancelled run never resumes, so its interventions die. */
-function resolveInterventionsForCancelledRun(
-  store: EventStore,
-  events: readonly unknown[],
-  runId: string,
-): Promise<void> {
-  return resolveOpenInterventionsForRun(store, events, runId, {
-    resolution: 'cancelled',
-    note: 'Run was cancelled; the intervention no longer blocks any pending work.',
-  });
-}
-
-/**
  * The single-run cancel core shared by the cancel route and archive-of-a-
  * non-terminal-run (R16): append `run.cancelled`, resolve the run's open
  * interventions, and propagate ONE daemon `cancelRun` call so queued jobs are
@@ -441,30 +408,6 @@ async function appendCancellation(
   if (ctx.executionDaemon !== null) {
     await ctx.executionDaemon.cancelRun(runId);
   }
-}
-
-/**
- * Append `run.archived` for a run whose guard already passed. The idempotency
- * key carries the command-time subject version: a RETRY of the same command
- * dedups, while a re-archive AFTER an unarchive (a higher version) appends a
- * fresh toggle — a fixed `${runId}:run.archived` key would permanently block
- * re-archiving because store idempotency is global and survives restarts.
- */
-function appendArchive(
-  ctx: RouteContext,
-  runId: string,
-  version: number,
-  reason: string | undefined,
-): Promise<unknown> {
-  return ctx.writer.append({
-    runId,
-    type: 'run.archived',
-    actor: { kind: 'operator', id: 'operator' },
-    subject: { kind: 'run', id: runId, version },
-    severity: 'info',
-    idempotencyKey: `${runId}:run.archived:${version}`,
-    payload: { reason },
-  });
 }
 
 async function cancelRun(ctx: RouteContext): Promise<ApiResponse> {
@@ -563,10 +506,7 @@ async function archiveRun(ctx: RouteContext): Promise<ApiResponse> {
       str(body.reason) ?? 'archived while active',
     );
   } else {
-    await resolveOpenInterventionsForRun(ctx.store, guarded.events, runId, {
-      resolution: 'archived',
-      note: 'Run was archived; the intervention no longer needs operator attention.',
-    });
+    await resolveInterventionsForArchivedRun(ctx.store, guarded.events, runId);
   }
 
   await appendArchive(ctx, runId, current.lastSequence, str(body.reason));

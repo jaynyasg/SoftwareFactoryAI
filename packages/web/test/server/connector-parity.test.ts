@@ -116,6 +116,15 @@ const CONNECTOR_SURFACE: Readonly<Record<string, ConnectorMapping>> = {
     mcp: 'software_factory_resume_execution',
   },
   'POST /api/execution/hold': { action: 'holdExecution', mcp: 'software_factory_hold_execution' },
+  // Session lifecycle (U3). INTERIM exclusion, same staging as archive/
+  // unarchive above: the atomic New Session command ships server-first; U7
+  // (connector parity unit of the same plan) adds the MCP tool + Action
+  // operation + CLI wrapper and replaces this entry with a real mapping.
+  'POST /api/execution/new-session': {
+    excluded:
+      'Session-lifecycle U3 ships the route server-first; U7 (connector parity unit of the same ' +
+      'plan) adds the MCP tool + Action operation and replaces this staged exclusion.',
+  },
   // Operator intervention queue.
   'GET /api/interventions': {
     action: 'listInterventions',

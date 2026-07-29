@@ -30,12 +30,20 @@
  *                                    HELD: nothing runs on open until this).
  *   POST /api/execution/hold        (guarded) — re-engage the drain gate:
  *                                    stop claiming NEW work factory-wide.
+ *   POST /api/execution/new-session (guarded) — the atomic New Session command
+ *                                    (session lifecycle U3, flow F2): snapshot
+ *                                    the run set, hold the gate, cancel active
+ *                                    runs, clear queued work, archive every
+ *                                    visible run, and append the
+ *                                    `session.started` marker on the reserved
+ *                                    'factory' stream. Asks once when active
+ *                                    runs exist (`confirmActive`).
  *
  * All mutations pass the command guard first (token/origin/CSRF/stale-version)
  * and are idempotent: duplicate starts return the existing queue state instead
  * of double-enqueueing (queue appends are keyed per job+attempt).
  */
-import { INTERVENTION_KINDS, projectRun } from '@software-factory/core';
+import { INTERVENTION_KINDS, isVisibleRun, projectRun } from '@software-factory/core';
 import type {
   EventSeverity,
   FactoryEvent,
@@ -44,7 +52,14 @@ import type {
 } from '@software-factory/core';
 import type { ApiResponse, RouteContext, RouteDef } from '../app';
 import { asRecord, num, str } from './parse';
-import { guardRunCommand, notFound, refreshBuildContract } from './shared';
+import {
+  appendArchive,
+  guardRunCommand,
+  notFound,
+  refreshBuildContract,
+  resolveInterventionsForArchivedRun,
+  resolveInterventionsForCancelledRun,
+} from './shared';
 import {
   countJobFailures,
   enqueueJob,
@@ -619,6 +634,200 @@ async function holdAllExecution(ctx: RouteContext): Promise<ApiResponse> {
   return { status: 200, body: { held: true, running: daemon.running } };
 }
 
+/* ----------------------------------------------------------------------------
+ * New Session (session lifecycle U3, flow F2)
+ * ------------------------------------------------------------------------- */
+
+/** "Active" for the New Session ask-once confirmation (Key Technical Decision):
+ * a run the operator would be surprised to lose without being asked. */
+function isActiveRun(run: RunProjection): boolean {
+  return (
+    run.status === 'running' ||
+    run.executionState === 'queued' ||
+    run.executionState === 'started' ||
+    run.executionState === 'paused' ||
+    run.executionState === 'blocked'
+  );
+}
+
+/** One run's per-stream state in the New Session execution-time snapshot. */
+interface SessionSnapshotEntry {
+  readonly runId: string;
+  readonly run: RunProjection;
+  readonly events: readonly FactoryEvent[];
+}
+
+/**
+ * The atomic New Session command (R6/R8/R12, AE1): archive everything and
+ * open a clean, HELD floor in ONE guarded factory-scoped command.
+ *
+ * Execution order (per the plan's sequence diagram):
+ *   1. snapshot the run set NOW — at execution time, not confirmation time, so
+ *      a run created from CLI/MCP mid-confirmation is included (TOCTOU);
+ *   2. ask-once gate: active runs + `confirmActive` absent -> 409 listing the
+ *      actives, NOTHING changed (no hold, no events);
+ *   3. hold the drain gate (R8: a fresh session never auto-runs leftovers);
+ *   4. cancel actives with the cancel-all two-phase shape: every
+ *      `run.cancelled` appended first (per-run failures collected, never a
+ *      mid-batch 500), then ONE daemon `cancelRuns` over EVERY snapshot
+ *      stream — phase 2 releases queued/abandoned jobs regardless of run
+ *      status, so stale queued work on terminal runs (e.g. a completed run's
+ *      queued gate re-run) is cleared too, and in-flight work is aborted
+ *      before any archive lands;
+ *   5. append `run.archived` per visible run (version-scoped idempotency
+ *      keys; already-archived runs are skipped by the `isVisibleRun`
+ *      snapshot; terminal runs' open interventions resolve as 'archived');
+ *   6. append the `session.started` marker on the reserved 'factory' stream
+ *      (NO idempotency key: every New Session is a real, distinct session —
+ *      a repeat run converges on empty archived/cancelled lists but still
+ *      records that a fresh session opened).
+ *
+ * The marker never disturbs run lists or the floor: the 'factory' stream has
+ * no `run.created`, so `isRealRun`/`isVisibleRun` exclude it by construction.
+ */
+async function startNewSession(ctx: RouteContext): Promise<ApiResponse> {
+  const denial = await ctx.guardMutation({
+    subject: { kind: 'factory', id: 'execution' },
+    command: 'session.start_new',
+  });
+  if (denial !== null) {
+    return denial;
+  }
+  const daemon = ctx.executionDaemon;
+  if (daemon === null) {
+    // Fail closed like resume/hold: without a daemon there is no gate to hold
+    // and no queue to clear, so `held: true` would be a lie.
+    return EXECUTION_DISABLED;
+  }
+  const body = asRecord(ctx.request.body);
+  const confirmActive = body.confirmActive === true;
+  const reason = str(body.reason) ?? 'new session';
+
+  // 1. Snapshot: ONE cross-run read serves every projection (the cancelAllRuns
+  // pattern). Grouping preserves per-run order; `projectRun` sorts defensively.
+  const eventsByRun = new Map<string, FactoryEvent[]>();
+  for (const event of await ctx.reader.readAll()) {
+    const runEvents = eventsByRun.get(event.runId);
+    if (runEvents === undefined) {
+      eventsByRun.set(event.runId, [event]);
+    } else {
+      runEvents.push(event);
+    }
+  }
+  const visible: SessionSnapshotEntry[] = [];
+  for (const [runId, events] of eventsByRun) {
+    const run = projectRun(events, runId);
+    if (isVisibleRun(run)) {
+      visible.push({ runId, run, events });
+    }
+  }
+
+  // 2. Ask-once (AE1): actives require an explicit confirmation. Nothing has
+  // changed yet — the operator can abort with the factory untouched.
+  const actives = visible.filter((entry) => isActiveRun(entry.run));
+  if (actives.length > 0 && !confirmActive) {
+    return {
+      status: 409,
+      body: {
+        error: 'active_runs_present',
+        message:
+          `${actives.length} run(s) are still active. Re-send with confirmActive: true to ` +
+          'cancel and archive them, or cancel the New Session.',
+        activeRuns: actives.map(({ run, runId }) => ({
+          runId,
+          title: run.title,
+          status: run.status,
+          executionState: run.executionState,
+        })),
+      },
+    };
+  }
+
+  // 3. Hold the gate BEFORE cancelling so no new claims start mid-command.
+  daemon.hold();
+
+  // 4a. Cancel actives: batch appends first (cancel-all shape) — one run's
+  // append failure is collected, never a 500 with earlier cancels committed.
+  const cancelled: string[] = [];
+  const errors: { runId: string; message: string }[] = [];
+  const failedCancels = new Set<string>();
+  for (const { runId, run, events } of actives) {
+    try {
+      await ctx.writer.append({
+        runId,
+        type: 'run.cancelled',
+        actor: { kind: 'operator', id: 'operator' },
+        subject: { kind: 'run', id: runId, version: run.lastSequence },
+        severity: 'warn',
+        idempotencyKey: `${runId}:run.cancelled`,
+        payload: { reason },
+      });
+      await resolveInterventionsForCancelledRun(ctx.store, events, runId);
+      cancelled.push(runId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      errors.push({ runId, message });
+      failedCancels.add(runId);
+    }
+  }
+
+  // 4b. ONE daemon propagation over EVERY snapshot stream: aborts in-flight
+  // executors for the (now cancelled) actives and releases queued/abandoned
+  // jobs as cancelled for ALL targeted streams — including stale queued work
+  // on terminal or already-archived runs (R8: the queue truly empties). This
+  // is awaited BEFORE any archive append so the ledger shows
+  // cancel -> release -> archive -> marker in order.
+  try {
+    await daemon.cancelRuns([...eventsByRun.keys()]);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    errors.push({ runId: 'factory', message: `daemon cancel propagation failed: ${message}` });
+  }
+
+  // 5. Archive every visible run. A run whose cancel append failed is NOT
+  // archived — an archived-but-alive run is exactly the state R16 forbids.
+  const archived: string[] = [];
+  for (const { runId, run, events } of visible) {
+    if (failedCancels.has(runId)) {
+      continue;
+    }
+    try {
+      if (!isActiveRun(run)) {
+        // Terminal runs' open interventions (e.g. a failed run's preflight
+        // entries) must not pin the operator queue for a hidden run; actives
+        // were already resolved through the cancel flavor above.
+        await resolveInterventionsForArchivedRun(ctx.store, events, runId);
+      }
+      await appendArchive(ctx, runId, run.lastSequence, reason);
+      archived.push(runId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      errors.push({ runId, message });
+    }
+  }
+
+  // 6. The session marker records what THIS command actually did (R12).
+  await ctx.writer.append({
+    runId: 'factory',
+    type: 'session.started',
+    actor: { kind: 'operator', id: 'operator' },
+    subject: { kind: 'factory', id: 'session' },
+    severity: 'info',
+    payload: { archivedRunIds: archived, cancelledRunIds: cancelled },
+  });
+
+  auditFactoryCommand('session.start_new');
+  return {
+    status: 200,
+    body: {
+      archived,
+      cancelled,
+      held: daemon.held,
+      ...(errors.length > 0 ? { errors } : {}),
+    },
+  };
+}
+
 async function getExecution(ctx: RouteContext): Promise<ApiResponse> {
   const runId = ctx.params.id;
   const events = await ctx.reader.readRun(runId);
@@ -730,6 +939,7 @@ export function executionRoutes(): RouteDef[] {
     { method: 'GET', pattern: '/api/floor', handler: getFloorStatus },
     { method: 'POST', pattern: '/api/execution/resume', handler: resumeAllExecution },
     { method: 'POST', pattern: '/api/execution/hold', handler: holdAllExecution },
+    { method: 'POST', pattern: '/api/execution/new-session', handler: startNewSession },
     { method: 'POST', pattern: '/api/runs/:id/start', handler: startRun },
     { method: 'POST', pattern: '/api/runs/:id/pause', handler: pauseRun },
     { method: 'POST', pattern: '/api/runs/:id/resume', handler: resumeRun },
