@@ -8,6 +8,7 @@
  * machine-data middle-truncation affordance.
  */
 import { describe, expect, it, vi } from 'vitest';
+import { useState } from 'react';
 import type { ReactElement, ReactNode } from 'react';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { projectRun } from '@software-factory/core';
@@ -51,6 +52,7 @@ import { ContractHandoff } from '../../src/components/factory-floor/ContractHand
 import { RunCommandBar } from '../../src/components/factory-floor/RunCommandBar';
 import { FactoryCommandBar } from '../../src/components/factory-floor/FactoryCommandBar';
 import { InterventionQueue } from '../../src/components/factory-floor/InterventionQueue';
+import { RunBoard } from '../../src/components/factory-floor/RunBoard';
 import { RunStrip } from '../../src/components/factory-floor/RunStrip';
 import { Mono } from '../../src/components/factory-floor/primitives';
 import type { BlockedStageView, BlueprintInputs, ReviewItem } from '../../src/lib/run-view';
@@ -451,7 +453,7 @@ describe('FactoryFloor empty state', () => {
       '/operator',
     );
     expect(screen.getByLabelText('Setup checklist')).toBeInTheDocument();
-    expect(screen.getByText('No runs yet.')).toBeInTheDocument();
+    expect(screen.getByText(/No visible runs\. Archived runs live under/)).toBeInTheDocument();
     // Anti-slop: no fake progress in the empty state.
     expect(screen.queryByRole('progressbar')).toBeNull();
     // The empty intervention queue is a DESIGNED feature state, not bare text.
@@ -1270,16 +1272,15 @@ describe('FactoryFloor blueprint-first hierarchy (U9/KTD7)', () => {
     expect(screen.getByTestId('factory-resume')).toHaveTextContent('Resume execution');
   });
 
-  it('clearing run history preserves the focused blueprint', () => {
+  it('offers the archived-history toggle instead of the removed ephemeral Clear view (U6)', () => {
     renderFloor();
 
     expect(screen.getByTestId('blueprint-run')).toHaveTextContent(/run-floor/);
-    fireEvent.click(screen.getByRole('button', { name: 'Clear view' }));
-
-    expect(screen.getByText(/Run history is hidden/)).toBeInTheDocument();
-    // Focus (and the lanes) survive the clear — KTD7.
+    // The ephemeral client-only hide is GONE — archive is the real lifecycle.
+    expect(screen.queryByRole('button', { name: 'Clear view' })).toBeNull();
+    expect(screen.getByTestId('history-toggle')).toHaveTextContent('Show archived');
+    // The blueprint stays focused regardless of history state — KTD7.
     expect(screen.getByLabelText('Factory blueprint')).toBeInTheDocument();
-    expect(screen.getByTestId('blueprint-run')).toHaveTextContent(/run-floor/);
   });
 
   it('switching focus remounts the blueprint: the loading state shows, never the previous run', async () => {
@@ -1570,5 +1571,751 @@ describe('FactoryFloor live run list (U5, R14)', () => {
     // Factory-wide: both runs' open interventions (2) + the focused run's
     // unpaired review (1) = 3 — the OTHER run's intervention is never hidden.
     expect(screen.getByTestId('factory-needs-you')).toHaveTextContent('3 need you');
+  });
+
+  it('the archived-elsewhere notice opens run history as a real affordance (U6)', async () => {
+    vi.useFakeTimers();
+    const events = buildFullFactoryRunEvents('run-hist-a');
+    const aggregate = aggregateFromEvents(events, 'run-hist-a');
+    const other = projectRun(buildMarketplaceRunEvents('run-hist-b'), 'run-hist-b');
+    const archivedRow = {
+      runId: 'run-hist-a',
+      status: 'cancelled',
+      lastSequence: 30,
+      startedAt: 100,
+      archived: true,
+      prompt: 'Archived elsewhere',
+    };
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/runs?includeArchived=1') {
+        return Promise.resolve(jsonResponse({ runs: [other, archivedRow] }));
+      }
+      if (url.startsWith('/api/runs')) {
+        return Promise.resolve(jsonResponse({ runs: [other] }));
+      }
+      if (url.startsWith('/api/floor')) {
+        return Promise.resolve(jsonResponse(FLOOR_BODY));
+      }
+      return new Promise<Response>(() => {});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      render(
+        withSession(
+          <FactoryFloor initialRuns={[aggregate.run, other]} setup={setup} latest={aggregate} />,
+        ),
+      );
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1500);
+      });
+
+      const notice = screen.getByTestId('archived-elsewhere-notice');
+      await act(async () => {
+        fireEvent.click(within(notice).getByRole('button', { name: 'Open run history' }));
+      });
+
+      // The copy's "run history" is a real affordance: the board's archived
+      // section opened and the one-shot include-archived fetch fired.
+      expect(fetchMock).toHaveBeenCalledWith('/api/runs?includeArchived=1', expect.anything());
+      expect(screen.getByTestId('archived-run')).toHaveAttribute('data-run-id', 'run-hist-a');
+      // The refocused blueprint survived the history open.
+      expect(screen.getByTestId('blueprint-loading')).toHaveTextContent(/run-hist-b/);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('FactoryCommandBar new session (U6, AE1)', () => {
+  const HELD: ExecutionOverview = {
+    execution: { enabled: true, held: true, running: true },
+    queue: { queued: 0, leased: 0 },
+    resetGeneration: 0,
+  };
+
+  function jsonResponse(body: unknown, status = 200): Response {
+    return new Response(JSON.stringify(body), {
+      status,
+      headers: { 'content-type': 'application/json' },
+    });
+  }
+
+  const sessionCalls = (fetchMock: ReturnType<typeof vi.fn>) =>
+    fetchMock.mock.calls.filter(([url]) => String(url) === '/api/execution/new-session');
+
+  it('AE1: with no actives — arm, focus lands safe, one POST without confirmActive, held notice', async () => {
+    const onRefresh = vi.fn();
+    const onChanged = vi.fn();
+    const fetchMock = vi.fn((input: RequestInfo | URL) =>
+      Promise.resolve(
+        String(input) === '/api/execution/new-session'
+          ? jsonResponse({ archived: ['run-a', 'run-b'], cancelled: [], held: true })
+          : jsonResponse(HELD),
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      render(
+        withSession(
+          <FactoryCommandBar overview={HELD} onRefresh={onRefresh} onChanged={onChanged} />,
+        ),
+      );
+
+      fireEvent.click(screen.getByTestId('new-session'));
+      expect(screen.getByRole('group', { name: 'Confirm new session' })).toBeInTheDocument();
+      // Focus lands on the SAFE option, exactly like cancel-all.
+      expect(screen.getByTestId('new-session-keep')).toHaveFocus();
+
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('new-session-confirm'));
+      });
+
+      const calls = sessionCalls(fetchMock);
+      expect(calls).toHaveLength(1);
+      // The first send NEVER carries confirmActive — the server's ask-once
+      // 409 is the only path into the actives confirm.
+      expect(JSON.parse(String(calls[0][1]?.body))).toEqual({});
+      expect(screen.getByTestId('factory-command-notice')).toHaveTextContent(
+        'New session opened — archived 2 runs. Execution stays held.',
+      );
+      // The floor empties via the standard post-mutation refreshes.
+      expect(onRefresh).toHaveBeenCalledTimes(1);
+      expect(onChanged).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('keyboard contract: Escape disarms, focus returns to the arm button, nothing sent', () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      render(withSession(<FactoryCommandBar overview={HELD} />));
+
+      fireEvent.click(screen.getByTestId('new-session'));
+      fireEvent.keyDown(screen.getByRole('group', { name: 'Confirm new session' }), {
+        key: 'Escape',
+      });
+
+      expect(screen.queryByRole('group', { name: 'Confirm new session' })).toBeNull();
+      expect(screen.getByTestId('new-session')).toHaveFocus();
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('409 actives: the confirm NAMES the actives; abort changes nothing; confirm re-sends confirmActive', async () => {
+    const onChanged = vi.fn();
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) !== '/api/execution/new-session') {
+        return Promise.resolve(jsonResponse(HELD));
+      }
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return Promise.resolve(
+        body.confirmActive === true
+          ? jsonResponse({ archived: ['run-live-1'], cancelled: ['run-live-1'], held: true })
+          : jsonResponse(
+              {
+                error: 'active_runs_present',
+                message: 'Active runs present.',
+                activeRuns: [
+                  {
+                    runId: 'run-live-1',
+                    title: 'Live build',
+                    status: 'running',
+                    executionState: 'started',
+                  },
+                ],
+              },
+              409,
+            ),
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      render(withSession(<FactoryCommandBar overview={HELD} onChanged={onChanged} />));
+
+      // First round: arm → confirm → ask-once 409 → actives confirm.
+      fireEvent.click(screen.getByTestId('new-session'));
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('new-session-confirm'));
+      });
+      const actives = screen.getByRole('group', { name: 'Confirm new session with active runs' });
+      expect(within(actives).getAllByTestId('new-session-active-run')).toHaveLength(1);
+      expect(actives).toHaveTextContent('run-live-1');
+      expect(actives).toHaveTextContent('running / started');
+      // The global warning line (the 409 carries no per-run deploy state).
+      expect(actives).toHaveTextContent(/Anything already deployed stays live/);
+      expect(screen.getByTestId('new-session-keep')).toHaveFocus();
+
+      // Abort: the 409 changed nothing server-side, and neither does this.
+      fireEvent.click(screen.getByTestId('new-session-keep'));
+      expect(
+        screen.queryByRole('group', { name: 'Confirm new session with active runs' }),
+      ).toBeNull();
+      expect(sessionCalls(fetchMock)).toHaveLength(1);
+      expect(onChanged).not.toHaveBeenCalled();
+      expect(screen.getByTestId('new-session')).toHaveFocus();
+
+      // Second round: confirm the actives — ONLY now confirmActive is sent.
+      fireEvent.click(screen.getByTestId('new-session'));
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('new-session-confirm'));
+      });
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('new-session-confirm-actives'));
+      });
+
+      const calls = sessionCalls(fetchMock);
+      expect(calls).toHaveLength(3);
+      expect(JSON.parse(String(calls[2][1]?.body))).toEqual({ confirmActive: true });
+      expect(screen.getByTestId('factory-command-notice')).toHaveTextContent(
+        'New session opened — archived 1 run (1 active cancelled first). Execution stays held.',
+      );
+      expect(onChanged).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('reports a partial archive failure honestly instead of pretending the floor is clean', async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) =>
+      Promise.resolve(
+        String(input) === '/api/execution/new-session'
+          ? jsonResponse({
+              archived: ['run-a'],
+              cancelled: [],
+              held: true,
+              errors: [{ runId: 'run-b', message: 'append failed' }],
+            })
+          : jsonResponse(HELD),
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      render(withSession(<FactoryCommandBar overview={HELD} />));
+      fireEvent.click(screen.getByTestId('new-session'));
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('new-session-confirm'));
+      });
+      expect(screen.getByTestId('factory-command-notice')).toHaveTextContent(
+        /1 run could not be archived and stays visible/,
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe('FactoryCommandBar factory reset (U6, AE3, R9)', () => {
+  const HELD: ExecutionOverview = {
+    execution: { enabled: true, held: true, running: true },
+    queue: { queued: 0, leased: 0 },
+    resetGeneration: 0,
+  };
+  const ACTIVE: ExecutionOverview = {
+    execution: { enabled: true, held: false, running: true },
+    queue: { queued: 0, leased: 0 },
+    resetGeneration: 0,
+  };
+  const WOULD_DESTROY = {
+    runCount: 4,
+    archivedRunCount: 1,
+    eventCount: 321,
+    paths: ['C:\\factory\\events', 'C:\\factory\\operator-token.json'],
+    workspacePaths: ['C:\\factory\\workspaces\\run-a'],
+    resetGeneration: 1,
+  };
+
+  function jsonResponse(body: unknown, status = 200): Response {
+    return new Response(JSON.stringify(body), {
+      status,
+      headers: { 'content-type': 'application/json' },
+    });
+  }
+
+  /** Server double: empty/mismatched confirm 400s (non-destructive), exact resets. */
+  function resetFetchMock(): ReturnType<typeof vi.fn> {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) !== '/api/execution/factory-reset') {
+        return Promise.resolve(jsonResponse(HELD));
+      }
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return Promise.resolve(
+        body.confirm === 'reset the factory'
+          ? jsonResponse({ reset: true, resetGeneration: 2, held: true, destroyed: WOULD_DESTROY })
+          : jsonResponse(
+              {
+                error: 'confirmation_mismatch',
+                message: 'Confirmation phrase mismatch.',
+                requiredPhrase: 'reset the factory',
+                wouldDestroy: WOULD_DESTROY,
+              },
+              400,
+            ),
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  }
+
+  const resetCalls = (fetchMock: ReturnType<typeof vi.fn>) =>
+    fetchMock.mock.calls.filter(([url]) => String(url) === '/api/execution/factory-reset');
+
+  it('R9: the reset control is its own danger section, never beside New Session', () => {
+    render(withSession(<FactoryCommandBar overview={ACTIVE} />));
+
+    const commandsRow = screen.getByRole('group', { name: 'Factory-wide execution commands' });
+    expect(within(commandsRow).getByTestId('new-session')).toBeInTheDocument();
+    expect(within(commandsRow).queryByTestId('factory-reset-arm')).toBeNull();
+
+    const zone = screen.getByLabelText('Factory reset');
+    expect(within(zone).getByTestId('factory-reset-arm')).toBeInTheDocument();
+    expect(zone).toHaveTextContent(/this is not New Session/);
+  });
+
+  it('AE3: opening pre-flights with an EMPTY confirm and renders literal counts and paths', async () => {
+    const fetchMock = resetFetchMock();
+    try {
+      render(withSession(<FactoryCommandBar overview={HELD} />));
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('factory-reset-arm'));
+      });
+
+      // The pre-flight is the server's non-destructive mismatch path.
+      const calls = resetCalls(fetchMock);
+      expect(calls).toHaveLength(1);
+      expect(JSON.parse(String(calls[0][1]?.body))).toEqual({ confirm: '' });
+
+      const enumeration = screen.getByTestId('factory-reset-enumeration');
+      expect(enumeration).toHaveTextContent('This destroys 4 runs (1 archived) and 321 ledger');
+      expect(within(enumeration).getByText('C:\\factory\\events')).toBeInTheDocument();
+      expect(within(enumeration).getByText('C:\\factory\\operator-token.json')).toBeInTheDocument();
+      expect(within(enumeration).getByText('C:\\factory\\workspaces\\run-a')).toBeInTheDocument();
+      expect(enumeration).toHaveTextContent('(generated workspace)');
+      expect(screen.getByTestId('factory-reset-confirm')).toBeDisabled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('AE3: a mistyped phrase keeps confirm disabled and never sends the destructive call', async () => {
+    const fetchMock = resetFetchMock();
+    try {
+      render(withSession(<FactoryCommandBar overview={HELD} />));
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('factory-reset-arm'));
+      });
+
+      fireEvent.change(screen.getByTestId('factory-reset-phrase'), {
+        target: { value: 'reset the factory please' },
+      });
+      const confirm = screen.getByTestId('factory-reset-confirm');
+      expect(confirm).toBeDisabled();
+      fireEvent.click(confirm);
+
+      // Only the pre-flight ever hit the wire, and it carried an empty confirm.
+      const calls = resetCalls(fetchMock);
+      expect(calls).toHaveLength(1);
+      expect(JSON.parse(String(calls[0][1]?.body))).toEqual({ confirm: '' });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('the exact phrase resets, renders the forced-reload banner, and locks every control', async () => {
+    const onRefresh = vi.fn();
+    const fetchMock = resetFetchMock();
+    try {
+      render(withSession(<FactoryCommandBar overview={HELD} onRefresh={onRefresh} />));
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('factory-reset-arm'));
+      });
+
+      fireEvent.change(screen.getByTestId('factory-reset-phrase'), {
+        target: { value: 'reset the factory' },
+      });
+      const confirm = screen.getByTestId('factory-reset-confirm');
+      expect(confirm).toBeEnabled();
+      await act(async () => {
+        fireEvent.click(confirm);
+      });
+
+      const calls = resetCalls(fetchMock);
+      expect(calls).toHaveLength(2);
+      expect(JSON.parse(String(calls[1][1]?.body))).toEqual({ confirm: 'reset the factory' });
+
+      const banner = screen.getByTestId('factory-reset-reload');
+      expect(banner).toHaveTextContent(/generation 2/);
+      expect(banner).toHaveTextContent(/credentials are gone/);
+      // R15: every mutation control locks until reload.
+      expect(screen.getByTestId('factory-resume')).toBeDisabled();
+      expect(screen.getByTestId('new-session')).toBeDisabled();
+      expect(screen.getByTestId('cancel-all-tasks')).toBeDisabled();
+      expect(screen.getByTestId('factory-reset-arm')).toBeDisabled();
+      expect(onRefresh).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('keyboard contract: opening focuses the safe option; Escape closes and returns focus', async () => {
+    const fetchMock = resetFetchMock();
+    try {
+      render(withSession(<FactoryCommandBar overview={HELD} />));
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('factory-reset-arm'));
+      });
+      expect(screen.getByTestId('factory-reset-keep')).toHaveFocus();
+
+      fireEvent.keyDown(screen.getByTestId('factory-reset-panel'), { key: 'Escape' });
+      expect(screen.queryByTestId('factory-reset-panel')).toBeNull();
+      expect(screen.getByTestId('factory-reset-arm')).toHaveFocus();
+      // Nothing destructive fired — only the pre-flight.
+      expect(resetCalls(fetchMock)).toHaveLength(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('a leased pre-flight explains the refusal and offers NO confirm control', async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) =>
+      Promise.resolve(
+        String(input) === '/api/execution/factory-reset'
+          ? new Response(
+              JSON.stringify({
+                error: 'jobs_leased',
+                message: 'Jobs hold active leases.',
+                leasedJobs: [{ jobId: 'j-1' }, { jobId: 'j-2' }],
+                wouldDestroy: WOULD_DESTROY,
+              }),
+              { status: 409, headers: { 'content-type': 'application/json' } },
+            )
+          : Promise.reject(new Error('unexpected')),
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      render(withSession(<FactoryCommandBar overview={HELD} />));
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('factory-reset-arm'));
+      });
+
+      expect(screen.getByTestId('factory-reset-panel')).toHaveTextContent(
+        /2 jobs hold an active lease/,
+      );
+      expect(screen.getByTestId('factory-reset-enumeration')).toBeInTheDocument();
+      expect(screen.queryByTestId('factory-reset-confirm')).toBeNull();
+      expect(screen.queryByTestId('factory-reset-phrase')).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe('FactoryCommandBar reset-generation guard (U6, R15)', () => {
+  it('a generation change renders the reload banner and disables mutation controls', () => {
+    const ACTIVE: ExecutionOverview = {
+      execution: { enabled: true, held: false, running: true },
+      queue: { queued: 0, leased: 0 },
+      resetGeneration: 0,
+    };
+    const { rerender } = render(withSession(<FactoryCommandBar overview={ACTIVE} />));
+    expect(screen.queryByTestId('factory-reset-reload')).toBeNull();
+    expect(screen.getByTestId('factory-hold')).toBeEnabled();
+
+    rerender(withSession(<FactoryCommandBar overview={{ ...ACTIVE, resetGeneration: 3 }} />));
+
+    expect(screen.getByTestId('factory-reset-reload')).toHaveTextContent(
+      /reset from another surface/,
+    );
+    expect(screen.getByTestId('factory-hold')).toBeDisabled();
+    expect(screen.getByTestId('new-session')).toBeDisabled();
+    expect(screen.getByTestId('cancel-all-tasks')).toBeDisabled();
+    expect(screen.getByTestId('factory-reset-arm')).toBeDisabled();
+  });
+});
+
+describe('RunCommandBar cancel → archive offer (U6, AE5)', () => {
+  function jsonResponse(body: unknown, status = 200): Response {
+    return new Response(JSON.stringify(body), {
+      status,
+      headers: { 'content-type': 'application/json' },
+    });
+  }
+
+  function cancelFetchMock(cancelledRun: Record<string, unknown>): ReturnType<typeof vi.fn> {
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/runs/run-ae5/cancel') {
+        return Promise.resolve(jsonResponse({ runId: 'run-ae5', run: cancelledRun }));
+      }
+      if (url === '/api/runs/run-ae5/archive') {
+        return Promise.resolve(
+          jsonResponse({ runId: 'run-ae5', run: { ...cancelledRun, archived: true } }),
+        );
+      }
+      return Promise.resolve(jsonResponse({}));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  }
+
+  const CANCELLED_RUN = {
+    runId: 'run-ae5',
+    status: 'cancelled',
+    executionState: 'cancelled',
+    // The FRESH post-cancel version — deliberately different from the
+    // component's stale `lastSequence` prop (40) below.
+    lastSequence: 42,
+    archived: false,
+  };
+
+  it('AE5: the offer uses the response run’s fresh version as expectedVersion', async () => {
+    const onChanged = vi.fn();
+    const fetchMock = cancelFetchMock(CANCELLED_RUN);
+    try {
+      render(
+        withSession(
+          <RunCommandBar
+            runId="run-ae5"
+            status="running"
+            executionState="started"
+            lastSequence={40}
+            onChanged={onChanged}
+          />,
+        ),
+      );
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /cancel run run-ae5/i }));
+      });
+
+      // The offer appears in the same moment (R10) — and the parent refresh
+      // was asked to confirm the state from events (never optimistic here).
+      const offer = screen.getByTestId('archive-offer');
+      expect(offer).toHaveTextContent(/Archive it now\?/);
+      expect(onChanged).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('archive-offer-accept'));
+      });
+
+      const archiveCall = fetchMock.mock.calls.find(
+        ([url]) => String(url) === '/api/runs/run-ae5/archive',
+      );
+      expect(archiveCall).toBeDefined();
+      const body = JSON.parse(String((archiveCall?.[1] as RequestInit)?.body)) as Record<
+        string,
+        unknown
+      >;
+      // The fresh post-cancel version, NOT the stale pre-cancel prop (40).
+      expect(body.expectedVersion).toBe(42);
+      expect(screen.queryByTestId('archive-offer')).toBeNull();
+      expect(onChanged).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('dismissing the offer keeps the run visible and sends nothing further', async () => {
+    const fetchMock = cancelFetchMock(CANCELLED_RUN);
+    try {
+      render(
+        withSession(
+          <RunCommandBar
+            runId="run-ae5"
+            status="running"
+            executionState="started"
+            lastSequence={40}
+          />,
+        ),
+      );
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /cancel run run-ae5/i }));
+      });
+      fireEvent.click(screen.getByTestId('archive-offer-dismiss'));
+
+      expect(screen.queryByTestId('archive-offer')).toBeNull();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('offers nothing when the cancel response reports the run already archived', async () => {
+    cancelFetchMock({ ...CANCELLED_RUN, archived: true });
+    try {
+      render(
+        withSession(
+          <RunCommandBar
+            runId="run-ae5"
+            status="running"
+            executionState="started"
+            lastSequence={40}
+          />,
+        ),
+      );
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /cancel run run-ae5/i }));
+      });
+      expect(screen.queryByTestId('archive-offer')).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe('RunBoard history host (U6, AE2)', () => {
+  function jsonResponse(body: unknown): Response {
+    return new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  }
+
+  const ARCHIVED_ROW = {
+    runId: 'run-arch',
+    status: 'cancelled',
+    executionState: 'cancelled',
+    lastSequence: 12,
+    startedAt: 500,
+    archived: true,
+    prompt: 'Old build',
+  };
+
+  /** RunBoard exactly as FactoryFloor hosts it: lifted toggle state. */
+  function Harness({ onLifecycleChanged }: { readonly onLifecycleChanged?: () => void }) {
+    const [open, setOpen] = useState(false);
+    const visible = projectRun(buildMarketplaceRunEvents('run-vis'), 'run-vis');
+    return (
+      <RunBoard
+        runs={[visible]}
+        showArchived={open}
+        onToggleArchived={() => setOpen((o) => !o)}
+        onLifecycleChanged={onLifecycleChanged}
+      />
+    );
+  }
+
+  it('AE2: the toggle reveals archived rows; unarchive posts the row version and refreshes', async () => {
+    const onLifecycleChanged = vi.fn();
+    let unarchived = false;
+    const fetchMock = vi.fn((input: RequestInfo | URL, _init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/runs?includeArchived=1') {
+        return Promise.resolve(jsonResponse({ runs: unarchived ? [] : [ARCHIVED_ROW] }));
+      }
+      if (url === '/api/runs/run-arch/unarchive') {
+        unarchived = true;
+        return Promise.resolve(
+          jsonResponse({ runId: 'run-arch', run: { ...ARCHIVED_ROW, archived: false } }),
+        );
+      }
+      return Promise.resolve(jsonResponse({ runs: [] }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      render(withSession(<Harness onLifecycleChanged={onLifecycleChanged} />));
+      expect(screen.queryByTestId('archived-history')).toBeNull();
+
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('history-toggle'));
+      });
+
+      // Archived rows are visually DISTINCT: explicit text badge, not color.
+      const row = screen.getByTestId('archived-run');
+      expect(row).toHaveAttribute('data-run-id', 'run-arch');
+      expect(within(row).getByText('archived')).toBeInTheDocument();
+      // Replay rides the EXISTING run detail view.
+      expect(within(row).getByRole('link', { name: 'Replay run run-arch' })).toHaveAttribute(
+        'href',
+        '/runs/run-arch',
+      );
+
+      await act(async () => {
+        fireEvent.click(within(row).getByRole('button', { name: 'Unarchive run run-arch' }));
+      });
+
+      const unarchiveCall = fetchMock.mock.calls.find(
+        ([url]) => String(url) === '/api/runs/run-arch/unarchive',
+      );
+      expect(unarchiveCall).toBeDefined();
+      const body = JSON.parse(String((unarchiveCall?.[1] as RequestInit)?.body)) as Record<
+        string,
+        unknown
+      >;
+      // Guarded with the ROW's projected version (stale-command protected).
+      expect(body.expectedVersion).toBe(12);
+      // The parent's live list re-polls (one-round-trip confirmation)…
+      expect(onLifecycleChanged).toHaveBeenCalledTimes(1);
+      // …and the refetched archived section is now the designed empty state.
+      expect(screen.getByTestId('archived-empty')).toHaveTextContent(/No archived runs/);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('shows a designed empty state when nothing is archived yet', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve(jsonResponse({ runs: [] }))),
+    );
+    try {
+      render(withSession(<Harness />));
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('history-toggle'));
+      });
+      expect(screen.getByTestId('archived-empty')).toHaveTextContent(
+        /Archiving keeps a finished run on disk and out of the way/,
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('a failed unarchive explains itself and reloads history instead of lying', async () => {
+    let calls = 0;
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/runs?includeArchived=1') {
+        calls += 1;
+        return Promise.resolve(jsonResponse({ runs: [ARCHIVED_ROW] }));
+      }
+      if (url === '/api/runs/run-arch/unarchive') {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              error: 'stale_subject_version',
+              message: 'The run changed since this command was issued.',
+            }),
+            { status: 409, headers: { 'content-type': 'application/json' } },
+          ),
+        );
+      }
+      return Promise.resolve(jsonResponse({ runs: [] }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      render(withSession(<Harness />));
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('history-toggle'));
+      });
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Unarchive run run-arch' }));
+      });
+
+      // §6 stale-command: explain + reload the projected state (refetch).
+      expect(screen.getByTestId('history-action-error')).toHaveTextContent(
+        /The run changed since this command was issued/,
+      );
+      expect(calls).toBe(2);
+      expect(screen.getByTestId('archived-run')).toBeInTheDocument();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

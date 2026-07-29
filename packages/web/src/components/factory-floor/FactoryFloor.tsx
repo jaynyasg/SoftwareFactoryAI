@@ -10,8 +10,9 @@
  *      the build-contract / preflight handoff with the compact run commands
  *      adjacent. The run strip switches focus; lanes never mix runs.
  *   3. Run controls — new-run intake (RunControl) and the setup checklist.
- *   4. Run history — collapsed/secondary and clearable (RunBoard); clearing
- *      the view never drops the focused blueprint.
+ *   4. Run history — bottom/secondary and archive-aware (RunBoard, U6): a
+ *      "Show archived" toggle reveals archived runs with unarchive + replay;
+ *      the ephemeral "Clear view" is gone — archive is the real lifecycle.
  *
  * Session lifecycle U5 (R14): the run list is LIVE (`useRunList` on the shared
  * poll cadence) — runs started from CLI/MCP appear in the strip without a
@@ -245,7 +246,14 @@ export function FactoryFloor({
   readonly initialFloor?: FloorStatus;
 }) {
   const router = useRouter();
-  const [historyCleared, setHistoryCleared] = useState(false);
+  /**
+   * History view open (U6/AE2). Lifted HERE (not RunBoard-local) so the
+   * archived-elsewhere notice and the no-visible-runs empty state can open
+   * the history directly — the "open it from run history" copy is a real
+   * affordance, not a hint. The pre-U6 ephemeral "Clear view" state is gone:
+   * archive is the one true way a run leaves the floor.
+   */
+  const [showArchivedHistory, setShowArchivedHistory] = useState(false);
   const [focusedRunId, setFocusedRunId] = useState<string | null>(
     latest?.run.runId ?? initialRuns[0]?.runId ?? null,
   );
@@ -289,7 +297,6 @@ export function FactoryFloor({
     }
   }, [runs, focusedRunId]);
 
-  const visibleRuns = historyCleared ? [] : runs;
   const openByRun = useMemo(() => {
     const counts: Record<string, number> = {};
     for (const item of live.floor.interventionQueue.interventions) {
@@ -367,13 +374,22 @@ export function FactoryFloor({
       />
 
       {/* R14: the archived-elsewhere notice is explicit, dismissible, and
-          survives the refocus — never a silently vanished run. */}
+          survives the refocus — never a silently vanished run. Since U6 the
+          "run history" copy is a REAL affordance: the button opens the
+          board's archived history directly. */}
       {archivedElsewhere !== null ? (
         <div className="state-block" role="status" data-testid="archived-elsewhere-notice">
           <span>
             Run <Mono value={archivedElsewhere} max={20} copyable={false} /> was archived from
             another surface — open it from run history.
           </span>
+          <button
+            type="button"
+            className="btn btn--sm"
+            onClick={() => setShowArchivedHistory(true)}
+          >
+            Open run history
+          </button>
           <button
             type="button"
             className="btn btn--sm btn--ghost"
@@ -399,7 +415,22 @@ export function FactoryFloor({
           <StateBlock
             variant="empty"
             title={archivedElsewhere !== null ? 'No visible runs' : 'No active run'}
-            action={<span className="muted">Start a run from the control panel below.</span>}
+            action={
+              archivedElsewhere !== null ? (
+                <span className="row">
+                  <button
+                    type="button"
+                    className="btn btn--sm"
+                    onClick={() => setShowArchivedHistory(true)}
+                  >
+                    Open run history
+                  </button>
+                  <span className="muted">or start a run from the control panel below.</span>
+                </span>
+              ) : (
+                <span className="muted">Start a run from the control panel below.</span>
+              )
+            }
           >
             {archivedElsewhere !== null
               ? 'The focused run was archived — open it from run history, or start a fresh run.'
@@ -413,7 +444,6 @@ export function FactoryFloor({
         <RunControl
           defaultLocalFolder={setup.workspace.root}
           onStarted={(runId) => {
-            setHistoryCleared(false);
             focusRun(runId);
             router.push(`/runs/${runId}`);
           }}
@@ -421,16 +451,18 @@ export function FactoryFloor({
         <SetupChecklist setup={setup} />
       </div>
 
-      {/* 4 — run history: bottom, secondary, clearable; focus is preserved. */}
+      {/* 4 — run history: bottom, secondary, archive-aware (U6); focus is
+          preserved. Unarchive re-polls the shared list so the returning run
+          is confirmed within one round trip, never optimistically. */}
       <div className="factory-screen__history">
         <RunBoard
-          runs={visibleRuns}
+          runs={runs}
           totalCount={runs.length}
-          cleared={historyCleared}
           focusedRunId={focusedRunId}
           onFocus={focusRun}
-          onClear={() => setHistoryCleared(true)}
-          onRestore={() => setHistoryCleared(false)}
+          showArchived={showArchivedHistory}
+          onToggleArchived={() => setShowArchivedHistory((open) => !open)}
+          onLifecycleChanged={runList.refresh}
         />
       </div>
     </div>

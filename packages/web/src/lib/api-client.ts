@@ -24,6 +24,14 @@ export type MutationResult<T> =
       readonly status: number;
       readonly error: string;
       readonly message?: string;
+      /**
+       * The full parsed error body (session lifecycle U6). Some refusals are
+       * structured contracts, not just messages: new-session's 409 carries
+       * `activeRuns`, factory-reset's 400/409 carry `requiredPhrase`,
+       * `wouldDestroy`, and `leasedJobs`. Callers parse what they need
+       * structurally; absent on an unparseable body.
+       */
+      readonly details?: Record<string, unknown>;
     };
 
 function mutationHeaders(session: LocalSession): HeadersInit {
@@ -86,6 +94,7 @@ async function mutate<T>(
     status: res.status,
     error: typeof json.error === 'string' ? json.error : 'request_failed',
     message: typeof json.message === 'string' ? json.message : undefined,
+    details: json,
   };
 }
 
@@ -115,12 +124,26 @@ export function startRun(
   return mutate<StartRunResult>('/api/runs', session, { ...input });
 }
 
+/**
+ * Cancel response (session lifecycle U6/AE5): `run` is the FRESH projected
+ * run — its `lastSequence` is the exact `expectedVersion` for an immediate
+ * archive offer, and `archived` reports whether the optional `archive: true`
+ * half already ran, so the offer never renders for an already-archived run.
+ */
+export interface CancelRunResult {
+  readonly runId: string;
+  readonly run: RunProjection;
+  readonly archived?: boolean;
+  readonly alreadyCancelled?: boolean;
+  readonly alreadyArchived?: boolean;
+}
+
 export function cancelRun(
   session: LocalSession,
   runId: string,
   expectedVersion: number,
   reason?: string,
-): Promise<MutationResult<{ runId: string; run: RunProjection }>> {
+): Promise<MutationResult<CancelRunResult>> {
   return mutate(`/api/runs/${encodeURIComponent(runId)}/cancel`, session, {
     expectedVersion,
     reason,
@@ -293,6 +316,114 @@ export function cancelAllRuns(
 }
 
 /* ----------------------------------------------------------------------------
+ * Session lifecycle (U6): archive/unarchive, New Session, Factory Reset
+ *
+ * Archive is a visibility lifecycle, never a storage one (R7): archived runs
+ * stay on disk, searchable, and replayable. Every wrapper here is guarded
+ * (token + CSRF) and NEVER optimistic — callers confirm from the next poll.
+ * ------------------------------------------------------------------------- */
+
+/** Archive/unarchive response: convergence flags + the fresh projected run. */
+export interface ArchiveRunResult {
+  readonly runId: string;
+  readonly run: RunProjection;
+  /** True when R16 cancelled a non-terminal run inside the same command. */
+  readonly cancelled?: boolean;
+  readonly alreadyArchived?: boolean;
+  readonly alreadyVisible?: boolean;
+}
+
+/** Archive one run (POST /api/runs/:id/archive) — guarded per-run + version. */
+export function archiveRun(
+  session: LocalSession,
+  runId: string,
+  expectedVersion: number,
+  reason?: string,
+): Promise<MutationResult<ArchiveRunResult>> {
+  return mutate(`/api/runs/${encodeURIComponent(runId)}/archive`, session, {
+    expectedVersion,
+    reason,
+  });
+}
+
+/** Restore a run to the default view (POST /api/runs/:id/unarchive) — R13:
+ *  visibility only; a cancelled run stays cancelled. */
+export function unarchiveRun(
+  session: LocalSession,
+  runId: string,
+  expectedVersion: number,
+  reason?: string,
+): Promise<MutationResult<ArchiveRunResult>> {
+  return mutate(`/api/runs/${encodeURIComponent(runId)}/unarchive`, session, {
+    expectedVersion,
+    reason,
+  });
+}
+
+/** New Session 200 body: what actually archived/cancelled; the gate is held. */
+export interface NewSessionResult {
+  readonly archived: readonly string[];
+  readonly cancelled: readonly string[];
+  readonly held: boolean;
+  readonly errors?: readonly { readonly runId: string; readonly message: string }[];
+}
+
+/** One active run from the New Session 409 ask-once refusal. */
+export interface NewSessionActiveRun {
+  readonly runId: string;
+  readonly title?: string;
+  readonly status: string;
+  readonly executionState: string;
+}
+
+/**
+ * Open a new session (POST /api/execution/new-session): hold the gate, cancel
+ * actives, clear the queue, archive every visible run, record the marker —
+ * atomically server-side. Without `confirmActive` the server answers 409
+ * `active_runs_present` when active runs exist (ask-once, AE1); the caller
+ * re-sends with `confirmActive: true` only after explicit user confirmation.
+ * The 409's `activeRuns` list arrives on the failure branch's `details`.
+ */
+export function startNewSession(
+  session: LocalSession,
+  options: { readonly confirmActive?: boolean; readonly reason?: string } = {},
+): Promise<MutationResult<NewSessionResult>> {
+  return mutate('/api/execution/new-session', session, { ...options });
+}
+
+/** What a factory reset would destroy (pre-flight) or destroyed (success). */
+export interface FactoryResetEnumeration {
+  readonly runCount: number;
+  readonly archivedRunCount: number;
+  readonly eventCount: number;
+  readonly paths: readonly string[];
+  readonly workspacePaths: readonly string[];
+  readonly resetGeneration: number;
+}
+
+export interface FactoryResetResult {
+  readonly reset: boolean;
+  readonly resetGeneration: number;
+  readonly held: boolean;
+  readonly destroyed: FactoryResetEnumeration;
+}
+
+/**
+ * Factory reset (POST /api/execution/factory-reset) — destructive; the server
+ * requires the exact typed phrase in `confirm` and answers a mismatch with 400
+ * `confirmation_mismatch` carrying `requiredPhrase` + the `wouldDestroy`
+ * enumeration, NOTHING deleted. The UI's pre-flight deliberately sends an
+ * empty `confirm` and renders that 400's enumeration — no extra read endpoint
+ * exists, and the mismatch path is contractually non-destructive (AE3).
+ */
+export function factoryReset(
+  session: LocalSession,
+  confirm: string,
+): Promise<MutationResult<FactoryResetResult>> {
+  return mutate('/api/execution/factory-reset', session, { confirm });
+}
+
+/* ----------------------------------------------------------------------------
  * Operator intervention queue (X4)
  * ------------------------------------------------------------------------- */
 
@@ -332,8 +463,6 @@ export function resolveInterventionItem(
  * Row-level structural check for one wire run projection (session lifecycle
  * U5). The list poll only needs the identity/status/recency fields the strip
  * and board render; a malformed row drops instead of rendering `undefined`.
- * Archived runs are re-filtered client-side (defense-in-depth — the default
- * route already excludes them, R7).
  */
 function isRunListRow(value: unknown): value is RunProjection {
   if (typeof value !== 'object' || value === null) {
@@ -343,22 +472,28 @@ function isRunListRow(value: unknown): value is RunProjection {
   return (
     typeof row.runId === 'string' &&
     typeof row.status === 'string' &&
-    typeof row.lastSequence === 'number' &&
-    row.archived !== true
+    typeof row.lastSequence === 'number'
   );
 }
 
 /**
- * Poll the VISIBLE run list (read-only, no token) — the live feed behind the
- * run strip and run board (R14). A missing/non-array `runs` key FAILS the
- * tick (reconnecting, last good data kept) rather than degrading to an empty
+ * Fetch the run list (read-only, no token) — the live feed behind the run
+ * strip and run board (R14), and (with `includeArchived`) the one-shot fetch
+ * behind the RunBoard history view (U6/AE2). By DEFAULT archived rows are
+ * re-filtered client-side (defense-in-depth — the default route already
+ * excludes them, R7); the shared poller stays visible-only, and the history
+ * host opts in per fetch. A missing/non-array `runs` key FAILS the tick
+ * (reconnecting, last good data kept) rather than degrading to an empty
  * list: an empty list is a real state ("floor is empty") that drives focus
  * changes, so it must never be synthesized from a malformed body. Sorted
  * newest-first exactly like the SSR `loadRunList`, so "newest visible run"
  * means the same thing on every tick.
  */
-export async function fetchRunList(): Promise<readonly RunProjection[]> {
-  const res = await fetch('/api/runs', {
+export async function fetchRunList(
+  options: { readonly includeArchived?: boolean } = {},
+): Promise<readonly RunProjection[]> {
+  const includeArchived = options.includeArchived === true;
+  const res = await fetch(includeArchived ? '/api/runs?includeArchived=1' : '/api/runs', {
     headers: { accept: 'application/json' },
     cache: 'no-store',
     signal: AbortSignal.timeout(POLL_FETCH_TIMEOUT_MS),
@@ -372,6 +507,7 @@ export async function fetchRunList(): Promise<readonly RunProjection[]> {
   }
   return body.runs
     .filter(isRunListRow)
+    .filter((row) => includeArchived || row.archived !== true)
     .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0) || b.lastSequence - a.lastSequence);
 }
 

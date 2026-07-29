@@ -27,7 +27,9 @@ export interface LiveRunList {
 export function useRunList(initial: readonly RunProjection[]): LiveRunList {
   const polled = usePolledResource<readonly RunProjection[]>({
     initial,
-    fetchNext: fetchRunList,
+    // Explicitly VISIBLE-only: the shared poller never flips to
+    // includeArchived — the history view uses its own one-shot fetch (U6).
+    fetchNext: () => fetchRunList(),
   });
   return { runs: polled.data, reconnecting: polled.reconnecting, refresh: polled.refresh };
 }

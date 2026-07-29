@@ -110,6 +110,22 @@ describe('fetchRunList (U5 live run list)', () => {
     expect(runs.map((run) => run.runId)).toEqual(['run-new', 'run-old']);
   });
 
+  it('includeArchived hits ?includeArchived=1 and KEEPS archived rows (U6 history one-shot)', async () => {
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(
+        jsonResponse({
+          runs: [RUN_ROW, { ...RUN_ROW, runId: 'run-archived', lastSequence: 9, archived: true }],
+        }),
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const runs = await fetchRunList({ includeArchived: true });
+    expect(fetchMock).toHaveBeenCalledWith('/api/runs?includeArchived=1', expect.anything());
+    expect(runs.map((run) => run.runId)).toEqual(['run-old', 'run-archived']);
+    expect(runs[1].archived).toBe(true);
+  });
+
   it('FAILS the tick on a body without a runs array (never a synthetic empty floor)', async () => {
     vi.stubGlobal(
       'fetch',

@@ -8,13 +8,16 @@
  * through the command guard (token + CSRF); a stale/guard failure surfaces as
  * an explanatory banner with the state reloaded (§6 stale-command), and a
  * preflight-blocked start explains WHICH checks failed instead of pretending
- * to run.
+ * to run. A successful cancel offers archive in the same moment (U6/AE5,
+ * R10), keyed to the cancel response's fresh projected version — the visible
+ * state still only flips when the next poll confirms it from events.
  */
 import { useEffect, useRef, useState } from 'react';
 import type { RunExecutionState, RunStatus } from '@software-factory/core';
 import type { DeployView, PreviewView } from '../../lib/run-view';
 import { useSession } from '../session-context';
 import {
+  archiveRun,
   cancelRun,
   pauseExecution,
   rerunGates,
@@ -22,7 +25,7 @@ import {
   retryExecution,
   startExecution,
 } from '../../lib/api-client';
-import type { MutationResult } from '../../lib/api-client';
+import type { CancelRunResult, MutationResult } from '../../lib/api-client';
 
 const PREVIEW_LABEL: Readonly<Record<PreviewView['status'], string>> = {
   idle: 'not started',
@@ -35,6 +38,9 @@ const PREVIEW_LABEL: Readonly<Record<PreviewView['status'], string>> = {
 type Phase =
   | { readonly kind: 'idle' }
   | { readonly kind: 'busy'; readonly action: string }
+  /** AE5: cancel succeeded — offer archive keyed to the RESPONSE's fresh
+   *  projected version (the exact `expectedVersion` for the archive guard). */
+  | { readonly kind: 'archive-offer'; readonly expectedVersion: number }
   | { readonly kind: 'error'; readonly message: string };
 
 export function RunCommandBar({
@@ -46,6 +52,7 @@ export function RunCommandBar({
   preview,
   deploy,
   onChanged,
+  disabled = false,
 }: {
   readonly runId: string;
   readonly status: RunStatus;
@@ -56,10 +63,12 @@ export function RunCommandBar({
   readonly preview?: PreviewView;
   readonly deploy?: DeployView;
   readonly onChanged?: () => void;
+  /** Lock every command (R15: the factory was reset — reload first). */
+  readonly disabled?: boolean;
 }) {
   const session = useSession();
   const [phase, setPhase] = useState<Phase>({ kind: 'idle' });
-  const busy = phase.kind === 'busy';
+  const busy = phase.kind === 'busy' || disabled;
 
   // Cancellation guard: an in-flight command that settles after unmount must
   // not set state or trigger the parent refresh (reset on mount so StrictMode's
@@ -81,9 +90,12 @@ export function RunCommandBar({
     executionState === 'completed' || executionState === 'failed' || executionState === 'blocked';
   const canCancel = status === 'created' || status === 'planned' || status === 'running';
 
-  async function perform(
+  async function perform<T>(
     action: string,
-    request: () => Promise<MutationResult<unknown>>,
+    request: () => Promise<MutationResult<T>>,
+    /** Optional phase for a success; `undefined` returns quietly to idle.
+     *  Success is still event-confirmed: `onChanged` re-polls either way. */
+    nextPhase?: (data: T) => Phase,
   ): Promise<void> {
     setPhase({ kind: 'busy', action });
     try {
@@ -92,7 +104,7 @@ export function RunCommandBar({
         return;
       }
       if (result.ok) {
-        setPhase({ kind: 'idle' });
+        setPhase(nextPhase?.(result.data) ?? { kind: 'idle' });
         onChanged?.();
         return;
       }
@@ -176,7 +188,18 @@ export function RunCommandBar({
             className="btn btn--sm btn--danger"
             disabled={busy}
             onClick={() =>
-              void perform('cancel', () => cancelRun(session, runId, lastSequence, 'operator stop'))
+              void perform(
+                'cancel',
+                () => cancelRun(session, runId, lastSequence, 'operator stop'),
+                // AE5/R10: the cancel confirmed — offer archive in the same
+                // moment, keyed to the RESPONSE run's fresh `lastSequence`
+                // (never the pre-cancel prop, which the cancel event just
+                // outdated). No offer when the run is already archived.
+                (data: CancelRunResult) =>
+                  typeof data.run?.lastSequence === 'number' && data.run.archived !== true
+                    ? { kind: 'archive-offer', expectedVersion: data.run.lastSequence }
+                    : { kind: 'idle' },
+              )
             }
             aria-label={`Cancel run ${runId}`}
           >
@@ -189,6 +212,35 @@ export function RunCommandBar({
           </span>
         ) : null}
       </div>
+
+      {phase.kind === 'archive-offer' ? (
+        <div className="banner banner--info" role="status" data-testid="archive-offer">
+          <span className="banner__body">
+            Run cancelled. Archive it now? It leaves the floor and stays in run history.
+          </span>
+          <button
+            type="button"
+            className="btn btn--sm"
+            disabled={disabled}
+            data-testid="archive-offer-accept"
+            onClick={() =>
+              void perform('archive', () =>
+                archiveRun(session, runId, phase.expectedVersion, 'archived after cancel'),
+              )
+            }
+          >
+            Archive run
+          </button>
+          <button
+            type="button"
+            className="btn btn--sm btn--ghost"
+            data-testid="archive-offer-dismiss"
+            onClick={() => setPhase({ kind: 'idle' })}
+          >
+            Keep it visible
+          </button>
+        </div>
+      ) : null}
 
       {executionReason ? (
         <p className="cmd-bar__reason sev-warn" data-testid="execution-reason">
