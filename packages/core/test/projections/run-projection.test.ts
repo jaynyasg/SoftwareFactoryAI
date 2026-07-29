@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   createInMemoryEventStore,
+  isRealRun,
+  isVisibleRun,
   projectRun,
+  resolveTargetRunId,
   type AppendableEvent,
   type EventStore,
 } from '../../src/index';
@@ -29,6 +32,17 @@ function lifecycle(type: AppendableEvent['type'], payload: unknown): AppendableE
     type,
     actor: { kind: 'system', id: 'sys' },
     subject: { kind: 'run', id: RUN },
+    severity: 'info',
+    payload,
+  } as AppendableEvent;
+}
+
+function forRun(runId: string, type: AppendableEvent['type'], payload: unknown): AppendableEvent {
+  return {
+    runId,
+    type,
+    actor: { kind: 'operator', id: 'op' },
+    subject: { kind: 'run', id: runId },
     severity: 'info',
     payload,
   } as AppendableEvent;
@@ -153,5 +167,155 @@ describe('projectRun', () => {
     expect(projection.runId).toBe('run-2');
     expect(projection.prompt).toBe('b');
     expect(projection.ledger.every((row) => row.runId === 'run-2')).toBe(true);
+  });
+});
+
+describe('archive lifecycle (U1)', () => {
+  it('archive then unarchive toggles visibility without touching status', async () => {
+    const store = createInMemoryEventStore(deterministic());
+    await append(
+      store,
+      lifecycle('run.created', { prompt: 'x' }),
+      lifecycle('run.completed', { summary: 'green' }),
+      lifecycle('run.archived', { reason: 'new session' }),
+    );
+
+    const archived = projectRun(await store.readAll());
+    expect(archived.status).toBe('completed');
+    expect(archived.archived).toBe(true);
+    expect(archived.archivedAt).toBeTypeOf('number');
+    expect(isRealRun(archived)).toBe(true);
+    expect(isVisibleRun(archived)).toBe(false);
+
+    await append(store, lifecycle('run.unarchived', {}));
+    const restored = projectRun(await store.readAll());
+    expect(restored.status).toBe('completed');
+    expect(restored.archived).toBe(false);
+    expect(restored.archivedAt).toBeUndefined();
+    expect(isVisibleRun(restored)).toBe(true);
+  });
+
+  it('re-archiving is idempotent and unarchiving a never-archived run is a no-op', async () => {
+    const store = createInMemoryEventStore(deterministic());
+    await append(
+      store,
+      lifecycle('run.created', { prompt: 'x' }),
+      lifecycle('run.archived', {}),
+      lifecycle('run.archived', { reason: 'again' }),
+    );
+
+    const twice = projectRun(await store.readAll());
+    expect(twice.archived).toBe(true);
+    const firstArchiveAt = twice.archivedAt;
+
+    // The FIRST archive's timestamp stands; the duplicate changes nothing.
+    const events = await store.readAll();
+    expect(projectRun(events).archivedAt).toBe(firstArchiveAt);
+    expect(projectRun(events).diagnostics).toEqual([]);
+
+    const fresh = createInMemoryEventStore(deterministic());
+    await append(fresh, lifecycle('run.created', { prompt: 'y' }), lifecycle('run.unarchived', {}));
+    const noop = projectRun(await fresh.readAll());
+    expect(noop.archived).toBe(false);
+    expect(noop.diagnostics).toEqual([]);
+  });
+
+  it('unarchive restores visibility only — cancelled stays terminal (R13)', async () => {
+    const store = createInMemoryEventStore(deterministic());
+    await append(
+      store,
+      lifecycle('run.created', { prompt: 'x' }),
+      lifecycle('run.started', {}),
+      lifecycle('run.cancelled', { reason: 'new session' }),
+      lifecycle('run.archived', {}),
+      lifecycle('run.unarchived', {}),
+    );
+
+    const projection = projectRun(await store.readAll());
+    expect(projection.archived).toBe(false);
+    expect(projection.status).toBe('cancelled');
+  });
+
+  it('a late run.started after archive does not un-archive (mirror of terminal-cancel immunity)', async () => {
+    const store = createInMemoryEventStore(deterministic());
+    await append(
+      store,
+      lifecycle('run.created', { prompt: 'x' }),
+      lifecycle('run.archived', {}),
+      lifecycle('run.started', {}),
+    );
+
+    const projection = projectRun(await store.readAll());
+    expect(projection.archived).toBe(true);
+  });
+
+  it('archived runs replay identically: double projection is deep-equal with zero diagnostics (AE2)', async () => {
+    const store = createInMemoryEventStore(deterministic());
+    await append(
+      store,
+      lifecycle('run.created', { prompt: 'x' }),
+      lifecycle('run.planned', { ticketCount: 2 }),
+      lifecycle('run.completed', { summary: 'green' }),
+      lifecycle('run.archived', { reason: 'session cleanup' }),
+    );
+
+    const events = await store.readAll();
+    const first = projectRun(events);
+    const second = projectRun(events);
+    expect(second).toEqual(first);
+    expect(first.diagnostics).toEqual([]);
+    expect(first.archived).toBe(true);
+  });
+
+  it('resolveTargetRunId skips archived runs and picks the newest visible run', async () => {
+    const store = createInMemoryEventStore(deterministic());
+    await append(
+      store,
+      forRun('run-old', 'run.created', { prompt: 'old' }),
+      forRun('run-newest', 'run.created', { prompt: 'newest' }),
+      forRun('run-newest', 'run.archived', {}),
+      forRun('run-mid', 'run.created', { prompt: 'mid' }),
+    );
+    // run-newest is newest by creation but archived; run-mid is the newest
+    // VISIBLE run even though run-old's events sort first.
+    const events = await store.readAll();
+    expect(resolveTargetRunId(events)).toBe('run-mid');
+    expect(resolveTargetRunId(events, 'run-newest')).toBe('run-newest');
+  });
+
+  it('falls back to the earliest event run when every run is archived (AE2 replay path)', async () => {
+    const store = createInMemoryEventStore(deterministic());
+    await append(
+      store,
+      forRun('run-solo', 'run.created', { prompt: 'solo' }),
+      forRun('run-solo', 'run.archived', {}),
+    );
+    expect(resolveTargetRunId(await store.readAll())).toBe('run-solo');
+  });
+
+  it('factory-stream markers project cleanly and never look like runs', async () => {
+    const store = createInMemoryEventStore(deterministic());
+    await store.append({
+      runId: 'factory',
+      type: 'session.started',
+      actor: { kind: 'operator', id: 'op' },
+      subject: { kind: 'factory', id: 'session' },
+      severity: 'info',
+      payload: { archivedRunIds: ['run-1'], cancelledRunIds: [] },
+    });
+    await store.append({
+      runId: 'factory',
+      type: 'factory.reset_completed',
+      actor: { kind: 'operator', id: 'op' },
+      subject: { kind: 'factory', id: 'reset' },
+      severity: 'info',
+      payload: { resetGeneration: 1 },
+    });
+
+    const projection = projectRun(await store.readAll(), 'factory');
+    // No run.created on the reserved stream: never a real (or visible) run.
+    expect(isRealRun(projection)).toBe(false);
+    expect(isVisibleRun(projection)).toBe(false);
+    expect(projection.diagnostics).toEqual([]);
   });
 });

@@ -151,6 +151,49 @@ export interface RunFailedPayload {
 export interface RunCancelledPayload {
   readonly reason?: string;
 }
+/**
+ * Archive is a VISIBILITY lifecycle, orthogonal to run status (session
+ * lifecycle U1): `run.archived` removes a run from default views and
+ * `run.unarchived` restores it. Neither touches execution state — archived
+ * runs stay on disk, searchable, and replayable (R7), and unarchive never
+ * revives a cancelled/terminal run (R13). Both append to the run's own ledger
+ * so replay stays total.
+ */
+export interface RunArchivedPayload {
+  readonly reason?: string;
+}
+export interface RunUnarchivedPayload {
+  readonly reason?: string;
+}
+
+// session + factory (reserved 'factory'-stream lifecycle markers, session lifecycle U1)
+/**
+ * Markers recorded on the reserved `factory` stream — the same stream guard
+ * denials land on. The stream never sees `run.created`, so `isRealRun` keeps
+ * it out of run-shaped views by construction.
+ *
+ * `session.started` opens a fresh operator session (R6/R12): WHO started it is
+ * the envelope actor and WHEN is the envelope timestamp; the payload records
+ * which runs the New Session command archived — and which of those were active
+ * and cancelled first (R16) — so the ledger explains the newly empty floor.
+ */
+export interface SessionStartedPayload {
+  /** Runs archived when this session opened (empty for a first session). */
+  readonly archivedRunIds: readonly string[];
+  /** The subset of archived runs that were active and cancelled first (R16). */
+  readonly cancelledRunIds?: readonly string[];
+}
+/**
+ * `factory.reset_completed` is the FIRST event of a post-reset ledger: the
+ * destructive wipe deletes whole event files, and the fresh state opens with
+ * this marker so the discontinuity is explicit and audit-visible (R9/R12).
+ */
+export interface FactoryResetCompletedPayload {
+  /** Monotonic reset generation of the fresh state (stale-tab detection, R15). */
+  readonly resetGeneration: number;
+  /** How many runs the wiped state contained, for the audit trail. */
+  readonly wipedRunCount?: number;
+}
 
 // research
 /**
@@ -781,6 +824,10 @@ export interface EventPayloadMap {
   'run.completed': RunCompletedPayload;
   'run.failed': RunFailedPayload;
   'run.cancelled': RunCancelledPayload;
+  'run.archived': RunArchivedPayload;
+  'run.unarchived': RunUnarchivedPayload;
+  'session.started': SessionStartedPayload;
+  'factory.reset_completed': FactoryResetCompletedPayload;
   'research.requested': ResearchRequestedPayload;
   'research.source_found': ResearchSourceFoundPayload;
   'research.source_read': ResearchSourceReadPayload;
@@ -921,6 +968,10 @@ export const EVENT_TYPES = [
   'run.completed',
   'run.failed',
   'run.cancelled',
+  'run.archived',
+  'run.unarchived',
+  'session.started',
+  'factory.reset_completed',
   'research.requested',
   'research.source_found',
   'research.source_read',
