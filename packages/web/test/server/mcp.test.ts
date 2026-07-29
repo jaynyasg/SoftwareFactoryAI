@@ -11,6 +11,8 @@
  *   - the run-outputs artifact contract and setup diagnostics (E5: three
  *     separate credential surfaces, never a secret value).
  */
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   AdapterError,
@@ -28,6 +30,8 @@ import {
   type RunWorkspaceMaterializer,
 } from '../../src/server/app';
 import { createExecutionDaemon } from '../../src/server/execution/daemon';
+import { FACTORY_RESET_PHRASE } from '../../src/server/factory-reset';
+import type { FactoryResetRuntime } from '../../src/server/factory-reset';
 import { handleMcpRequest } from '../../src/server/mcp';
 import { resolveRuntimeConfig } from '../../src/server/runtime';
 import type { RuntimeConfig } from '../../src/server/runtime';
@@ -47,6 +51,10 @@ const EXPECTED_TOOLS = [
   'software_factory_get_events',
   'software_factory_cancel_run',
   'software_factory_cancel_all_runs',
+  'software_factory_archive_run',
+  'software_factory_unarchive_run',
+  'software_factory_new_session',
+  'software_factory_factory_reset',
   'software_factory_review_decide',
   'software_factory_materialize_workspace',
   'software_factory_get_workspace',
@@ -207,6 +215,8 @@ function makeMcp(
     readonly researcher?: RunResearcher | null;
     readonly materializer?: RunWorkspaceMaterializer | null;
     readonly runtime?: RuntimeConfig;
+    /** Wire the Factory Reset runtime (U4/U7); omitted = reset disabled. */
+    readonly factoryReset?: FactoryResetRuntime;
   } = {},
 ): McpTestContext {
   const store = createInMemoryEventStore();
@@ -229,6 +239,7 @@ function makeMcp(
     execution: daemon,
     researcher: options.researcher ?? null,
     materializer: options.materializer ?? null,
+    factoryReset: options.factoryReset ?? null,
     // Deterministic ready catalog: these tests exercise the MCP contract, not
     // real CLI setup probing (covered by execution-worker tests).
     adapterCatalog: createAdapterCatalog([readyFakeAdapter()]),
@@ -569,6 +580,195 @@ describe('MCP cancel-all tool', () => {
     expect((await ctx.store.readRun(runId)).map((event) => event.type)).not.toContain(
       'run.cancelled',
     );
+  });
+});
+
+/* ----------------------------------------------------------------------------
+ * Session lifecycle tools (U7 connector parity): archive/unarchive,
+ * new-session, and factory-reset round-trip through the SAME guarded routes as
+ * the web floor and the CLI — the bridge reimplements nothing.
+ * ------------------------------------------------------------------------- */
+
+describe('MCP archive/unarchive tools', () => {
+  it('archives a non-terminal run (cancel-first), filters lists, and unarchives', async () => {
+    const ctx = makeMcp();
+    const runId = await createRunViaTool(ctx);
+
+    // A planned run is non-terminal: archive cancels first (R16) and reports
+    // both halves of the command in one route-shaped response.
+    const archived = await callTool(ctx, 'software_factory_archive_run', { runId });
+    expect(archived.isError).toBe(false);
+    expect(archived.body.cancelled).toBe(true);
+    expect(record(archived.body.run).archived).toBe(true);
+    expect((await ctx.store.readRun(runId)).map((event) => event.type)).toContain('run.archived');
+
+    // Default list filters archived runs; includeArchived is the history view.
+    const defaults = await callTool(ctx, 'software_factory_list_runs', {});
+    expect(defaults.isError).toBe(false);
+    expect((defaults.body.runs as { runId: string }[]).map((run) => run.runId)).not.toContain(
+      runId,
+    );
+    const history = await callTool(ctx, 'software_factory_list_runs', { includeArchived: true });
+    expect((history.body.runs as { runId: string }[]).map((run) => run.runId)).toContain(runId);
+
+    // Re-archiving converges instead of stacking events.
+    const again = await callTool(ctx, 'software_factory_archive_run', { runId });
+    expect(again.isError).toBe(false);
+    expect(again.body.alreadyArchived).toBe(true);
+
+    // Unarchive restores VISIBILITY only — cancelled stays terminal (R13).
+    const unarchived = await callTool(ctx, 'software_factory_unarchive_run', { runId });
+    expect(unarchived.isError).toBe(false);
+    expect(record(unarchived.body.run).archived).toBe(false);
+    expect(record(unarchived.body.run).status).toBe('cancelled');
+    const visible = await callTool(ctx, 'software_factory_list_runs', {});
+    expect((visible.body.runs as { runId: string }[]).map((run) => run.runId)).toContain(runId);
+  });
+
+  it('rejects a stale archive command and appends no run.archived', async () => {
+    const ctx = makeMcp();
+    const runId = await createRunViaTool(ctx);
+
+    const res = await callTool(ctx, 'software_factory_archive_run', { runId, expectedVersion: 1 });
+    expect(res.isError).toBe(true);
+    expect(res.body.error).toBe('stale_subject_version');
+
+    const seen = (await ctx.store.readRun(runId)).map((event) => event.type);
+    expect(seen).toContain('security.command_rejected');
+    expect(seen).not.toContain('run.archived');
+  });
+
+  it('cancel_run with archive: true performs cancel-then-archive in one call', async () => {
+    const ctx = makeMcp();
+    const runId = await createRunViaTool(ctx);
+    const run = record((await callTool(ctx, 'software_factory_get_run', { runId })).body.run);
+
+    const res = await callTool(ctx, 'software_factory_cancel_run', {
+      runId,
+      expectedVersion: run.lastSequence as number,
+      archive: true,
+    });
+    expect(res.isError).toBe(false);
+    expect(res.body.archived).toBe(true);
+    const seen = (await ctx.store.readRun(runId)).map((event) => event.type);
+    expect(seen).toContain('run.cancelled');
+    expect(seen).toContain('run.archived');
+  });
+});
+
+describe('MCP new-session tool', () => {
+  it('asks once about active runs, then archives everything and holds the gate', async () => {
+    const ctx = makeMcp();
+    const active = await createRunViaTool(ctx);
+    const idle = await createRunViaTool(ctx);
+    const started = await callTool(ctx, 'software_factory_start_run', { runId: active });
+    expect(started.isError).toBe(false);
+
+    // Ask-once (AE1): actives without confirmActive change NOTHING.
+    const refused = await callTool(ctx, 'software_factory_new_session', {});
+    expect(refused.isError).toBe(true);
+    expect(refused.body.error).toBe('active_runs_present');
+    const activeRuns = refused.body.activeRuns as { runId: string }[];
+    expect(activeRuns.map((run) => run.runId)).toEqual([active]);
+    expect((await ctx.store.readRun(active)).map((event) => event.type)).not.toContain(
+      'run.cancelled',
+    );
+
+    // Confirmed: cancel actives, archive all, hold the gate, record the marker.
+    const res = await callTool(ctx, 'software_factory_new_session', {
+      confirmActive: true,
+      reason: 'fresh floor',
+    });
+    expect(res.isError).toBe(false);
+    expect(res.body.archived).toEqual(expect.arrayContaining([active, idle]));
+    expect(res.body.cancelled).toEqual([active]);
+    expect(res.body.held).toBe(true);
+    expect((await ctx.store.readRun('factory')).map((event) => event.type)).toContain(
+      'session.started',
+    );
+
+    const list = await callTool(ctx, 'software_factory_list_runs', {});
+    expect(list.body.runs).toEqual([]);
+  });
+
+  it('rejects an unauthorized new-session before any run is touched', async () => {
+    const ctx = makeMcp();
+    const runId = await createRunViaTool(ctx);
+    const denied = await callTool(ctx, 'software_factory_new_session', {}, 'wrong-token');
+    expect(denied.isError).toBe(true);
+    const seen = (await ctx.store.readRun(runId)).map((event) => event.type);
+    expect(seen).not.toContain('run.archived');
+  });
+});
+
+describe('MCP factory-reset tool', () => {
+  /**
+   * A reset runtime over a nonexistent (but absolute) factory dir: the wipe
+   * finds nothing on disk to delete, and rebuild hands back a fresh in-memory
+   * store we capture so the test can read the fresh markers.
+   */
+  function resetRuntime(): {
+    runtime: FactoryResetRuntime;
+    freshStore: () => EventStore | undefined;
+  } {
+    let fresh: EventStore | undefined;
+    return {
+      runtime: {
+        factoryDir: join(tmpdir(), `sf-mcp-reset-${process.pid}-${Date.now()}`),
+        rebuild: () => {
+          fresh = createInMemoryEventStore();
+          return Promise.resolve(fresh);
+        },
+      },
+      freshStore: () => fresh,
+    };
+  }
+
+  it('fails closed when the reset runtime is not wired on the instance', async () => {
+    const ctx = makeMcp();
+    const res = await callTool(ctx, 'software_factory_factory_reset', {
+      confirm: FACTORY_RESET_PHRASE,
+    });
+    expect(res.isError).toBe(true);
+    expect(res.body.error).toBe('factory_reset_disabled');
+  });
+
+  it('rejects a wrong phrase with the required phrase and destroys nothing', async () => {
+    const { runtime, freshStore } = resetRuntime();
+    const ctx = makeMcp({ factoryReset: runtime });
+    const runId = await createRunViaTool(ctx);
+
+    const res = await callTool(ctx, 'software_factory_factory_reset', { confirm: 'reset it' });
+    expect(res.isError).toBe(true);
+    expect(res.body.error).toBe('confirmation_mismatch');
+    expect(res.body.requiredPhrase).toBe(FACTORY_RESET_PHRASE);
+    expect(record(res.body.wouldDestroy).runCount).toBe(1);
+    // Nothing rebuilt, nothing wiped: the old store still lists the run.
+    expect(freshStore()).toBeUndefined();
+    expect(await ctx.store.listRuns()).toContain(runId);
+  });
+
+  it('executes the reset with the exact phrase; fresh state carries the markers', async () => {
+    const { runtime, freshStore } = resetRuntime();
+    const ctx = makeMcp({ factoryReset: runtime });
+    await createRunViaTool(ctx);
+
+    const res = await callTool(ctx, 'software_factory_factory_reset', {
+      confirm: FACTORY_RESET_PHRASE,
+    });
+    expect(res.isError).toBe(false);
+    expect(res.body.reset).toBe(true);
+    expect(res.body.resetGeneration).toBe(1);
+    expect(res.body.held).toBe(true);
+    expect(record(res.body.destroyed).runCount).toBe(1);
+
+    const fresh = freshStore();
+    expect(fresh).toBeDefined();
+    const markers = fresh === undefined ? [] : await fresh.readRun('factory');
+    expect(markers.map((event) => event.type)).toEqual([
+      'factory.reset_completed',
+      'session.started',
+    ]);
   });
 });
 

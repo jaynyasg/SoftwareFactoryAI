@@ -55,19 +55,15 @@ const CONNECTOR_SURFACE: Readonly<Record<string, ConnectorMapping>> = {
     mcp: 'software_factory_cancel_all_runs',
   },
   'POST /api/runs/:id/cancel': { action: 'cancelRun', mcp: 'software_factory_cancel_run' },
-  // Session lifecycle (U2). INTERIM exclusions: the archive/unarchive routes
-  // ship server-first; connector parity (MCP tools + Action operations + CLI
-  // wrappers) lands in U7 of the same plan, which replaces these entries with
-  // real mappings. These are staged markers, not decisions to stay web-only.
+  // Session lifecycle (U2 routes, U7 parity): archive is reversible
+  // visibility, so it rides on every connector like cancel does.
   'POST /api/runs/:id/archive': {
-    excluded:
-      'Session-lifecycle U2 ships the route server-first; U7 (connector parity unit of the same ' +
-      'plan) adds the MCP tool + Action operation and replaces this staged exclusion.',
+    action: 'archiveRun',
+    mcp: 'software_factory_archive_run',
   },
   'POST /api/runs/:id/unarchive': {
-    excluded:
-      'Session-lifecycle U2 ships the route server-first; U7 (connector parity unit of the same ' +
-      'plan) adds the MCP tool + Action operation and replaces this staged exclusion.',
+    action: 'unarchiveRun',
+    mcp: 'software_factory_unarchive_run',
   },
   'GET /api/runs/:id': { action: 'getRun', mcp: 'software_factory_get_run' },
   'GET /api/runs/:id/events': { action: 'getRunEvents', mcp: 'software_factory_get_events' },
@@ -116,25 +112,29 @@ const CONNECTOR_SURFACE: Readonly<Record<string, ConnectorMapping>> = {
     mcp: 'software_factory_resume_execution',
   },
   'POST /api/execution/hold': { action: 'holdExecution', mcp: 'software_factory_hold_execution' },
-  // Session lifecycle (U3). INTERIM exclusion, same staging as archive/
-  // unarchive above: the atomic New Session command ships server-first; U7
-  // (connector parity unit of the same plan) adds the MCP tool + Action
-  // operation + CLI wrapper and replaces this entry with a real mapping.
+  // Session lifecycle (U3 route, U7 parity): the atomic New Session command
+  // is reversible (archive, not wipe), so it rides on every connector.
   'POST /api/execution/new-session': {
-    excluded:
-      'Session-lifecycle U3 ships the route server-first; U7 (connector parity unit of the same ' +
-      'plan) adds the MCP tool + Action operation and replaces this staged exclusion.',
+    action: 'startNewSession',
+    mcp: 'software_factory_new_session',
   },
-  // Session lifecycle (U4). INTERIM exclusion, same staging as new-session
-  // above: the destructive Factory Reset command ships server-first with its
-  // typed-confirmation phrase; U7 (connector parity unit of the same plan)
-  // decides the connector treatment (CLI prompts for the phrase; the ChatGPT
-  // Action likely keeps a written destructive-scope exclusion) and replaces
-  // this staged entry.
+  // Session lifecycle (U4 route, U7 parity decision): DELIBERATE asymmetric
+  // coverage, recorded here because this mapping shape is both-or-excluded.
+  // The destructive Factory Reset IS exposed on MCP as
+  // `software_factory_factory_reset` (pinned by mcp.test.ts) and on the CLI
+  // as `software-factory factory-reset` — both forward the SERVER-enforced
+  // typed confirmation phrase, mirroring how the destructive cancel-all is
+  // MCP-reachable. The ChatGPT Action deliberately OMITS the operation
+  // (destructive-scope rule: a hosted web-model surface gets no
+  // wipe-everything button; see the NOTE comment in
+  // integrations/chatgpt/actions.openai.yaml). Operators reset from the UI,
+  // CLI, or MCP instead.
   'POST /api/execution/factory-reset': {
     excluded:
-      'Session-lifecycle U4 ships the destructive reset server-first; U7 (connector parity unit ' +
-      'of the same plan) adds the CLI/MCP treatment and replaces this staged exclusion.',
+      'Deliberate asymmetric coverage: MCP exposes software_factory_factory_reset (typed ' +
+      'confirmation phrase enforced server-side, like the destructive cancel-all precedent) and ' +
+      'the CLI exposes factory-reset, but the ChatGPT Action omits the destructive wipe by ' +
+      'destructive-scope policy — this entry records that reviewed decision, not drift.',
   },
   // Operator intervention queue.
   'GET /api/interventions': {

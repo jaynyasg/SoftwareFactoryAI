@@ -680,57 +680,72 @@ export function createApp(deps: AppDeps): App {
   }
 
   function listen(port = 0, host = '127.0.0.1'): Promise<RunningServer> {
-    const server = createServer((req, res) => {
-      const chunks: Buffer[] = [];
-      req.on('data', (chunk: Buffer) => chunks.push(chunk));
-      req.on('end', () => {
-        void (async () => {
-          const apiRequest = toApiRequest(req.method ?? 'GET', req.url ?? '/', req.headers, chunks);
-          let response: ApiResponse;
-          if (apiRequest === null) {
-            response = json(400, {
-              error: 'invalid_json',
-              message: 'Request body is not valid JSON.',
-            });
-          } else {
-            response = await handle(apiRequest);
-          }
-          const payload = response.body === undefined ? '' : JSON.stringify(response.body);
-          res.writeHead(response.status, {
-            'content-type': 'application/json; charset=utf-8',
-            ...response.headers,
-          });
-          res.end(payload);
-        })().catch((error: unknown) => {
-          const message = error instanceof Error ? error.message : String(error);
-          res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
-          res.end(JSON.stringify({ error: 'internal_error', message }));
-        });
-      });
-      req.on('error', () => {
-        res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ error: 'request_error' }));
-      });
-    });
-
-    return new Promise<RunningServer>((resolve, reject) => {
-      server.on('error', reject);
-      server.listen(port, host, () => {
-        const address = server.address() as AddressInfo | null;
-        const actualPort = address?.port ?? port;
-        resolve({
-          url: `http://${host}:${actualPort}`,
-          port: actualPort,
-          close: () =>
-            new Promise<void>((res, rej) => {
-              server.close((err) => (err ? rej(err) : res()));
-            }),
-        });
-      });
-    });
+    return serveApp(handle, port, host);
   }
 
   return { handle, listen };
+}
+
+/**
+ * Wrap a request handler in a Node `http` server bound to loopback by default.
+ * Extracted from `createApp` so an entry point can serve a SWAPPABLE handler —
+ * the standalone server dispatches through a mutable app reference that the
+ * Factory Reset dispose/rebuild sequence (session lifecycle U4/U7) replaces,
+ * while `createApp(...).listen` keeps its fixed-handler behavior.
+ */
+export function serveApp(
+  handle: (request: ApiRequest) => Promise<ApiResponse>,
+  port = 0,
+  host = '127.0.0.1',
+): Promise<RunningServer> {
+  const server = createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+    req.on('end', () => {
+      void (async () => {
+        const apiRequest = toApiRequest(req.method ?? 'GET', req.url ?? '/', req.headers, chunks);
+        let response: ApiResponse;
+        if (apiRequest === null) {
+          response = json(400, {
+            error: 'invalid_json',
+            message: 'Request body is not valid JSON.',
+          });
+        } else {
+          response = await handle(apiRequest);
+        }
+        const payload = response.body === undefined ? '' : JSON.stringify(response.body);
+        res.writeHead(response.status, {
+          'content-type': 'application/json; charset=utf-8',
+          ...response.headers,
+        });
+        res.end(payload);
+      })().catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ error: 'internal_error', message }));
+      });
+    });
+    req.on('error', () => {
+      res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: 'request_error' }));
+    });
+  });
+
+  return new Promise<RunningServer>((resolve, reject) => {
+    server.on('error', reject);
+    server.listen(port, host, () => {
+      const address = server.address() as AddressInfo | null;
+      const actualPort = address?.port ?? port;
+      resolve({
+        url: `http://${host}:${actualPort}`,
+        port: actualPort,
+        close: () =>
+          new Promise<void>((res, rej) => {
+            server.close((err) => (err ? rej(err) : res()));
+          }),
+      });
+    });
+  });
 }
 
 /** Convert a raw Node request into the normalized transport shape. */

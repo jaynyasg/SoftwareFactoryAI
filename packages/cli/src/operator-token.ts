@@ -23,6 +23,13 @@ import { createFileOperatorTokenStore } from '@software-factory/core';
 export interface OperatorTokenEnv {
   readonly SF_OPERATOR_TOKEN?: string;
   readonly SF_FACTORY_DIR?: string;
+  /**
+   * Index signature so any `NodeJS.ProcessEnv` flavor is assignable across
+   * @types/node versions (some type `ProcessEnv` as a bare string dictionary,
+   * which TypeScript's weak-type check would otherwise reject when this
+   * package is type-checked from a sibling workspace package).
+   */
+  readonly [key: string]: string | undefined;
 }
 
 /** Resolve the shared `.factory` directory (mirrors the web server's logic). */

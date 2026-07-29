@@ -38,6 +38,12 @@ export class ApiError extends Error {
     readonly status: number,
     readonly code: string,
     message: string,
+    /**
+     * The parsed error-response body, when the backend sent one. Structured
+     * refusals (e.g. new-session's `active_runs_present` with its
+     * `activeRuns` list) carry actionable detail beyond the message.
+     */
+    readonly details?: Record<string, unknown>,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -108,6 +114,78 @@ export interface GetEventsResult {
 export interface CancelRunInput {
   readonly expectedVersion: number;
   readonly reason?: string;
+  /**
+   * Cancel-and-archive as ONE command (R10): the route appends `run.archived`
+   * right after the cancellation, so the run leaves the default floor in the
+   * same guarded command.
+   */
+  readonly archive?: boolean;
+}
+
+/** Outcome of a cancel; the archive fields appear only with `archive: true`. */
+export interface CancelRunResult {
+  readonly runId: string;
+  readonly run: RunProjection;
+  readonly alreadyCancelled?: boolean;
+  readonly archived?: boolean;
+  readonly alreadyArchived?: boolean;
+}
+
+/* Session lifecycle (U2/U3/U4 routes; U7 CLI parity). Archive is reversible
+ * visibility — archived runs stay on disk, searchable, and replayable. */
+
+export interface ArchiveRunInput {
+  readonly expectedVersion: number;
+  readonly reason?: string;
+}
+
+export interface ArchiveRunResult {
+  readonly runId: string;
+  /** Re-archiving converges: the run was already archived, nothing appended. */
+  readonly alreadyArchived?: boolean;
+  /** Present when a non-terminal run was cancelled first in the command (R16). */
+  readonly cancelled?: boolean;
+  readonly run?: RunProjection;
+}
+
+export interface UnarchiveRunResult {
+  readonly runId: string;
+  /** Unarchiving a visible run converges with no event. */
+  readonly alreadyVisible?: boolean;
+  readonly run?: RunProjection;
+}
+
+export interface NewSessionInput {
+  /**
+   * Confirm cancelling and archiving ACTIVE runs. Without it, the server
+   * refuses with `active_runs_present` (409) listing them — nothing changes.
+   */
+  readonly confirmActive?: boolean;
+  readonly reason?: string;
+}
+
+/** Outcome of the atomic New Session command (hold, cancel, archive, marker). */
+export interface NewSessionResult {
+  readonly archived: readonly string[];
+  readonly cancelled: readonly string[];
+  /** True: the drain gate is re-engaged — a fresh session never auto-runs. */
+  readonly held?: boolean;
+  readonly errors?: readonly { readonly runId: string; readonly message: string }[];
+}
+
+export interface FactoryResetInput {
+  /** Must be EXACTLY the server's typed confirmation phrase. */
+  readonly confirm: string;
+}
+
+/** Outcome of the destructive factory reset. */
+export interface FactoryResetResult {
+  readonly reset?: boolean;
+  /** The fresh state's monotonic reset generation (stale-tab detection). */
+  readonly resetGeneration?: number;
+  readonly held?: boolean;
+  /** Enumeration of what WAS destroyed (runs, events, allowlisted paths). */
+  readonly destroyed?: Record<string, unknown>;
 }
 
 export interface ReviewInput {
@@ -315,7 +393,11 @@ export interface ApiClient {
   createRun(input: CreateRunInput): Promise<CreateRunResult>;
   getRun(runId: string): Promise<RunProjection>;
   getEvents(runId: string, options?: GetEventsOptions): Promise<GetEventsResult>;
-  cancelRun(runId: string, input: CancelRunInput): Promise<{ runId: string; run: RunProjection }>;
+  cancelRun(runId: string, input: CancelRunInput): Promise<CancelRunResult>;
+  /** Archive a run (reversible; a non-terminal run is cancelled first, R16). */
+  archiveRun(runId: string, input: ArchiveRunInput): Promise<ArchiveRunResult>;
+  /** Unarchive a run: visibility only — execution state is never revived. */
+  unarchiveRun(runId: string, input: ArchiveRunInput): Promise<UnarchiveRunResult>;
   review(runId: string, input: ReviewInput): Promise<ReviewResult>;
   /** Materialize (or retry materializing) the run workspace (U4). */
   materializeWorkspace(
@@ -345,6 +427,19 @@ export interface ApiClient {
   holdExecution(): Promise<ExecutionGateResult>;
   /** Cancel EVERY cancellable run in one guarded command. */
   cancelAllRuns(input?: CancelAllRunsInput): Promise<CancelAllRunsResult>;
+  /**
+   * The atomic New Session command: hold the gate, cancel actives, clear
+   * queued work, archive every visible run, record `session.started`. Refused
+   * with `active_runs_present` (409) when actives exist and `confirmActive`
+   * is not set.
+   */
+  startNewSession(input?: NewSessionInput): Promise<NewSessionResult>;
+  /**
+   * The DESTRUCTIVE factory reset. The server enforces the exact typed
+   * confirmation phrase and refuses while queue-job leases are active; this
+   * client forwards the phrase verbatim.
+   */
+  factoryReset(input: FactoryResetInput): Promise<FactoryResetResult>;
   listInterventions(query?: ListInterventionsQuery): Promise<ListInterventionsResult>;
   resolveIntervention(
     interventionId: string,
@@ -457,22 +552,41 @@ function toRunIdList(value: unknown): readonly string[] {
     : [];
 }
 
+/** Per-run failure list shared by the batch commands (cancel-all, new-session). */
+function toRunErrorList(
+  value: unknown,
+): readonly { readonly runId: string; readonly message: string }[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const errors = value.flatMap((entry) => {
+    const record = asRecord(entry);
+    const runId = optStr(record.runId);
+    const message = optStr(record.message);
+    return runId !== undefined && message !== undefined ? [{ runId, message }] : [];
+  });
+  return errors.length > 0 ? errors : undefined;
+}
+
 function toCancelAllRunsResult(body: Record<string, unknown>): CancelAllRunsResult {
-  const errors = Array.isArray(body.errors)
-    ? body.errors.flatMap((entry) => {
-        const record = asRecord(entry);
-        const runId = optStr(record.runId);
-        const message = optStr(record.message);
-        return runId !== undefined && message !== undefined ? [{ runId, message }] : [];
-      })
-    : undefined;
+  const errors = toRunErrorList(body.errors);
   const cancelled = toRunIdList(body.cancelled);
   return {
     cancelled,
     alreadyCancelled: toRunIdList(body.alreadyCancelled),
     skippedTerminal: toRunIdList(body.skippedTerminal),
     cancelledCount: optNum(body.cancelledCount) ?? cancelled.length,
-    ...(errors !== undefined && errors.length > 0 ? { errors } : {}),
+    ...(errors !== undefined ? { errors } : {}),
+  };
+}
+
+function toNewSessionResult(body: Record<string, unknown>): NewSessionResult {
+  const errors = toRunErrorList(body.errors);
+  return {
+    archived: toRunIdList(body.archived),
+    cancelled: toRunIdList(body.cancelled),
+    held: optBool(body.held),
+    ...(errors !== undefined ? { errors } : {}),
   };
 }
 
@@ -573,6 +687,7 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
         res.status,
         typeof body.error === 'string' ? body.error : 'request_failed',
         typeof body.message === 'string' ? body.message : `GET ${path} failed (${res.status}).`,
+        body,
       );
     }
     return body;
@@ -594,6 +709,7 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
         res.status,
         typeof body.error === 'string' ? body.error : 'request_failed',
         typeof body.message === 'string' ? body.message : `POST ${path} failed (${res.status}).`,
+        body,
       );
     }
     return body;
@@ -642,8 +758,40 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
       const body = await mutate(`/api/runs/${encodeURIComponent(runId)}/cancel`, {
         expectedVersion: input.expectedVersion,
         reason: input.reason,
+        // Cancel-and-archive as ONE command (R10); omitted unless requested so
+        // older servers see the unchanged cancel body.
+        ...(input.archive === true ? { archive: true } : {}),
       });
-      return { runId: String(body.runId ?? runId), run: body.run as RunProjection };
+      return {
+        runId: String(body.runId ?? runId),
+        run: body.run as RunProjection,
+        alreadyCancelled: optBool(body.alreadyCancelled),
+        archived: optBool(body.archived),
+        alreadyArchived: optBool(body.alreadyArchived),
+      };
+    },
+    async archiveRun(runId, input) {
+      const body = await mutate(`/api/runs/${encodeURIComponent(runId)}/archive`, {
+        expectedVersion: input.expectedVersion,
+        reason: input.reason,
+      });
+      return {
+        runId: String(body.runId ?? runId),
+        alreadyArchived: optBool(body.alreadyArchived),
+        cancelled: optBool(body.cancelled),
+        run: body.run !== undefined ? (body.run as RunProjection) : undefined,
+      };
+    },
+    async unarchiveRun(runId, input) {
+      const body = await mutate(`/api/runs/${encodeURIComponent(runId)}/unarchive`, {
+        expectedVersion: input.expectedVersion,
+        reason: input.reason,
+      });
+      return {
+        runId: String(body.runId ?? runId),
+        alreadyVisible: optBool(body.alreadyVisible),
+        run: body.run !== undefined ? (body.run as RunProjection) : undefined,
+      };
     },
     async review(runId, input) {
       const body = await mutate(`/api/runs/${encodeURIComponent(runId)}/review`, {
@@ -734,6 +882,23 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
     },
     async cancelAllRuns(input = {}) {
       return toCancelAllRunsResult(await mutate('/api/runs/cancel-all', { reason: input.reason }));
+    },
+    async startNewSession(input = {}) {
+      return toNewSessionResult(
+        await mutate('/api/execution/new-session', {
+          confirmActive: input.confirmActive === true,
+          reason: input.reason,
+        }),
+      );
+    },
+    async factoryReset(input) {
+      const body = await mutate('/api/execution/factory-reset', { confirm: input.confirm });
+      return {
+        reset: optBool(body.reset),
+        resetGeneration: optNum(body.resetGeneration),
+        held: optBool(body.held),
+        destroyed: body.destroyed !== undefined ? asRecord(body.destroyed) : undefined,
+      };
     },
     async listInterventions(query = {}) {
       const params = new URLSearchParams();

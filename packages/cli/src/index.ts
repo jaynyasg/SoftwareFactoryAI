@@ -14,6 +14,9 @@
  *   software-factory artifacts <runId> [--json]
  *   software-factory factory-status | factory-resume | factory-hold [--json]
  *   software-factory cancel-all [--reason <text>] [--json]
+ *   software-factory cancel <runId> [--archive] | archive <runId> | unarchive <runId>
+ *   software-factory new-session [--confirm-active] [--json]
+ *   software-factory factory-reset [--confirm "<phrase>"] [--json]
  *
  * Global: --base-url <url> (or SF_BASE_URL, default http://127.0.0.1:3000),
  *         --operator-token <t> (or SF_OPERATOR_TOKEN; else the shared
@@ -26,6 +29,7 @@
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { createInterface } from 'node:readline/promises';
 import { pathToFileURL } from 'node:url';
 import { RUN_MODES, isRunMode } from '@software-factory/core';
 import type { CallerFamily, ReviewMode, RunMode } from '@software-factory/core';
@@ -41,17 +45,22 @@ import { artifactsCommand } from './commands/artifacts';
 import { startCommand } from './commands/start';
 import type { SpawnedBackend } from './commands/start';
 import {
+  archiveRunCommand,
   cancelAllRunsCommand,
+  cancelRunCommand,
   factoryHoldCommand,
+  factoryResetCommand,
   factoryResumeCommand,
   factoryStatusCommand,
   interventionsCommand,
+  newSessionCommand,
   pauseRunCommand,
   rerunGatesCommand,
   resolveInterventionCommand,
   resumeRunCommand,
   retryRunCommand,
   startRunCommand,
+  unarchiveRunCommand,
 } from './commands/execution';
 import { isReviewDecision, isRiskTier, reviewCommand } from './commands/review';
 import { materializeWorkspaceCommand, workspaceStatusCommand } from './commands/workspace';
@@ -78,6 +87,11 @@ const BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   'no-spawn',
   'help',
   'open',
+  // Session lifecycle: `cancel --archive` and `new-session --confirm-active`
+  // must never swallow a following positional. `--confirm` is NOT here — it
+  // takes the typed factory-reset phrase as its value.
+  'archive',
+  'confirm-active',
 ]);
 
 /** Minimal argv parser: `--key value`, `--key=value`, `--flag`, `--no-flag`. */
@@ -235,6 +249,23 @@ a deployment back into drain-on-start):
   software-factory factory-hold    [--json]          re-engage the gate; stop claiming new work
   software-factory cancel-all      [--reason <text>] [--json]  cancel every cancellable run
 
+Session lifecycle (archive is REVERSIBLE — archived runs stay on disk and
+replayable; factory-reset is DESTRUCTIVE and typed-confirmation guarded):
+  software-factory cancel     <runId> [--archive] [--reason <r>] [--expected-version <n>] [--json]
+                                     cancel one run; --archive also archives it in the SAME command
+  software-factory archive    <runId> [--reason <r>] [--expected-version <n>] [--json]
+                                     run leaves default views (an active run is cancelled first)
+  software-factory unarchive  <runId> [--reason <r>] [--expected-version <n>] [--json]
+                                     visibility back; never revives execution
+  software-factory new-session [--confirm-active] [--reason <r>] [--json]
+                                     hold gate + cancel actives + archive all + fresh floor;
+                                     without --confirm-active the command aborts when
+                                     active runs exist (and lists them)
+  software-factory factory-reset [--confirm "<phrase>"] [--json]
+                                     DESTRUCTIVE wipe of ledger, factory workspaces, and
+                                     operator token; prompts for the typed phrase unless
+                                     --confirm is given; a mismatch aborts locally
+
 Review (unblock a human-review run):
   software-factory review       <runId> --decision approved|rejected [--rationale <r>]
                                 [--risk-tier low|medium|high] [--expected-version <n>] [--json]
@@ -256,6 +287,25 @@ Cloud:
 export interface RunCliDeps {
   readonly io?: CliIo;
   readonly env?: NodeJS.ProcessEnv;
+  /**
+   * Interactive line prompt used by `factory-reset` for the typed
+   * confirmation phrase (defaults to readline over stdin; injectable so tests
+   * never touch real streams).
+   */
+  readonly promptLine?: (question: string) => Promise<string>;
+}
+
+/**
+ * Default interactive prompt: readline over stdin, echoing the question to
+ * STDERR so `--json` stdout stays a single clean document.
+ */
+async function promptViaStdin(question: string): Promise<string> {
+  const rl = createInterface({ input: process.stdin, output: process.stderr });
+  try {
+    return (await rl.question(question)).trim();
+  } finally {
+    rl.close();
+  }
 }
 
 /** Execute the CLI for `argv` (the args after the program name). */
@@ -431,6 +481,70 @@ export async function runCli(argv: readonly string[], deps: RunCliDeps = {}): Pr
         await cancelAllRunsCommand({ reason: flagStr(flags, 'reason'), json }, { client, io });
         return 0;
       }
+      // Session lifecycle (U7 parity): cancel/archive/unarchive are run-scoped
+      // (fresh expectedVersion resolved unless pinned); new-session and
+      // factory-reset are factory-scoped guarded commands.
+      case 'cancel': {
+        const runId = positionals[0];
+        if (runId === undefined) {
+          io.err('cancel requires a <runId>.');
+          return 2;
+        }
+        const client = await buildClient();
+        await cancelRunCommand(
+          {
+            runId,
+            expectedVersion: flagNum(flags, 'expected-version'),
+            reason: flagStr(flags, 'reason'),
+            archive: flagBool(flags, 'archive'),
+            json,
+          },
+          { client, io },
+        );
+        return 0;
+      }
+      case 'archive':
+      case 'unarchive': {
+        const runId = positionals[0];
+        if (runId === undefined) {
+          io.err(`${command} requires a <runId>.`);
+          return 2;
+        }
+        const client = await buildClient();
+        const args = {
+          runId,
+          expectedVersion: flagNum(flags, 'expected-version'),
+          reason: flagStr(flags, 'reason'),
+          json,
+        };
+        if (command === 'archive') {
+          await archiveRunCommand(args, { client, io });
+        } else {
+          await unarchiveRunCommand(args, { client, io });
+        }
+        return 0;
+      }
+      case 'new-session': {
+        const client = await buildClient();
+        await newSessionCommand(
+          {
+            confirmActive: flagBool(flags, 'confirm-active'),
+            reason: flagStr(flags, 'reason'),
+            json,
+          },
+          { client, io },
+        );
+        return 0;
+      }
+      case 'factory-reset': {
+        const client = await buildClient();
+        const result = await factoryResetCommand(
+          { confirm: flagStr(flags, 'confirm'), json },
+          { client, io, promptLine: deps.promptLine ?? promptViaStdin },
+        );
+        // `null` = aborted locally (phrase not matched); NO request was sent.
+        return result === null ? 2 : 0;
+      }
       case 'interventions': {
         const client = await buildClient();
         await interventionsCommand(
@@ -583,6 +697,12 @@ export {
   factoryResumeCommand,
   factoryHoldCommand,
   cancelAllRunsCommand,
+  cancelRunCommand,
+  archiveRunCommand,
+  unarchiveRunCommand,
+  newSessionCommand,
+  factoryResetCommand,
+  FACTORY_RESET_PHRASE,
 } from './commands/execution';
 export { reviewCommand, isReviewDecision, isRiskTier } from './commands/review';
 export { materializeWorkspaceCommand, workspaceStatusCommand } from './commands/workspace';

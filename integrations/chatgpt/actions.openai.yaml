@@ -25,7 +25,21 @@ paths:
   /api/runs:
     get:
       operationId: listRuns
-      summary: List Software Factory runs.
+      summary: >-
+        List Software Factory runs. Archived runs are excluded by default;
+        pass includeArchived to read the history view.
+      parameters:
+        - name: includeArchived
+          in: query
+          required: false
+          description: >-
+            Include archived runs (session-lifecycle history view). Archived
+            runs stay on disk and replayable but leave default lists.
+          schema:
+            type: string
+            enum:
+              - '1'
+              - 'true'
       responses:
         '200':
           description: Projected runs.
@@ -129,7 +143,47 @@ paths:
   /api/runs/{runId}/cancel:
     post:
       operationId: cancelRun
-      summary: Cancel a run. Cancellation propagates to queued and active execution work.
+      summary: >-
+        Cancel a run. Cancellation propagates to queued and active execution
+        work. Pass archive true to also archive the run in the SAME command
+        (cancel-then-archive).
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - expectedVersion
+              properties:
+                expectedVersion:
+                  type: integer
+                  minimum: 0
+                reason:
+                  type: string
+                archive:
+                  type: boolean
+                  description: >-
+                    Also archive the run in the same command
+                    (cancel-then-archive).
+      responses:
+        '200':
+          description: Run cancelled.
+          content:
+            application/json:
+              schema:
+                type: object
+  /api/runs/{runId}/archive:
+    post:
+      operationId: archiveRun
+      summary: >-
+        Archive a run: it leaves default run lists but stays on disk,
+        searchable, and replayable (reversible via unarchiveRun). A
+        non-terminal run is CANCELLED first in the same command — there is no
+        "archived but still executing" state. Re-archiving converges
+        (alreadyArchived).
       parameters:
         - $ref: '#/components/parameters/RunId'
       requestBody:
@@ -148,7 +202,39 @@ paths:
                   type: string
       responses:
         '200':
-          description: Run cancelled.
+          description: >-
+            Run archived (or already archived). `cancelled: true` reports the
+            cancel-first side effect for a non-terminal run.
+          content:
+            application/json:
+              schema:
+                type: object
+  /api/runs/{runId}/unarchive:
+    post:
+      operationId: unarchiveRun
+      summary: >-
+        Unarchive a run so it re-enters default run lists. Visibility ONLY —
+        execution state is never revived (a cancelled run stays terminal).
+        Unarchiving a visible run converges (alreadyVisible).
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - expectedVersion
+              properties:
+                expectedVersion:
+                  type: integer
+                  minimum: 0
+                reason:
+                  type: string
+      responses:
+        '200':
+          description: Run visible again (or already visible).
           content:
             application/json:
               schema:
@@ -450,6 +536,90 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ExecutionGateResponse'
+        '401':
+          description: Operator token missing or invalid (command guard denial).
+          content:
+            application/json:
+              schema:
+                type: object
+        '503':
+          description: >-
+            Execution controls are not enabled on this server instance
+            (`execution_disabled`).
+          content:
+            application/json:
+              schema:
+                type: object
+  # NOTE: POST /api/execution/factory-reset is DELIBERATELY absent from this
+  # Action. The destructive factory wipe stays off the hosted ChatGPT surface
+  # (destructive-scope rule); it remains reachable from the operator UI, the
+  # CLI, and MCP — all of which forward the server-enforced typed confirmation
+  # phrase. See CONNECTOR_SURFACE in
+  # packages/web/test/server/connector-parity.test.ts for the reviewed
+  # exclusion.
+  /api/execution/new-session:
+    post:
+      operationId: startNewSession
+      summary: >-
+        Start a fresh session in ONE atomic guarded command: hold the drain
+        gate, cancel active runs, clear queued work, archive every visible
+        run, and record a session.started marker. Archived runs stay on disk
+        and replayable — this is the reversible "clean floor" command, NOT a
+        destructive reset.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                confirmActive:
+                  type: boolean
+                  description: >-
+                    Confirm cancelling and archiving ACTIVE runs. Without
+                    this, the command aborts (nothing changes) when actives
+                    exist and returns them (409 active_runs_present).
+                reason:
+                  type: string
+              additionalProperties: false
+      responses:
+        '200':
+          description: >-
+            Fresh session opened: archived/cancelled run ids plus
+            `held: true` (the drain gate is re-engaged).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  archived:
+                    type: array
+                    items:
+                      type: string
+                  cancelled:
+                    type: array
+                    items:
+                      type: string
+                  held:
+                    type: boolean
+                  errors:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        runId:
+                          type: string
+                        message:
+                          type: string
+        '409':
+          description: >-
+            Active runs exist and confirmActive was not true
+            (`active_runs_present`): nothing changed; the active runs are
+            listed so the caller can confirm once and re-send.
+          content:
+            application/json:
+              schema:
+                type: object
         '401':
           description: Operator token missing or invalid (command guard denial).
           content:
