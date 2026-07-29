@@ -1,8 +1,9 @@
 /**
  * startPollLoop unit tests (fake timers): the immediateFirst refresh path, the
  * default one-interval delay, failed-tick recovery, non-overlapping ticks, and
- * cleanup silencing in-flight work — the shared polling contract both live
- * hooks (`use-run-aggregate`, `use-intervention-queue`) rely on.
+ * cleanup silencing in-flight work — the shared polling contract that
+ * `usePolledResource` and its consumer hooks (`use-run-aggregate`,
+ * `use-floor-status`, `use-execution-overview`) rely on.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { startPollLoop } from '../../src/lib/polling';

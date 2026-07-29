@@ -955,6 +955,29 @@ describe('factory-wide execution controls', () => {
     expect(record(res).openCount).toBe(0);
   });
 
+  it('the intervention.* pre-filter is behavior-preserving against the unfiltered fold', async () => {
+    // The poll routes fold interventions from a pre-filtered event stream
+    // (PERF, like countQueueJobs). This pin proves the filter changes cost,
+    // not behavior: on a MIXED ledger (queue traffic + run lifecycle +
+    // interventions) the route body must equal the projection over the raw,
+    // unfiltered store. If projectInterventions ever grows a dependency on
+    // another event family, this fails instead of drifting silently.
+    const { app, store } = makeExecApp({ autoStart: false });
+    await seedQueuedLedgerJob(store);
+    const blockedRunId = await createPlannedRun(app, { githubRepo: 'octo/app' });
+    const blocked = await app.handle(
+      req('POST', `/api/runs/${blockedRunId}/start`, authedHeaders(), {}),
+    );
+    expect(blocked.status).toBe(422);
+
+    const res = await app.handle(req('GET', '/api/interventions', {}, undefined));
+    expect(res.status).toBe(200);
+    const unfiltered = projectInterventions(await store.readAll());
+    expect(unfiltered.interventions.length).toBeGreaterThan(0);
+    expect(record(res).interventions).toEqual(unfiltered.interventions);
+    expect(record(res).openCount).toBe(unfiltered.open.length);
+  });
+
   it('resume requires the command guard, releases the gate, and is idempotent', async () => {
     let executed = 0;
     const { app, daemon } = makeExecApp({

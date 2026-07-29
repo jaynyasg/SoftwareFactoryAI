@@ -72,4 +72,27 @@ describe('usePolledResource', () => {
     expect(seen).toEqual([10, 100]);
     expect(result.current.data).toBe(101);
   });
+
+  it('a resetKey change clears reconnecting from a failed state and waits a full interval', async () => {
+    vi.useFakeTimers();
+    const fetchNext = vi.fn((): Promise<number> => Promise.reject(new Error('down')));
+    const { result, rerender } = renderHook(
+      ({ key }: { key: string }) =>
+        usePolledResource<number>({ initial: 0, resetKey: key, fetchNext }),
+      { initialProps: { key: 'a' } },
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_INTERVAL_MS);
+    });
+    expect(result.current.reconnecting).toBe(true);
+
+    // The new key starts with a clean slate: no stale reconnect badge from
+    // the old key's outage, and no immediate poll (the fresh `initial` is
+    // trusted for one full interval, same as a first mount).
+    rerender({ key: 'b' });
+    expect(result.current.reconnecting).toBe(false);
+    const calls = fetchNext.mock.calls.length;
+    await act(async () => {});
+    expect(fetchNext.mock.calls.length).toBe(calls);
+  });
 });

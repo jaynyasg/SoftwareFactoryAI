@@ -134,10 +134,16 @@ export async function loadRunAggregate(
  */
 export async function loadFloorStatus(): Promise<FloorStatus> {
   const res = await getApp().handle({ method: 'GET', path: '/api/floor', query: {}, headers: {} });
+  // A failed ledger read must fail the page honestly. Degrading the error
+  // body through the lenient parsers would render "nothing needs you" — the
+  // one lie this surface exists to prevent.
+  if (res.status !== 200) {
+    throw new Error(`floor_load_failed:${res.status}`);
+  }
   const body = bodyOf(res);
   return {
     overview: parseExecutionOverview(body),
-    queue: parseInterventionQueue(body),
+    interventionQueue: parseInterventionQueue(body),
   };
 }
 

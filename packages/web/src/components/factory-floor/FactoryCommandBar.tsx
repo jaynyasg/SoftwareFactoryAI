@@ -95,6 +95,10 @@ export function FactoryCommandBar({
       if (cancelledRef.current) {
         return;
       }
+      // A network error does NOT mean the command failed server-side — it may
+      // have landed after processing. Re-sync immediately rather than showing
+      // a stale gate until the next poll interval.
+      onRefresh?.();
       const message = error instanceof Error ? error.message : `Network error during ${action}.`;
       setPhase({ kind: 'error', message });
     }

@@ -40,7 +40,7 @@ import { StateBlock } from './primitives';
 /** Safe default when the server provided no floor payload (tests, degraded SSR). */
 const EMPTY_FLOOR: FloorStatus = {
   overview: DISABLED_EXECUTION_OVERVIEW,
-  queue: { interventions: [], openCount: 0 },
+  interventionQueue: { interventions: [], openCount: 0 },
 };
 
 /** The live blueprint for one focused run (owns the run's polling). */
@@ -199,13 +199,13 @@ export function FactoryFloor({
   const visibleRuns = historyCleared ? [] : initialRuns;
   const openByRun = useMemo(() => {
     const counts: Record<string, number> = {};
-    for (const item of live.floor.queue.interventions) {
+    for (const item of live.floor.interventionQueue.interventions) {
       if (item.status === 'open') {
         counts[item.runId] = (counts[item.runId] ?? 0) + 1;
       }
     }
     return counts;
-  }, [live.floor.queue.interventions]);
+  }, [live.floor.interventionQueue.interventions]);
 
   const operatorHref =
     focusedRunId !== null ? `/operator?runId=${encodeURIComponent(focusedRunId)}` : '/operator';
@@ -242,7 +242,7 @@ export function FactoryFloor({
 
       {/* 1 — anything blocking on a human, across every run, always first. */}
       <InterventionQueue
-        snapshot={live.floor.queue}
+        snapshot={live.floor.interventionQueue}
         reconnecting={live.reconnecting}
         focusedRunId={focusedRunId}
         onFocusRun={setFocusedRunId}

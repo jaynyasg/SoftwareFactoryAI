@@ -104,10 +104,19 @@ describe('fetchFloorStatus', () => {
       queue: { queued: 3, leased: 1 },
     });
     // Well-formed rows extract; malformed rows drop — never `undefined` in the queue.
-    expect(floor.queue.interventions.map((item) => item.interventionId)).toEqual(['i-1', 'i-2']);
-    expect(floor.queue.interventions[0]).toMatchObject({ status: 'open', sequence: 12 });
-    expect(floor.queue.interventions[1]).toMatchObject({ status: 'resolved', resolution: 'done' });
-    expect(floor.queue.openCount).toBe(1);
+    expect(floor.interventionQueue.interventions.map((item) => item.interventionId)).toEqual([
+      'i-1',
+      'i-2',
+    ]);
+    expect(floor.interventionQueue.interventions[0]).toMatchObject({
+      status: 'open',
+      sequence: 12,
+    });
+    expect(floor.interventionQueue.interventions[1]).toMatchObject({
+      status: 'resolved',
+      resolution: 'done',
+    });
+    expect(floor.interventionQueue.openCount).toBe(1);
   });
 
   it('degrades a malformed body to disabled overview + empty queue instead of throwing', async () => {
@@ -120,7 +129,7 @@ describe('fetchFloorStatus', () => {
         execution: { enabled: false, held: false, running: false },
         queue: { queued: 0, leased: 0 },
       },
-      queue: { interventions: [], openCount: 0 },
+      interventionQueue: { interventions: [], openCount: 0 },
     });
   });
 

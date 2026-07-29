@@ -42,6 +42,31 @@ async function readJson(res: Response): Promise<Record<string, unknown>> {
   }
 }
 
+/**
+ * Hard cap on a single poll fetch. `startPollLoop` only schedules the next
+ * tick after the current one settles, so a server that accepts the socket
+ * but never responds would otherwise freeze the loop with stale data and
+ * `reconnecting` still false — the frozen-but-pretending UI DESIGN.md §6
+ * forbids. Timing out fails the tick honestly instead.
+ */
+const POLL_FETCH_TIMEOUT_MS = 10_000;
+
+/**
+ * Strict JSON read for POLLED endpoints. A 200 with an unparseable body
+ * (proxy splash page, truncated response) must FAIL the tick — flipping
+ * `reconnecting` and keeping the last good data — never degrade to an
+ * empty payload that would replace real data as if the factory were idle.
+ * Mutations keep the lenient `readJson`: their error paths branch on
+ * status, not body shape.
+ */
+async function readPolledJson(res: Response, what: string): Promise<Record<string, unknown>> {
+  try {
+    return (await res.json()) as Record<string, unknown>;
+  } catch {
+    throw new Error(`${what}_parse_failed`);
+  }
+}
+
 async function mutate<T>(
   url: string,
   session: LocalSession,
@@ -221,11 +246,12 @@ export async function fetchExecutionOverview(): Promise<ExecutionOverview> {
   const res = await fetch('/api/execution', {
     headers: { accept: 'application/json' },
     cache: 'no-store',
+    signal: AbortSignal.timeout(POLL_FETCH_TIMEOUT_MS),
   });
   if (!res.ok) {
     throw new Error(`execution_fetch_failed:${res.status}`);
   }
-  return parseExecutionOverview(await readJson(res));
+  return parseExecutionOverview(await readPolledJson(res, 'execution'));
 }
 
 /** Release the drain gate so queued work starts (POST /api/execution/resume). */
@@ -280,12 +306,16 @@ export async function fetchFloorStatus(): Promise<FloorStatus> {
   const res = await fetch('/api/floor', {
     headers: { accept: 'application/json' },
     cache: 'no-store',
+    signal: AbortSignal.timeout(POLL_FETCH_TIMEOUT_MS),
   });
   if (!res.ok) {
     throw new Error(`floor_fetch_failed:${res.status}`);
   }
-  const body = await readJson(res);
-  return { overview: parseExecutionOverview(body), queue: parseInterventionQueue(body) };
+  const body = await readPolledJson(res, 'floor');
+  return {
+    overview: parseExecutionOverview(body),
+    interventionQueue: parseInterventionQueue(body),
+  };
 }
 
 export function resolveInterventionItem(
@@ -302,10 +332,14 @@ export function resolveInterventionItem(
 export async function fetchAggregate(runId: string, afterSequence: number): Promise<RunAggregate> {
   const res = await fetch(
     `/data/runs/${encodeURIComponent(runId)}?after=${encodeURIComponent(String(afterSequence))}`,
-    { headers: { accept: 'application/json' }, cache: 'no-store' },
+    {
+      headers: { accept: 'application/json' },
+      cache: 'no-store',
+      signal: AbortSignal.timeout(POLL_FETCH_TIMEOUT_MS),
+    },
   );
   if (!res.ok) {
     throw new Error(`run_fetch_failed:${res.status}`);
   }
-  return (await res.json()) as RunAggregate;
+  return (await readPolledJson(res, 'run')) as unknown as RunAggregate;
 }

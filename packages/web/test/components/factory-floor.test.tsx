@@ -702,6 +702,52 @@ describe('FactoryCommandBar (factory drain gate)', () => {
     expect(screen.queryByTestId('factory-held-banner')).toBeNull();
   });
 
+  it('shows the reconnecting badge in both gate states while the floor loop is failing', () => {
+    const { rerender } = render(
+      withSession(<FactoryCommandBar overview={HELD_EXECUTION} reconnecting />),
+    );
+    expect(screen.getByText('reconnecting')).toBeInTheDocument();
+
+    rerender(withSession(<FactoryCommandBar overview={ACTIVE_EXECUTION} reconnecting />));
+    expect(screen.getByText('reconnecting')).toBeInTheDocument();
+
+    rerender(withSession(<FactoryCommandBar overview={ACTIVE_EXECUTION} />));
+    expect(screen.queryByText('reconnecting')).toBeNull();
+  });
+
+  it('a network-failed command re-syncs via onRefresh but never fires onChanged', async () => {
+    const onChanged = vi.fn();
+    const onRefresh = vi.fn();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.reject(new Error('network down'))),
+    );
+    try {
+      render(
+        withSession(
+          <FactoryCommandBar
+            overview={HELD_EXECUTION}
+            onRefresh={onRefresh}
+            onChanged={onChanged}
+          />,
+        ),
+      );
+
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('factory-resume'));
+      });
+
+      // The command may have landed server-side despite the client error, so
+      // the floor loop re-polls immediately — but the parent's run-state
+      // reload (onChanged) stays success-only.
+      expect(screen.getByTestId('factory-command-error')).toHaveTextContent('network down');
+      expect(onRefresh).toHaveBeenCalledTimes(1);
+      expect(onChanged).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('renders nothing on an instance without execution controls', () => {
     const { container } = render(
       withSession(
@@ -1047,8 +1093,11 @@ describe('InterventionQueue (U9/X4)', () => {
 
   /** Live wiring exactly as FactoryFloor uses it: floor-status queue + refresh. */
   function LiveQueueHarness({ initial }: { readonly initial: InterventionQueueSnapshot }) {
-    const live = useFloorStatus({ overview: DISABLED_EXECUTION_OVERVIEW, queue: initial });
-    return <InterventionQueue snapshot={live.floor.queue} onResolved={live.refresh} />;
+    const live = useFloorStatus({
+      overview: DISABLED_EXECUTION_OVERVIEW,
+      interventionQueue: initial,
+    });
+    return <InterventionQueue snapshot={live.floor.interventionQueue} onResolved={live.refresh} />;
   }
 
   it('flips a resolved item within one round trip — never waiting a full poll interval', async () => {
@@ -1150,7 +1199,7 @@ describe('FactoryFloor blueprint-first hierarchy (U9/KTD7)', () => {
           latest={aggregate}
           initialFloor={{
             overview: initialExecution ?? DISABLED_EXECUTION_OVERVIEW,
-            queue: { interventions: items, openCount: items.length },
+            interventionQueue: { interventions: items, openCount: items.length },
           }}
         />,
       ),
