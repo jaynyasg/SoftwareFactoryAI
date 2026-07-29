@@ -23,9 +23,6 @@ export interface LiveFloorStatus {
 }
 
 export function useFloorStatus(initial: FloorStatus): LiveFloorStatus {
-  const polled = usePolledResource<FloorStatus>({
-    initial,
-    fetchNext: () => fetchFloorStatus(),
-  });
+  const polled = usePolledResource<FloorStatus>({ initial, fetchNext: fetchFloorStatus });
   return { floor: polled.data, reconnecting: polled.reconnecting, refresh: polled.refresh };
 }

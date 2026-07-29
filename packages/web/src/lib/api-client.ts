@@ -8,22 +8,10 @@
  * 409 the caller can recover from. The browser supplies the `Origin` header
  * automatically; tokens therefore never leave loopback.
  */
-import type {
-  EventSeverity,
-  InterventionKind,
-  ReviewDecision,
-  ReviewMode,
-  RiskTier,
-  RunProjection,
-} from '@software-factory/core';
-import type {
-  ExecutionOverview,
-  FloorStatus,
-  InterventionItem,
-  InterventionQueueSnapshot,
-  RunAggregate,
-} from './types';
+import type { ReviewDecision, ReviewMode, RiskTier, RunProjection } from '@software-factory/core';
+import type { ExecutionOverview, FloorStatus, InterventionItem, RunAggregate } from './types';
 import { parseExecutionOverview } from './execution-overview';
+import { parseInterventionQueue } from './intervention-queue';
 import type { LocalSession } from './session';
 
 export type { RunAggregate } from './types';
@@ -281,90 +269,6 @@ export function cancelAllRuns(
 /* ----------------------------------------------------------------------------
  * Operator intervention queue (X4)
  * ------------------------------------------------------------------------- */
-
-/**
- * Item-level shape check for one wire intervention: every field the UI renders
- * is validated structurally; malformed rows are dropped instead of rendering
- * `undefined` into the queue. `kind`/`severity` are validated as strings and
- * then narrowed — the browser bundle must not import core's runtime member
- * lists, and an unrecognized-but-string value degrades to a labeled badge
- * rather than a dropped intervention.
- */
-function toInterventionItem(value: unknown): InterventionItem | null {
-  if (typeof value !== 'object' || value === null) {
-    return null;
-  }
-  const record = value as Record<string, unknown>;
-  const {
-    interventionId,
-    runId,
-    kind,
-    severity,
-    blockingStage,
-    reason,
-    requiredAction,
-    raisedAt,
-    sequence,
-    status,
-  } = record;
-  if (
-    typeof interventionId !== 'string' ||
-    typeof runId !== 'string' ||
-    typeof kind !== 'string' ||
-    typeof severity !== 'string' ||
-    typeof blockingStage !== 'string' ||
-    typeof reason !== 'string' ||
-    typeof requiredAction !== 'string' ||
-    typeof raisedAt !== 'number' ||
-    typeof sequence !== 'number' ||
-    (status !== 'open' && status !== 'resolved')
-  ) {
-    return null;
-  }
-  return {
-    interventionId,
-    runId,
-    ticketId: typeof record.ticketId === 'string' ? record.ticketId : undefined,
-    kind: kind as InterventionKind,
-    severity: severity as EventSeverity,
-    blockingStage,
-    reason,
-    requiredAction,
-    raisedAt,
-    sequence,
-    status,
-    resolution: typeof record.resolution === 'string' ? record.resolution : undefined,
-    resolutionNote: typeof record.resolutionNote === 'string' ? record.resolutionNote : undefined,
-    resolvedAt: typeof record.resolvedAt === 'number' ? record.resolvedAt : undefined,
-  };
-}
-
-/**
- * Structurally parse an intervention-queue body (`interventions` +
- * `openCount`). Shared by the standalone queue poll and the combined floor
- * poll so the two can never drift on validation.
- */
-function parseInterventionQueue(body: Record<string, unknown>): InterventionQueueSnapshot {
-  const interventions = (Array.isArray(body.interventions) ? body.interventions : [])
-    .map(toInterventionItem)
-    .filter((item): item is InterventionItem => item !== null);
-  return {
-    interventions,
-    openCount: typeof body.openCount === 'number' ? body.openCount : 0,
-  };
-}
-
-/** Poll the cross-run operator intervention queue (read-only, no token). */
-export async function fetchInterventions(): Promise<InterventionQueueSnapshot> {
-  const res = await fetch('/api/interventions', {
-    headers: { accept: 'application/json' },
-    cache: 'no-store',
-  });
-  if (!res.ok) {
-    throw new Error(`interventions_fetch_failed:${res.status}`);
-  }
-  return parseInterventionQueue(await readJson(res));
-}
 
 /**
  * Poll the combined floor status (read-only, no token): the execution

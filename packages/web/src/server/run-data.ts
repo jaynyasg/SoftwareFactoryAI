@@ -26,10 +26,10 @@ import type { FactoryEvent, RunProjection } from '@software-factory/core';
 import { getApp } from './instance';
 import type { ApiResponse } from './app';
 import { filterInterventions, projectInterventions } from './execution/interventions';
-import type { InterventionView } from './execution/interventions';
 import { executionJobId, projectExecutionQueue } from './execution/queue';
 import { projectPreflight } from './execution/preflight';
 import { parseExecutionOverview } from '../lib/execution-overview';
+import { parseInterventionQueue } from '../lib/intervention-queue';
 import {
   deriveDeploy,
   deriveGateOutcomes,
@@ -42,7 +42,6 @@ import type { BlockedStageView } from '../lib/run-view';
 import type {
   ExecutionOverview,
   FloorStatus,
-  InterventionItem,
   OperatorAggregate,
   RunAggregate,
   SetupStatus,
@@ -125,50 +124,20 @@ export async function loadRunAggregate(
 }
 
 /**
- * Typed mapping from the server projection to the client-safe wire item. The
- * shapes are intentionally identical (InterventionItem mirrors
- * InterventionView), so this is a field-by-field copy the compiler checks —
- * no cast that could silently drift from the wire contract.
- */
-function toInterventionItem(view: InterventionView): InterventionItem {
-  return {
-    interventionId: view.interventionId,
-    runId: view.runId,
-    ticketId: view.ticketId,
-    kind: view.kind,
-    severity: view.severity,
-    blockingStage: view.blockingStage,
-    reason: view.reason,
-    requiredAction: view.requiredAction,
-    raisedAt: view.raisedAt,
-    sequence: view.sequence,
-    status: view.status,
-    resolution: view.resolution,
-    resolutionNote: view.resolutionNote,
-    resolvedAt: view.resolvedAt,
-  };
-}
-
-/**
  * Load the combined floor payload (execution overview + intervention queue)
  * through the same GET /api/floor route the client polls, so the initial
  * render and every poll see identical state — and the SSR path pays ONE
- * ledger read for both halves, exactly like a client tick. The route body's
- * `interventions` are in-process `InterventionView`s (no JSON round-trip),
- * so the typed field-by-field mapper applies directly.
+ * ledger read for both halves, exactly like a client tick. Both halves go
+ * through the SAME shared structural parsers the browser client uses
+ * (execution-overview.ts / intervention-queue.ts), so first paint and every
+ * subsequent poll can never diverge on validation or degrade semantics.
  */
 export async function loadFloorStatus(): Promise<FloorStatus> {
   const res = await getApp().handle({ method: 'GET', path: '/api/floor', query: {}, headers: {} });
   const body = bodyOf(res);
-  const interventions = (
-    Array.isArray(body.interventions) ? (body.interventions as InterventionView[]) : []
-  ).map(toInterventionItem);
   return {
     overview: parseExecutionOverview(body),
-    queue: {
-      interventions,
-      openCount: typeof body.openCount === 'number' ? body.openCount : 0,
-    },
+    queue: parseInterventionQueue(body),
   };
 }
 

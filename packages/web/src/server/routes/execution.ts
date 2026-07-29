@@ -59,7 +59,11 @@ import {
   projectInterventions,
   resolveIntervention,
 } from '../execution/interventions';
-import type { InterventionView } from '../execution/interventions';
+import type {
+  InterventionFilter,
+  InterventionQueueProjection,
+  InterventionView,
+} from '../execution/interventions';
 import type { PreflightRunResult } from '../execution/preflight';
 import { projectPreflight } from '../execution/preflight';
 
@@ -506,22 +510,48 @@ async function getExecutionOverview(ctx: RouteContext): Promise<ApiResponse> {
 }
 
 /**
+ * Cross-run intervention projection for the poll routes. PERF: same trick as
+ * countQueueJobs — the fold only reads `intervention.*` events, so
+ * pre-filtering keeps it linear in intervention traffic instead of total
+ * ledger size (these routes run every 1.5s per open tab).
+ */
+function projectInterventionQueue(events: readonly FactoryEvent[]): InterventionQueueProjection {
+  return projectInterventions(events.filter((event) => event.type.startsWith('intervention.')));
+}
+
+/**
+ * The wire body both intervention reads share: GET /api/interventions
+ * (optionally filtered) and the interventions half of GET /api/floor. One
+ * builder means the two routes cannot drift on shape — the same treatment
+ * `executionFlags` gives the overview half.
+ */
+function interventionQueueBody(
+  projection: InterventionQueueProjection,
+  filter: InterventionFilter = {},
+): { interventions: InterventionView[]; openCount: number } {
+  return {
+    interventions: filterInterventions(projection, filter),
+    openCount: projection.open.length,
+  };
+}
+
+/**
  * Combined floor status (TODOS P2 poll consolidation): the /api/execution
  * overview PLUS the unfiltered /api/interventions queue, folded from ONE
- * `readAll`. The body is the exact union of those two GET bodies so the
- * client reuses the same parsers on each half, and either legacy endpoint
- * remains available for connectors and the run-detail surface.
+ * `readAll`. The body is the FLAT key-level union of those two GET bodies so
+ * the client reuses the same parsers on each half — which requires the two
+ * standalone bodies' top-level keys to stay disjoint (execution/queue vs
+ * interventions/openCount); a colliding key would silently shadow one half.
+ * Either legacy endpoint remains available for connectors and run detail.
  */
 async function getFloorStatus(ctx: RouteContext): Promise<ApiResponse> {
   const events = await ctx.reader.readAll();
-  const projection = projectInterventions(events);
   return {
     status: 200,
     body: {
       execution: executionFlags(ctx.executionDaemon),
       queue: countQueueJobs(events),
-      interventions: projection.interventions,
-      openCount: projection.open.length,
+      ...interventionQueueBody(projectInterventionQueue(events)),
     },
   };
 }
@@ -627,18 +657,17 @@ function isEventSeverity(value: unknown): value is EventSeverity {
 
 async function listInterventions(ctx: RouteContext): Promise<ApiResponse> {
   const query = ctx.request.query;
-  const projection = projectInterventions(await ctx.reader.readAll());
-  const interventions = filterInterventions(projection, {
-    runId: str(query.runId),
-    kind: isInterventionKind(query.kind) ? query.kind : undefined,
-    severity: isEventSeverity(query.severity) ? query.severity : undefined,
-    blockingStage: str(query.blockingStage) ?? str(query.stage),
-    requiredActionText: str(query.action),
-    openOnly: query.open === '1' || query.open === 'true',
-  });
+  const projection = projectInterventionQueue(await ctx.reader.readAll());
   return {
     status: 200,
-    body: { interventions, openCount: projection.open.length },
+    body: interventionQueueBody(projection, {
+      runId: str(query.runId),
+      kind: isInterventionKind(query.kind) ? query.kind : undefined,
+      severity: isEventSeverity(query.severity) ? query.severity : undefined,
+      blockingStage: str(query.blockingStage) ?? str(query.stage),
+      requiredActionText: str(query.action),
+      openOnly: query.open === '1' || query.open === 'true',
+    }),
   };
 }
 

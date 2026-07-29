@@ -883,12 +883,9 @@ describe('factory-wide execution controls', () => {
     expect(record(res).queue).toMatchObject({ queued: 1, leased: 0 });
   });
 
-  it('GET /api/execution without a daemon still reports LEDGER queue counts', async () => {
-    // Execution disabled on THIS instance, but queued work exists on the
-    // ledger (e.g. enqueued by an instance that HAS a daemon): the overview
-    // must report the real cross-run counts, never hardcoded zeros.
-    const { app, store } = makeDaemonlessApp();
-    await store.append({
+  /** Seed one queued execution job on the raw ledger (no daemon involved). */
+  function seedQueuedLedgerJob(store: EventStore): Promise<unknown> {
+    return store.append({
       runId: 'run-q',
       type: 'queue.enqueued',
       actor: { kind: 'system', id: 'test' },
@@ -896,6 +893,14 @@ describe('factory-wide execution controls', () => {
       severity: 'info',
       payload: { jobId: 'run-q:execution', jobKind: 'run-execution', attempt: 1 },
     });
+  }
+
+  it('GET /api/execution without a daemon still reports LEDGER queue counts', async () => {
+    // Execution disabled on THIS instance, but queued work exists on the
+    // ledger (e.g. enqueued by an instance that HAS a daemon): the overview
+    // must report the real cross-run counts, never hardcoded zeros.
+    const { app, store } = makeDaemonlessApp();
+    await seedQueuedLedgerJob(store);
 
     const res = await app.handle(req('GET', '/api/execution', {}));
     expect(res.status).toBe(200);
@@ -940,14 +945,7 @@ describe('factory-wide execution controls', () => {
 
   it('GET /api/floor without a daemon reports disabled flags and LEDGER queue truth', async () => {
     const { app, store } = makeDaemonlessApp();
-    await store.append({
-      runId: 'run-q',
-      type: 'queue.enqueued',
-      actor: { kind: 'system', id: 'test' },
-      subject: { kind: 'queue-job', id: 'run-q:execution' },
-      severity: 'info',
-      payload: { jobId: 'run-q:execution', jobKind: 'run-execution', attempt: 1 },
-    });
+    await seedQueuedLedgerJob(store);
 
     const res = await app.handle(req('GET', '/api/floor', {}));
     expect(res.status).toBe(200);

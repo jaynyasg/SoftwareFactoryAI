@@ -26,7 +26,7 @@ export interface LiveExecutionOverview {
 export function useExecutionOverview(initial: ExecutionOverview): LiveExecutionOverview {
   const polled = usePolledResource<ExecutionOverview>({
     initial,
-    fetchNext: () => fetchExecutionOverview(),
+    fetchNext: fetchExecutionOverview,
   });
   return { overview: polled.data, reconnecting: polled.reconnecting, refresh: polled.refresh };
 }

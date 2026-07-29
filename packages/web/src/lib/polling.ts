@@ -9,7 +9,7 @@
  * scaffolding; `usePolledResource` owns the shared React state pattern on top
  * of it, so each hook states only its per-tick fetch.
  */
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 /**
  * Start a self-rescheduling poll loop. `tick` performs one poll and throws on
@@ -135,5 +135,8 @@ export function usePolledResource<T>(options: {
     [resetKey, nonce],
   );
 
-  return { data, reconnecting, refresh: () => setNonce((n) => n + 1) };
+  // Stable identity: refresh is passed down as onRefresh/onResolved props, so
+  // it must not defeat future memoization of the consumers.
+  const refresh = useCallback(() => setNonce((n) => n + 1), []);
+  return { data, reconnecting, refresh };
 }
