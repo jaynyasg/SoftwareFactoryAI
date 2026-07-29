@@ -1,7 +1,7 @@
 ---
 title: 'feat: Run-focused floor and session lifecycle'
 type: feat
-status: active
+status: completed
 date: 2026-07-28
 origin: docs/brainstorms/2026-07-28-run-focused-floor-and-session-lifecycle-requirements.md
 ---
