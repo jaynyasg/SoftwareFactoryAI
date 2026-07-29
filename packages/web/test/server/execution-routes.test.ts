@@ -883,12 +883,9 @@ describe('factory-wide execution controls', () => {
     expect(record(res).queue).toMatchObject({ queued: 1, leased: 0 });
   });
 
-  it('GET /api/execution without a daemon still reports LEDGER queue counts', async () => {
-    // Execution disabled on THIS instance, but queued work exists on the
-    // ledger (e.g. enqueued by an instance that HAS a daemon): the overview
-    // must report the real cross-run counts, never hardcoded zeros.
-    const { app, store } = makeDaemonlessApp();
-    await store.append({
+  /** Seed one queued execution job on the raw ledger (no daemon involved). */
+  function seedQueuedLedgerJob(store: EventStore): Promise<unknown> {
+    return store.append({
       runId: 'run-q',
       type: 'queue.enqueued',
       actor: { kind: 'system', id: 'test' },
@@ -896,11 +893,89 @@ describe('factory-wide execution controls', () => {
       severity: 'info',
       payload: { jobId: 'run-q:execution', jobKind: 'run-execution', attempt: 1 },
     });
+  }
+
+  it('GET /api/execution without a daemon still reports LEDGER queue counts', async () => {
+    // Execution disabled on THIS instance, but queued work exists on the
+    // ledger (e.g. enqueued by an instance that HAS a daemon): the overview
+    // must report the real cross-run counts, never hardcoded zeros.
+    const { app, store } = makeDaemonlessApp();
+    await seedQueuedLedgerJob(store);
 
     const res = await app.handle(req('GET', '/api/execution', {}));
     expect(res.status).toBe(200);
     expect(record(res).execution).toEqual({ enabled: false, held: false, running: false });
     expect(record(res).queue).toEqual({ queued: 1, leased: 0 });
+  });
+
+  it('GET /api/floor returns the exact union of the execution overview and intervention queue', async () => {
+    const { app, daemon } = makeExecApp({ autoStart: false });
+    expect(daemon.held).toBe(true);
+
+    // Seed BOTH halves: a queued job waiting behind the held gate, and open
+    // interventions from a repo-sourced run whose preflight fails (no
+    // workspace), so neither half of the union is trivially empty.
+    const queuedRunId = await createPlannedRun(app);
+    const started = await app.handle(
+      req('POST', `/api/runs/${queuedRunId}/start`, authedHeaders(), {}),
+    );
+    expect(started.status).toBe(202);
+    const blockedRunId = await createPlannedRun(app, { githubRepo: 'octo/app' });
+    const blocked = await app.handle(
+      req('POST', `/api/runs/${blockedRunId}/start`, authedHeaders(), {}),
+    );
+    expect(blocked.status).toBe(422);
+
+    const floor = await app.handle(req('GET', '/api/floor', {}));
+    expect(floor.status).toBe(200);
+
+    // Parity is the CONTRACT: each half must equal the standalone endpoint's
+    // body so the client reuses the same parsers on the combined payload.
+    const execution = await app.handle(req('GET', '/api/execution', {}));
+    const interventions = await app.handle(req('GET', '/api/interventions', {}, undefined));
+    expect(record(floor).execution).toEqual(record(execution).execution);
+    expect(record(floor).queue).toEqual(record(execution).queue);
+    expect(record(floor).interventions).toEqual(record(interventions).interventions);
+    expect(record(floor).openCount).toEqual(record(interventions).openCount);
+
+    // Sanity: the seeds really produced non-trivial state on both halves.
+    expect(record(floor).queue).toMatchObject({ queued: 1 });
+    expect(record(floor).openCount).toBeGreaterThan(0);
+  });
+
+  it('GET /api/floor without a daemon reports disabled flags and LEDGER queue truth', async () => {
+    const { app, store } = makeDaemonlessApp();
+    await seedQueuedLedgerJob(store);
+
+    const res = await app.handle(req('GET', '/api/floor', {}));
+    expect(res.status).toBe(200);
+    expect(record(res).execution).toEqual({ enabled: false, held: false, running: false });
+    expect(record(res).queue).toEqual({ queued: 1, leased: 0 });
+    expect(record(res).interventions).toEqual([]);
+    expect(record(res).openCount).toBe(0);
+  });
+
+  it('the intervention.* pre-filter is behavior-preserving against the unfiltered fold', async () => {
+    // The poll routes fold interventions from a pre-filtered event stream
+    // (PERF, like countQueueJobs). This pin proves the filter changes cost,
+    // not behavior: on a MIXED ledger (queue traffic + run lifecycle +
+    // interventions) the route body must equal the projection over the raw,
+    // unfiltered store. If projectInterventions ever grows a dependency on
+    // another event family, this fails instead of drifting silently.
+    const { app, store } = makeExecApp({ autoStart: false });
+    await seedQueuedLedgerJob(store);
+    const blockedRunId = await createPlannedRun(app, { githubRepo: 'octo/app' });
+    const blocked = await app.handle(
+      req('POST', `/api/runs/${blockedRunId}/start`, authedHeaders(), {}),
+    );
+    expect(blocked.status).toBe(422);
+
+    const res = await app.handle(req('GET', '/api/interventions', {}, undefined));
+    expect(res.status).toBe(200);
+    const unfiltered = projectInterventions(await store.readAll());
+    expect(unfiltered.interventions.length).toBeGreaterThan(0);
+    expect(record(res).interventions).toEqual(unfiltered.interventions);
+    expect(record(res).openCount).toBe(unfiltered.open.length);
   });
 
   it('resume requires the command guard, releases the gate, and is idempotent', async () => {

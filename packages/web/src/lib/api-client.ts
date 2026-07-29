@@ -8,21 +8,10 @@
  * 409 the caller can recover from. The browser supplies the `Origin` header
  * automatically; tokens therefore never leave loopback.
  */
-import type {
-  EventSeverity,
-  InterventionKind,
-  ReviewDecision,
-  ReviewMode,
-  RiskTier,
-  RunProjection,
-} from '@software-factory/core';
-import type {
-  ExecutionOverview,
-  InterventionItem,
-  InterventionQueueSnapshot,
-  RunAggregate,
-} from './types';
+import type { ReviewDecision, ReviewMode, RiskTier, RunProjection } from '@software-factory/core';
+import type { ExecutionOverview, FloorStatus, InterventionItem, RunAggregate } from './types';
 import { parseExecutionOverview } from './execution-overview';
+import { parseInterventionQueue } from './intervention-queue';
 import type { LocalSession } from './session';
 
 export type { RunAggregate } from './types';
@@ -50,6 +39,31 @@ async function readJson(res: Response): Promise<Record<string, unknown>> {
     return (await res.json()) as Record<string, unknown>;
   } catch {
     return {};
+  }
+}
+
+/**
+ * Hard cap on a single poll fetch. `startPollLoop` only schedules the next
+ * tick after the current one settles, so a server that accepts the socket
+ * but never responds would otherwise freeze the loop with stale data and
+ * `reconnecting` still false — the frozen-but-pretending UI DESIGN.md §6
+ * forbids. Timing out fails the tick honestly instead.
+ */
+const POLL_FETCH_TIMEOUT_MS = 10_000;
+
+/**
+ * Strict JSON read for POLLED endpoints. A 200 with an unparseable body
+ * (proxy splash page, truncated response) must FAIL the tick — flipping
+ * `reconnecting` and keeping the last good data — never degrade to an
+ * empty payload that would replace real data as if the factory were idle.
+ * Mutations keep the lenient `readJson`: their error paths branch on
+ * status, not body shape.
+ */
+async function readPolledJson(res: Response, what: string): Promise<Record<string, unknown>> {
+  try {
+    return (await res.json()) as Record<string, unknown>;
+  } catch {
+    throw new Error(`${what}_parse_failed`);
   }
 }
 
@@ -232,11 +246,12 @@ export async function fetchExecutionOverview(): Promise<ExecutionOverview> {
   const res = await fetch('/api/execution', {
     headers: { accept: 'application/json' },
     cache: 'no-store',
+    signal: AbortSignal.timeout(POLL_FETCH_TIMEOUT_MS),
   });
   if (!res.ok) {
     throw new Error(`execution_fetch_failed:${res.status}`);
   }
-  return parseExecutionOverview(await readJson(res));
+  return parseExecutionOverview(await readPolledJson(res, 'execution'));
 }
 
 /** Release the drain gate so queued work starts (POST /api/execution/resume). */
@@ -282,78 +297,24 @@ export function cancelAllRuns(
  * ------------------------------------------------------------------------- */
 
 /**
- * Item-level shape check for one wire intervention: every field the UI renders
- * is validated structurally; malformed rows are dropped instead of rendering
- * `undefined` into the queue. `kind`/`severity` are validated as strings and
- * then narrowed — the browser bundle must not import core's runtime member
- * lists, and an unrecognized-but-string value degrades to a labeled badge
- * rather than a dropped intervention.
+ * Poll the combined floor status (read-only, no token): the execution
+ * overview and the intervention queue in ONE request. The body is the exact
+ * union of GET /api/execution and GET /api/interventions, so each half goes
+ * through the same structural parser as its standalone endpoint.
  */
-function toInterventionItem(value: unknown): InterventionItem | null {
-  if (typeof value !== 'object' || value === null) {
-    return null;
-  }
-  const record = value as Record<string, unknown>;
-  const {
-    interventionId,
-    runId,
-    kind,
-    severity,
-    blockingStage,
-    reason,
-    requiredAction,
-    raisedAt,
-    sequence,
-    status,
-  } = record;
-  if (
-    typeof interventionId !== 'string' ||
-    typeof runId !== 'string' ||
-    typeof kind !== 'string' ||
-    typeof severity !== 'string' ||
-    typeof blockingStage !== 'string' ||
-    typeof reason !== 'string' ||
-    typeof requiredAction !== 'string' ||
-    typeof raisedAt !== 'number' ||
-    typeof sequence !== 'number' ||
-    (status !== 'open' && status !== 'resolved')
-  ) {
-    return null;
-  }
-  return {
-    interventionId,
-    runId,
-    ticketId: typeof record.ticketId === 'string' ? record.ticketId : undefined,
-    kind: kind as InterventionKind,
-    severity: severity as EventSeverity,
-    blockingStage,
-    reason,
-    requiredAction,
-    raisedAt,
-    sequence,
-    status,
-    resolution: typeof record.resolution === 'string' ? record.resolution : undefined,
-    resolutionNote: typeof record.resolutionNote === 'string' ? record.resolutionNote : undefined,
-    resolvedAt: typeof record.resolvedAt === 'number' ? record.resolvedAt : undefined,
-  };
-}
-
-/** Poll the cross-run operator intervention queue (read-only, no token). */
-export async function fetchInterventions(): Promise<InterventionQueueSnapshot> {
-  const res = await fetch('/api/interventions', {
+export async function fetchFloorStatus(): Promise<FloorStatus> {
+  const res = await fetch('/api/floor', {
     headers: { accept: 'application/json' },
     cache: 'no-store',
+    signal: AbortSignal.timeout(POLL_FETCH_TIMEOUT_MS),
   });
   if (!res.ok) {
-    throw new Error(`interventions_fetch_failed:${res.status}`);
+    throw new Error(`floor_fetch_failed:${res.status}`);
   }
-  const body = await readJson(res);
-  const interventions = (Array.isArray(body.interventions) ? body.interventions : [])
-    .map(toInterventionItem)
-    .filter((item): item is InterventionItem => item !== null);
+  const body = await readPolledJson(res, 'floor');
   return {
-    interventions,
-    openCount: typeof body.openCount === 'number' ? body.openCount : 0,
+    overview: parseExecutionOverview(body),
+    interventionQueue: parseInterventionQueue(body),
   };
 }
 
@@ -371,10 +332,14 @@ export function resolveInterventionItem(
 export async function fetchAggregate(runId: string, afterSequence: number): Promise<RunAggregate> {
   const res = await fetch(
     `/data/runs/${encodeURIComponent(runId)}?after=${encodeURIComponent(String(afterSequence))}`,
-    { headers: { accept: 'application/json' }, cache: 'no-store' },
+    {
+      headers: { accept: 'application/json' },
+      cache: 'no-store',
+      signal: AbortSignal.timeout(POLL_FETCH_TIMEOUT_MS),
+    },
   );
   if (!res.ok) {
     throw new Error(`run_fetch_failed:${res.status}`);
   }
-  return (await res.json()) as RunAggregate;
+  return (await readPolledJson(res, 'run')) as unknown as RunAggregate;
 }

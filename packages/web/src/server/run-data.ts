@@ -23,13 +23,13 @@ import {
   projectTickets,
 } from '@software-factory/core';
 import type { FactoryEvent, RunProjection } from '@software-factory/core';
-import { getApp, getStore } from './instance';
+import { getApp } from './instance';
 import type { ApiResponse } from './app';
 import { filterInterventions, projectInterventions } from './execution/interventions';
-import type { InterventionView } from './execution/interventions';
 import { executionJobId, projectExecutionQueue } from './execution/queue';
 import { projectPreflight } from './execution/preflight';
 import { parseExecutionOverview } from '../lib/execution-overview';
+import { parseInterventionQueue } from '../lib/intervention-queue';
 import {
   deriveDeploy,
   deriveGateOutcomes,
@@ -41,8 +41,7 @@ import {
 import type { BlockedStageView } from '../lib/run-view';
 import type {
   ExecutionOverview,
-  InterventionItem,
-  InterventionQueueSnapshot,
+  FloorStatus,
   OperatorAggregate,
   RunAggregate,
   SetupStatus,
@@ -125,42 +124,26 @@ export async function loadRunAggregate(
 }
 
 /**
- * Typed mapping from the server projection to the client-safe wire item. The
- * shapes are intentionally identical (InterventionItem mirrors
- * InterventionView), so this is a field-by-field copy the compiler checks —
- * no cast that could silently drift from the wire contract.
+ * Load the combined floor payload (execution overview + intervention queue)
+ * through the same GET /api/floor route the client polls, so the initial
+ * render and every poll see identical state — and the SSR path pays ONE
+ * ledger read for both halves, exactly like a client tick. Both halves go
+ * through the SAME shared structural parsers the browser client uses
+ * (execution-overview.ts / intervention-queue.ts), so first paint and every
+ * subsequent poll can never diverge on validation or degrade semantics.
  */
-function toInterventionItem(view: InterventionView): InterventionItem {
+export async function loadFloorStatus(): Promise<FloorStatus> {
+  const res = await getApp().handle({ method: 'GET', path: '/api/floor', query: {}, headers: {} });
+  // A failed ledger read must fail the page honestly. Degrading the error
+  // body through the lenient parsers would render "nothing needs you" — the
+  // one lie this surface exists to prevent.
+  if (res.status !== 200) {
+    throw new Error(`floor_load_failed:${res.status}`);
+  }
+  const body = bodyOf(res);
   return {
-    interventionId: view.interventionId,
-    runId: view.runId,
-    ticketId: view.ticketId,
-    kind: view.kind,
-    severity: view.severity,
-    blockingStage: view.blockingStage,
-    reason: view.reason,
-    requiredAction: view.requiredAction,
-    raisedAt: view.raisedAt,
-    sequence: view.sequence,
-    status: view.status,
-    resolution: view.resolution,
-    resolutionNote: view.resolutionNote,
-    resolvedAt: view.resolvedAt,
-  };
-}
-
-/**
- * Load the cross-run operator intervention queue (X4) with the SAME pure
- * projection the `/api/interventions` route folds (projectInterventions over
- * the store), so the initial render and every poll see identical state —
- * without a JSON round-trip through `handle()` (and its untyped body cast) or
- * a duplicate `readAll` on the SSR path.
- */
-export async function loadInterventionQueue(): Promise<InterventionQueueSnapshot> {
-  const projection = projectInterventions(await getStore().readAll());
-  return {
-    interventions: projection.interventions.map(toInterventionItem),
-    openCount: projection.open.length,
+    overview: parseExecutionOverview(body),
+    interventionQueue: parseInterventionQueue(body),
   };
 }
 

@@ -20,6 +20,11 @@
  *   GET  /api/execution             (read-only) — factory-wide execution
  *                                    state: whether the drain gate is held
  *                                    plus cross-run queued/leased job counts.
+ *   GET  /api/floor                 (read-only) — combined floor status: the
+ *                                    /api/execution overview PLUS the full
+ *                                    intervention queue from ONE ledger read,
+ *                                    so the Factory Floor polls one endpoint
+ *                                    per tick instead of two readAll folds.
  *   POST /api/execution/resume      (guarded) — release the drain gate so
  *                                    queued work starts (the daemon boots
  *                                    HELD: nothing runs on open until this).
@@ -54,7 +59,11 @@ import {
   projectInterventions,
   resolveIntervention,
 } from '../execution/interventions';
-import type { InterventionView } from '../execution/interventions';
+import type {
+  InterventionFilter,
+  InterventionQueueProjection,
+  InterventionView,
+} from '../execution/interventions';
 import type { PreflightRunResult } from '../execution/preflight';
 import { projectPreflight } from '../execution/preflight';
 
@@ -475,26 +484,74 @@ function countQueueJobs(events: readonly FactoryEvent[]): { queued: number; leas
   return { queued, leased };
 }
 
+/**
+ * Daemon-dependent gate flags. The queue counts are LEDGER truth either way:
+ * even with no daemon on this instance, real cross-run counts beat hardcoded
+ * zeros — only these enabled/held/running flags depend on the daemon.
+ */
+function executionFlags(daemon: RouteContext['executionDaemon']): {
+  enabled: boolean;
+  held: boolean;
+  running: boolean;
+} {
+  return daemon === null
+    ? { enabled: false, held: false, running: false }
+    : { enabled: true, held: daemon.held, running: daemon.running };
+}
+
 async function getExecutionOverview(ctx: RouteContext): Promise<ApiResponse> {
-  const daemon = ctx.executionDaemon;
-  // The queue is LEDGER truth either way: even with no daemon on this
-  // instance, real cross-run counts beat hardcoded zeros — only the
-  // enabled/held/running flags are daemon-dependent.
-  const queue = countQueueJobs(await ctx.reader.readAll());
-  if (daemon === null) {
-    return {
-      status: 200,
-      body: {
-        execution: { enabled: false, held: false, running: false },
-        queue,
-      },
-    };
-  }
   return {
     status: 200,
     body: {
-      execution: { enabled: true, held: daemon.held, running: daemon.running },
-      queue,
+      execution: executionFlags(ctx.executionDaemon),
+      queue: countQueueJobs(await ctx.reader.readAll()),
+    },
+  };
+}
+
+/**
+ * Cross-run intervention projection for the poll routes. PERF: same trick as
+ * countQueueJobs — the fold only reads `intervention.*` events, so
+ * pre-filtering keeps it linear in intervention traffic instead of total
+ * ledger size (these routes run every 1.5s per open tab).
+ */
+function projectInterventionQueue(events: readonly FactoryEvent[]): InterventionQueueProjection {
+  return projectInterventions(events.filter((event) => event.type.startsWith('intervention.')));
+}
+
+/**
+ * The wire body both intervention reads share: GET /api/interventions
+ * (optionally filtered) and the interventions half of GET /api/floor. One
+ * builder means the two routes cannot drift on shape — the same treatment
+ * `executionFlags` gives the overview half.
+ */
+function interventionQueueBody(
+  projection: InterventionQueueProjection,
+  filter: InterventionFilter = {},
+): { interventions: InterventionView[]; openCount: number } {
+  return {
+    interventions: filterInterventions(projection, filter),
+    openCount: projection.open.length,
+  };
+}
+
+/**
+ * Combined floor status (TODOS P2 poll consolidation): the /api/execution
+ * overview PLUS the unfiltered /api/interventions queue, folded from ONE
+ * `readAll`. The body is the FLAT key-level union of those two GET bodies so
+ * the client reuses the same parsers on each half — which requires the two
+ * standalone bodies' top-level keys to stay disjoint (execution/queue vs
+ * interventions/openCount); a colliding key would silently shadow one half.
+ * Either legacy endpoint remains available for connectors and run detail.
+ */
+async function getFloorStatus(ctx: RouteContext): Promise<ApiResponse> {
+  const events = await ctx.reader.readAll();
+  return {
+    status: 200,
+    body: {
+      execution: executionFlags(ctx.executionDaemon),
+      queue: countQueueJobs(events),
+      ...interventionQueueBody(projectInterventionQueue(events)),
     },
   };
 }
@@ -600,18 +657,17 @@ function isEventSeverity(value: unknown): value is EventSeverity {
 
 async function listInterventions(ctx: RouteContext): Promise<ApiResponse> {
   const query = ctx.request.query;
-  const projection = projectInterventions(await ctx.reader.readAll());
-  const interventions = filterInterventions(projection, {
-    runId: str(query.runId),
-    kind: isInterventionKind(query.kind) ? query.kind : undefined,
-    severity: isEventSeverity(query.severity) ? query.severity : undefined,
-    blockingStage: str(query.blockingStage) ?? str(query.stage),
-    requiredActionText: str(query.action),
-    openOnly: query.open === '1' || query.open === 'true',
-  });
+  const projection = projectInterventionQueue(await ctx.reader.readAll());
   return {
     status: 200,
-    body: { interventions, openCount: projection.open.length },
+    body: interventionQueueBody(projection, {
+      runId: str(query.runId),
+      kind: isInterventionKind(query.kind) ? query.kind : undefined,
+      severity: isEventSeverity(query.severity) ? query.severity : undefined,
+      blockingStage: str(query.blockingStage) ?? str(query.stage),
+      requiredActionText: str(query.action),
+      openOnly: query.open === '1' || query.open === 'true',
+    }),
   };
 }
 
@@ -671,6 +727,7 @@ async function resolveInterventionRoute(ctx: RouteContext): Promise<ApiResponse>
 export function executionRoutes(): RouteDef[] {
   return [
     { method: 'GET', pattern: '/api/execution', handler: getExecutionOverview },
+    { method: 'GET', pattern: '/api/floor', handler: getFloorStatus },
     { method: 'POST', pattern: '/api/execution/resume', handler: resumeAllExecution },
     { method: 'POST', pattern: '/api/execution/hold', handler: holdAllExecution },
     { method: 'POST', pattern: '/api/runs/:id/start', handler: startRun },

@@ -252,7 +252,14 @@ GET /api/runs/:runId/outputs
 GET /api/knowledge
 GET /api/interventions
 GET /api/execution
+GET /api/floor
 ```
+
+`GET /api/floor` is the flat union of `GET /api/execution` and
+`GET /api/interventions`, folded from one ledger read so the Factory Floor
+polls a single endpoint per tick. It is deliberately excluded from the
+connector surface (see `connector-parity.test.ts`) — connectors already cover
+both halves through the standalone routes.
 
 Mutating routes (all pass through the command guard —
 token/origin/CSRF/stale-version — before appending side-effect events):

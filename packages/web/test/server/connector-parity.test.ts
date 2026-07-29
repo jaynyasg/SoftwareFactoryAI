@@ -90,6 +90,13 @@ const CONNECTOR_SURFACE: Readonly<Record<string, ConnectorMapping>> = {
     action: 'getExecutionOverview',
     mcp: 'software_factory_get_execution_overview',
   },
+  'GET /api/floor': {
+    excluded:
+      'Web-floor polling optimization: the exact union of GET /api/execution and ' +
+      'GET /api/interventions folded from ONE ledger read, so the Factory Floor polls one ' +
+      'endpoint per tick. Connectors already cover both halves through ' +
+      'getExecutionOverview/listInterventions; mirroring the union would duplicate their surface.',
+  },
   'POST /api/execution/resume': {
     action: 'resumeExecution',
     mcp: 'software_factory_resume_execution',

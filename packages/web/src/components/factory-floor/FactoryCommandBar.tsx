@@ -12,15 +12,15 @@
  *     run and propagates to queued/in-flight execution work. Destructive, so
  *     it takes an inline two-step confirm instead of firing on first click.
  *
- * State is never optimistic: every render is derived from the polled
- * GET /api/execution projection, and mutations go through the command guard
- * (token + CSRF) exactly like the per-run command bar.
+ * State is never optimistic: every render is derived from the polled floor
+ * projection (owned by FactoryFloor's single floor-status loop and passed
+ * down as props), and mutations go through the command guard (token + CSRF)
+ * exactly like the per-run command bar.
  */
 import { useEffect, useRef, useState } from 'react';
 import { useSession } from '../session-context';
 import { cancelAllRuns, holdFactoryExecution, resumeFactoryExecution } from '../../lib/api-client';
 import type { CancelAllRunsResult, MutationResult } from '../../lib/api-client';
-import { useExecutionOverview } from '../../lib/use-execution-overview';
 import type { ExecutionOverview } from '../../lib/types';
 
 type Phase =
@@ -31,18 +31,25 @@ type Phase =
   | { readonly kind: 'error'; readonly message: string };
 
 export function FactoryCommandBar({
-  initial,
+  overview,
+  reconnecting = false,
+  onRefresh,
   onChanged,
 }: {
-  readonly initial: ExecutionOverview;
+  /** The polled overview, owned by the parent's floor-status loop. */
+  readonly overview: ExecutionOverview;
+  /** True while the owning poll loop is failing (honest reconnect badge). */
+  readonly reconnecting?: boolean;
+  /** Re-poll the floor status now — fired after ANY settled command (a
+   *  rejected command also re-syncs, so a stale gate never lingers). */
+  readonly onRefresh?: () => void;
   /** Called after a successful mutation so the parent reloads run state. */
   readonly onChanged?: () => void;
 }) {
   const session = useSession();
-  const live = useExecutionOverview(initial);
   const [phase, setPhase] = useState<Phase>({ kind: 'idle' });
   const busy = phase.kind === 'busy';
-  const { execution, queue } = live.overview;
+  const { execution, queue } = overview;
   const waiting = queue.queued + queue.leased;
 
   // Unmount guard (same contract as RunCommandBar): an in-flight command that
@@ -75,11 +82,11 @@ export function FactoryCommandBar({
       if (result.ok) {
         const message = describe?.(result.data);
         setPhase(message === undefined ? { kind: 'idle' } : { kind: 'notice', message });
-        live.refresh();
+        onRefresh?.();
         onChanged?.();
         return;
       }
-      live.refresh();
+      onRefresh?.();
       setPhase({
         kind: 'error',
         message: result.message ?? `${action} was not accepted (${result.error}).`,
@@ -88,6 +95,10 @@ export function FactoryCommandBar({
       if (cancelledRef.current) {
         return;
       }
+      // A network error does NOT mean the command failed server-side — it may
+      // have landed after processing. Re-sync immediately rather than showing
+      // a stale gate until the next poll interval.
+      onRefresh?.();
       const message = error instanceof Error ? error.message : `Network error during ${action}.`;
       setPhase({ kind: 'error', message });
     }
@@ -147,7 +158,7 @@ export function FactoryCommandBar({
             {phase.kind === 'busy' && phase.action === 'resume' ? 'Resuming…' : 'Resume execution'}
           </button>
           {cancelAll}
-          {live.reconnecting ? <span className="badge sev-warn">reconnecting</span> : null}
+          {reconnecting ? <span className="badge sev-warn">reconnecting</span> : null}
         </div>
       ) : (
         <div className="row" role="group" aria-label="Factory-wide execution commands">
@@ -164,7 +175,7 @@ export function FactoryCommandBar({
             {phase.kind === 'busy' && phase.action === 'hold' ? 'Holding…' : 'Hold new work'}
           </button>
           {cancelAll}
-          {live.reconnecting ? <span className="badge sev-warn">reconnecting</span> : null}
+          {reconnecting ? <span className="badge sev-warn">reconnecting</span> : null}
         </div>
       )}
 

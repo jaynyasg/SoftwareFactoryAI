@@ -19,7 +19,8 @@ import {
 import { aggregateFromEvents } from '../_helpers/aggregate';
 import { projectInterventions } from '../../src/server/execution/interventions';
 import { deriveBlueprintLanes, deriveFactoryPulse } from '../../src/lib/run-view';
-import { useInterventionQueue } from '../../src/lib/use-intervention-queue';
+import { useFloorStatus } from '../../src/lib/use-floor-status';
+import { DISABLED_EXECUTION_OVERVIEW } from '../../src/lib/execution-overview';
 import type {
   ExecutionOverview,
   InterventionItem,
@@ -681,7 +682,7 @@ describe('FactoryCommandBar (factory drain gate)', () => {
   }
 
   it('renders the held banner with Resume and Cancel all while the gate is engaged', () => {
-    render(withSession(<FactoryCommandBar initial={HELD_EXECUTION} />));
+    render(withSession(<FactoryCommandBar overview={HELD_EXECUTION} />));
 
     const banner = screen.getByTestId('factory-held-banner');
     // The banner states the guarantee honestly: nothing runs automatically.
@@ -693,7 +694,7 @@ describe('FactoryCommandBar (factory drain gate)', () => {
   });
 
   it('renders the active badge with Hold and Cancel all once the gate is released', () => {
-    render(withSession(<FactoryCommandBar initial={ACTIVE_EXECUTION} />));
+    render(withSession(<FactoryCommandBar overview={ACTIVE_EXECUTION} />));
 
     expect(screen.getByTestId('factory-active-badge')).toHaveTextContent('execution active');
     expect(screen.getByTestId('factory-hold')).toBeEnabled();
@@ -701,11 +702,57 @@ describe('FactoryCommandBar (factory drain gate)', () => {
     expect(screen.queryByTestId('factory-held-banner')).toBeNull();
   });
 
+  it('shows the reconnecting badge in both gate states while the floor loop is failing', () => {
+    const { rerender } = render(
+      withSession(<FactoryCommandBar overview={HELD_EXECUTION} reconnecting />),
+    );
+    expect(screen.getByText('reconnecting')).toBeInTheDocument();
+
+    rerender(withSession(<FactoryCommandBar overview={ACTIVE_EXECUTION} reconnecting />));
+    expect(screen.getByText('reconnecting')).toBeInTheDocument();
+
+    rerender(withSession(<FactoryCommandBar overview={ACTIVE_EXECUTION} />));
+    expect(screen.queryByText('reconnecting')).toBeNull();
+  });
+
+  it('a network-failed command re-syncs via onRefresh but never fires onChanged', async () => {
+    const onChanged = vi.fn();
+    const onRefresh = vi.fn();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.reject(new Error('network down'))),
+    );
+    try {
+      render(
+        withSession(
+          <FactoryCommandBar
+            overview={HELD_EXECUTION}
+            onRefresh={onRefresh}
+            onChanged={onChanged}
+          />,
+        ),
+      );
+
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('factory-resume'));
+      });
+
+      // The command may have landed server-side despite the client error, so
+      // the floor loop re-polls immediately — but the parent's run-state
+      // reload (onChanged) stays success-only.
+      expect(screen.getByTestId('factory-command-error')).toHaveTextContent('network down');
+      expect(onRefresh).toHaveBeenCalledTimes(1);
+      expect(onChanged).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('renders nothing on an instance without execution controls', () => {
     const { container } = render(
       withSession(
         <FactoryCommandBar
-          initial={{
+          overview={{
             execution: { enabled: false, held: false, running: false },
             queue: { queued: 0, leased: 0 },
           }}
@@ -719,7 +766,7 @@ describe('FactoryCommandBar (factory drain gate)', () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
     try {
-      render(withSession(<FactoryCommandBar initial={ACTIVE_EXECUTION} />));
+      render(withSession(<FactoryCommandBar overview={ACTIVE_EXECUTION} />));
 
       fireEvent.click(screen.getByTestId('cancel-all-tasks'));
       const confirm = screen.getByRole('group', { name: 'Confirm cancel all tasks' });
@@ -741,7 +788,7 @@ describe('FactoryCommandBar (factory drain gate)', () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
     try {
-      render(withSession(<FactoryCommandBar initial={HELD_EXECUTION} />));
+      render(withSession(<FactoryCommandBar overview={HELD_EXECUTION} />));
 
       fireEvent.click(screen.getByTestId('cancel-all-tasks'));
       fireEvent.keyDown(screen.getByRole('group', { name: 'Confirm cancel all tasks' }), {
@@ -771,7 +818,7 @@ describe('FactoryCommandBar (factory drain gate)', () => {
     );
     vi.stubGlobal('fetch', fetchMock);
     try {
-      render(withSession(<FactoryCommandBar initial={ACTIVE_EXECUTION} />));
+      render(withSession(<FactoryCommandBar overview={ACTIVE_EXECUTION} />));
 
       fireEvent.click(screen.getByTestId('cancel-all-tasks'));
       await act(async () => {
@@ -792,6 +839,7 @@ describe('FactoryCommandBar (factory drain gate)', () => {
 
   it('confirmed cancel-all reports one cancelled run in the singular and refreshes the parent', async () => {
     const onChanged = vi.fn();
+    const onRefresh = vi.fn();
     const fetchMock = vi.fn((input: RequestInfo | URL) =>
       Promise.resolve(
         String(input) === '/api/runs/cancel-all'
@@ -806,7 +854,15 @@ describe('FactoryCommandBar (factory drain gate)', () => {
     );
     vi.stubGlobal('fetch', fetchMock);
     try {
-      render(withSession(<FactoryCommandBar initial={HELD_EXECUTION} onChanged={onChanged} />));
+      render(
+        withSession(
+          <FactoryCommandBar
+            overview={HELD_EXECUTION}
+            onRefresh={onRefresh}
+            onChanged={onChanged}
+          />,
+        ),
+      );
 
       fireEvent.click(screen.getByTestId('cancel-all-tasks'));
       await act(async () => {
@@ -816,6 +872,8 @@ describe('FactoryCommandBar (factory drain gate)', () => {
       expect(screen.getByTestId('factory-command-notice')).toHaveTextContent(
         'Cancelled 1 run; queued and in-flight work stops.',
       );
+      // The floor loop re-polls immediately AND the parent reloads run state.
+      expect(onRefresh).toHaveBeenCalledTimes(1);
       expect(onChanged).toHaveBeenCalledTimes(1);
     } finally {
       vi.unstubAllGlobals();
@@ -824,6 +882,7 @@ describe('FactoryCommandBar (factory drain gate)', () => {
 
   it('surfaces a rejected command as a dismissible error banner (no parent refresh)', async () => {
     const onChanged = vi.fn();
+    const onRefresh = vi.fn();
     const fetchMock = vi.fn((input: RequestInfo | URL) =>
       Promise.resolve(
         String(input) === '/api/execution/resume'
@@ -839,7 +898,15 @@ describe('FactoryCommandBar (factory drain gate)', () => {
     );
     vi.stubGlobal('fetch', fetchMock);
     try {
-      render(withSession(<FactoryCommandBar initial={HELD_EXECUTION} onChanged={onChanged} />));
+      render(
+        withSession(
+          <FactoryCommandBar
+            overview={HELD_EXECUTION}
+            onRefresh={onRefresh}
+            onChanged={onChanged}
+          />,
+        ),
+      );
 
       await act(async () => {
         fireEvent.click(screen.getByTestId('factory-resume'));
@@ -849,6 +916,9 @@ describe('FactoryCommandBar (factory drain gate)', () => {
       expect(error).toHaveTextContent(
         'Execution controls are not enabled on this server instance.',
       );
+      // A rejected command still re-syncs the polled state (stale gate must
+      // not linger) but never triggers the parent's run-state reload.
+      expect(onRefresh).toHaveBeenCalledTimes(1);
       expect(onChanged).not.toHaveBeenCalled();
 
       fireEvent.click(within(error).getByRole('button', { name: 'Dismiss' }));
@@ -869,7 +939,7 @@ describe('FactoryCommandBar (factory drain gate)', () => {
     );
     vi.stubGlobal('fetch', fetchMock);
     try {
-      render(withSession(<FactoryCommandBar initial={HELD_EXECUTION} />));
+      render(withSession(<FactoryCommandBar overview={HELD_EXECUTION} />));
 
       await act(async () => {
         fireEvent.click(screen.getByTestId('factory-resume'));
@@ -891,9 +961,16 @@ describe('FactoryCommandBar (factory drain gate)', () => {
     const fetchMock = vi.fn(() => pending);
     vi.stubGlobal('fetch', fetchMock);
     const onChanged = vi.fn();
+    const onRefresh = vi.fn();
     try {
       const { unmount } = render(
-        withSession(<FactoryCommandBar initial={HELD_EXECUTION} onChanged={onChanged} />),
+        withSession(
+          <FactoryCommandBar
+            overview={HELD_EXECUTION}
+            onRefresh={onRefresh}
+            onChanged={onChanged}
+          />,
+        ),
       );
       fireEvent.click(screen.getByTestId('factory-resume'));
       expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -905,6 +982,7 @@ describe('FactoryCommandBar (factory drain gate)', () => {
       });
 
       // …so the late result must not trigger the parent refresh (or setState).
+      expect(onRefresh).not.toHaveBeenCalled();
       expect(onChanged).not.toHaveBeenCalled();
     } finally {
       vi.unstubAllGlobals();
@@ -1013,10 +1091,13 @@ describe('InterventionQueue (U9/X4)', () => {
     expect(screen.getByTestId('intervention-item')).toHaveAttribute('data-run-id', 'run-alpha');
   });
 
-  /** Live wiring exactly as FactoryFloor uses it: hook snapshot + refresh. */
+  /** Live wiring exactly as FactoryFloor uses it: floor-status queue + refresh. */
   function LiveQueueHarness({ initial }: { readonly initial: InterventionQueueSnapshot }) {
-    const queue = useInterventionQueue(initial);
-    return <InterventionQueue snapshot={queue.snapshot} onResolved={queue.refresh} />;
+    const live = useFloorStatus({
+      overview: DISABLED_EXECUTION_OVERVIEW,
+      interventionQueue: initial,
+    });
+    return <InterventionQueue snapshot={live.floor.interventionQueue} onResolved={live.refresh} />;
   }
 
   it('flips a resolved item within one round trip — never waiting a full poll interval', async () => {
@@ -1055,7 +1136,7 @@ describe('InterventionQueue (U9/X4)', () => {
       // Flush the immediate refresh poll — the fake 1.5s interval NEVER advances.
       await act(async () => {});
 
-      expect(fetchMock).toHaveBeenCalledWith('/api/interventions', expect.anything());
+      expect(fetchMock).toHaveBeenCalledWith('/api/floor', expect.anything());
       expect(screen.queryByRole('button', { name: /resolve intervention/i })).toBeNull();
       expect(screen.getByTestId('interventions-empty')).toHaveTextContent(/nothing matches/i);
     } finally {
@@ -1116,8 +1197,10 @@ describe('FactoryFloor blueprint-first hierarchy (U9/KTD7)', () => {
           initialRuns={[aggregate.run]}
           setup={setup}
           latest={aggregate}
-          initialInterventions={{ interventions: items, openCount: items.length }}
-          initialExecution={initialExecution}
+          initialFloor={{
+            overview: initialExecution ?? DISABLED_EXECUTION_OVERVIEW,
+            interventionQueue: { interventions: items, openCount: items.length },
+          }}
         />,
       ),
     );
