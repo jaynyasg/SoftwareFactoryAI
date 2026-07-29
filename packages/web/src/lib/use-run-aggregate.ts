@@ -15,15 +15,14 @@
  * RUN IDENTITY INVARIANT: the accumulated rows and the `last_sequence` cursor
  * are PER RUN — sequences are run-relative, so rows from two runs must never
  * meet in one accumulator. Callers typically remount the owning component with
- * `key={runId}` (see FactoryFloor), but the hook does NOT rely on that: when
- * `runId` changes across renders it resets the snapshot, rows, and cursor to
- * the new `initial` before polling, so a reused instance can never poll with
- * the previous run's cursor or mix ledger rows across runs.
+ * `key={runId}` (see FactoryFloor), but the hook does NOT rely on that: it
+ * passes `runId` as the shared hook's `resetKey`, so a reused instance resets
+ * its snapshot, rows, and cursor to the new `initial` before polling and can
+ * never poll with the previous run's cursor or mix ledger rows across runs.
  */
-import { useEffect, useRef, useState } from 'react';
 import type { LedgerRow } from '@software-factory/core';
 import { fetchAggregate } from './api-client';
-import { POLL_INTERVAL_MS, startPollLoop } from './polling';
+import { usePolledResource } from './polling';
 import type { RunAggregate } from './types';
 
 function mergeRows(prev: readonly LedgerRow[], tail: readonly LedgerRow[]): LedgerRow[] {
@@ -37,6 +36,13 @@ function mergeRows(prev: readonly LedgerRow[], tail: readonly LedgerRow[]): Ledg
   return [...bySequence.values()].sort((a, b) => a.sequence - b.sequence);
 }
 
+/** The per-run polled state: projected snapshot + accumulated ledger + cursor. */
+interface AggregateState {
+  readonly snapshot: RunAggregate;
+  readonly rows: readonly LedgerRow[];
+  readonly cursor: number;
+}
+
 export interface LiveRun {
   readonly snapshot: RunAggregate;
   readonly rows: readonly LedgerRow[];
@@ -46,50 +52,18 @@ export interface LiveRun {
 }
 
 export function useRunAggregate(runId: string, initial: RunAggregate): LiveRun {
-  const [snapshot, setSnapshot] = useState<RunAggregate>(initial);
-  const [rows, setRows] = useState<readonly LedgerRow[]>(initial.run.ledger);
-  const [reconnecting, setReconnecting] = useState(false);
-  const [nonce, setNonce] = useState(0);
-  const lastSequence = useRef<number>(initial.lastSequence);
-
-  // Run-identity reset (see the module header): if the hook instance is reused
-  // for a different run (no key remount), drop the previous run's accumulated
-  // rows and cursor BEFORE the next poll — sequences are run-relative, so the
-  // old cursor/rows would cross-contaminate the new run's ledger. Adjusting
-  // state during render is React's documented derived-state pattern; the
-  // render restarts immediately with the reset values.
-  const boundRunId = useRef(runId);
-  if (boundRunId.current !== runId) {
-    boundRunId.current = runId;
-    lastSequence.current = initial.lastSequence;
-    setSnapshot(initial);
-    setRows(initial.run.ledger);
-    setReconnecting(false);
-    setNonce(0);
-  }
-
-  useEffect(
-    () =>
-      startPollLoop({
-        intervalMs: POLL_INTERVAL_MS,
-        // A refresh() restart confirms a just-issued command: poll right away
-        // instead of letting the confirmation lag one full interval.
-        immediateFirst: nonce > 0,
-        tick: async (isActive) => {
-          const aggregate = await fetchAggregate(runId, lastSequence.current);
-          if (!isActive()) {
-            return;
-          }
-          setSnapshot(aggregate);
-          if (aggregate.tail.length > 0) {
-            setRows((prev) => mergeRows(prev, aggregate.tail));
-          }
-          lastSequence.current = Math.max(lastSequence.current, aggregate.lastSequence);
-        },
-        onSettled: (ok) => setReconnecting(!ok),
-      }),
-    [runId, nonce],
-  );
-
-  return { snapshot, rows, reconnecting, refresh: () => setNonce((n) => n + 1) };
+  const polled = usePolledResource<AggregateState>({
+    initial: { snapshot: initial, rows: initial.run.ledger, cursor: initial.lastSequence },
+    resetKey: runId,
+    fetchNext: async (prev) => {
+      const aggregate = await fetchAggregate(runId, prev.cursor);
+      return {
+        snapshot: aggregate,
+        rows: aggregate.tail.length > 0 ? mergeRows(prev.rows, aggregate.tail) : prev.rows,
+        cursor: Math.max(prev.cursor, aggregate.lastSequence),
+      };
+    },
+  });
+  const { snapshot, rows } = polled.data;
+  return { snapshot, rows, reconnecting: polled.reconnecting, refresh: polled.refresh };
 }
