@@ -20,6 +20,11 @@
  *   GET  /api/execution             (read-only) — factory-wide execution
  *                                    state: whether the drain gate is held
  *                                    plus cross-run queued/leased job counts.
+ *   GET  /api/floor                 (read-only) — combined floor status: the
+ *                                    /api/execution overview PLUS the full
+ *                                    intervention queue from ONE ledger read,
+ *                                    so the Factory Floor polls one endpoint
+ *                                    per tick instead of two readAll folds.
  *   POST /api/execution/resume      (guarded) — release the drain gate so
  *                                    queued work starts (the daemon boots
  *                                    HELD: nothing runs on open until this).
@@ -475,26 +480,48 @@ function countQueueJobs(events: readonly FactoryEvent[]): { queued: number; leas
   return { queued, leased };
 }
 
+/**
+ * Daemon-dependent gate flags. The queue counts are LEDGER truth either way:
+ * even with no daemon on this instance, real cross-run counts beat hardcoded
+ * zeros — only these enabled/held/running flags depend on the daemon.
+ */
+function executionFlags(daemon: RouteContext['executionDaemon']): {
+  enabled: boolean;
+  held: boolean;
+  running: boolean;
+} {
+  return daemon === null
+    ? { enabled: false, held: false, running: false }
+    : { enabled: true, held: daemon.held, running: daemon.running };
+}
+
 async function getExecutionOverview(ctx: RouteContext): Promise<ApiResponse> {
-  const daemon = ctx.executionDaemon;
-  // The queue is LEDGER truth either way: even with no daemon on this
-  // instance, real cross-run counts beat hardcoded zeros — only the
-  // enabled/held/running flags are daemon-dependent.
-  const queue = countQueueJobs(await ctx.reader.readAll());
-  if (daemon === null) {
-    return {
-      status: 200,
-      body: {
-        execution: { enabled: false, held: false, running: false },
-        queue,
-      },
-    };
-  }
   return {
     status: 200,
     body: {
-      execution: { enabled: true, held: daemon.held, running: daemon.running },
-      queue,
+      execution: executionFlags(ctx.executionDaemon),
+      queue: countQueueJobs(await ctx.reader.readAll()),
+    },
+  };
+}
+
+/**
+ * Combined floor status (TODOS P2 poll consolidation): the /api/execution
+ * overview PLUS the unfiltered /api/interventions queue, folded from ONE
+ * `readAll`. The body is the exact union of those two GET bodies so the
+ * client reuses the same parsers on each half, and either legacy endpoint
+ * remains available for connectors and the run-detail surface.
+ */
+async function getFloorStatus(ctx: RouteContext): Promise<ApiResponse> {
+  const events = await ctx.reader.readAll();
+  const projection = projectInterventions(events);
+  return {
+    status: 200,
+    body: {
+      execution: executionFlags(ctx.executionDaemon),
+      queue: countQueueJobs(events),
+      interventions: projection.interventions,
+      openCount: projection.open.length,
     },
   };
 }
@@ -671,6 +698,7 @@ async function resolveInterventionRoute(ctx: RouteContext): Promise<ApiResponse>
 export function executionRoutes(): RouteDef[] {
   return [
     { method: 'GET', pattern: '/api/execution', handler: getExecutionOverview },
+    { method: 'GET', pattern: '/api/floor', handler: getFloorStatus },
     { method: 'POST', pattern: '/api/execution/resume', handler: resumeAllExecution },
     { method: 'POST', pattern: '/api/execution/hold', handler: holdAllExecution },
     { method: 'POST', pattern: '/api/runs/:id/start', handler: startRun },

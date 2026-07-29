@@ -903,6 +903,60 @@ describe('factory-wide execution controls', () => {
     expect(record(res).queue).toEqual({ queued: 1, leased: 0 });
   });
 
+  it('GET /api/floor returns the exact union of the execution overview and intervention queue', async () => {
+    const { app, daemon } = makeExecApp({ autoStart: false });
+    expect(daemon.held).toBe(true);
+
+    // Seed BOTH halves: a queued job waiting behind the held gate, and open
+    // interventions from a repo-sourced run whose preflight fails (no
+    // workspace), so neither half of the union is trivially empty.
+    const queuedRunId = await createPlannedRun(app);
+    const started = await app.handle(
+      req('POST', `/api/runs/${queuedRunId}/start`, authedHeaders(), {}),
+    );
+    expect(started.status).toBe(202);
+    const blockedRunId = await createPlannedRun(app, { githubRepo: 'octo/app' });
+    const blocked = await app.handle(
+      req('POST', `/api/runs/${blockedRunId}/start`, authedHeaders(), {}),
+    );
+    expect(blocked.status).toBe(422);
+
+    const floor = await app.handle(req('GET', '/api/floor', {}));
+    expect(floor.status).toBe(200);
+
+    // Parity is the CONTRACT: each half must equal the standalone endpoint's
+    // body so the client reuses the same parsers on the combined payload.
+    const execution = await app.handle(req('GET', '/api/execution', {}));
+    const interventions = await app.handle(req('GET', '/api/interventions', {}, undefined));
+    expect(record(floor).execution).toEqual(record(execution).execution);
+    expect(record(floor).queue).toEqual(record(execution).queue);
+    expect(record(floor).interventions).toEqual(record(interventions).interventions);
+    expect(record(floor).openCount).toEqual(record(interventions).openCount);
+
+    // Sanity: the seeds really produced non-trivial state on both halves.
+    expect(record(floor).queue).toMatchObject({ queued: 1 });
+    expect(record(floor).openCount).toBeGreaterThan(0);
+  });
+
+  it('GET /api/floor without a daemon reports disabled flags and LEDGER queue truth', async () => {
+    const { app, store } = makeDaemonlessApp();
+    await store.append({
+      runId: 'run-q',
+      type: 'queue.enqueued',
+      actor: { kind: 'system', id: 'test' },
+      subject: { kind: 'queue-job', id: 'run-q:execution' },
+      severity: 'info',
+      payload: { jobId: 'run-q:execution', jobKind: 'run-execution', attempt: 1 },
+    });
+
+    const res = await app.handle(req('GET', '/api/floor', {}));
+    expect(res.status).toBe(200);
+    expect(record(res).execution).toEqual({ enabled: false, held: false, running: false });
+    expect(record(res).queue).toEqual({ queued: 1, leased: 0 });
+    expect(record(res).interventions).toEqual([]);
+    expect(record(res).openCount).toBe(0);
+  });
+
   it('resume requires the command guard, releases the gate, and is idempotent', async () => {
     let executed = 0;
     const { app, daemon } = makeExecApp({
