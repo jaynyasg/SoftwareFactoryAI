@@ -459,6 +459,35 @@ describe('session lifecycle commands', () => {
     expect(errText()).toContain('run-9');
     expect(errText()).toContain('--confirm-active');
   });
+
+  it('new-session surfaces a partial batch (500 new_session_partial) and still fails the command', async () => {
+    const { client } = makeFakeClient();
+    const partial: ApiClient = {
+      ...client,
+      startNewSession: () =>
+        Promise.reject(
+          new ApiError(500, 'new_session_partial', 'New Session completed with failures.', {
+            error: 'new_session_partial',
+            archived: ['run-1'],
+            cancelled: [],
+            held: true,
+            errors: [{ runId: 'run-2', message: 'ledger write refused' }],
+          }),
+        ),
+    };
+    const { io, errText } = makeIo();
+
+    // A partial batch must NEVER read as success: the command rethrows so the
+    // exit code reports it — but only AFTER printing what landed + what failed.
+    await expect(
+      newSessionCommand({ confirmActive: true }, { client: partial, io }),
+    ).rejects.toMatchObject({
+      code: 'new_session_partial',
+    });
+    expect(errText()).toContain('PARTIAL');
+    expect(errText()).toContain('archived 1 run(s)');
+    expect(errText()).toContain('failed run-2: ledger write refused');
+  });
 });
 
 describe('factory-reset command — typed phrase contract', () => {

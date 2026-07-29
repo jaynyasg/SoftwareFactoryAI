@@ -8,7 +8,7 @@
  * secret into ephemeral storage.
  */
 import { existsSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 import {
   createFileOperatorTokenStore,
   createInMemoryOperatorTokenStore,
@@ -390,13 +390,27 @@ export function scaleSafetyStartupLine(config: Pick<RuntimeConfig, 'mode'>): str
  */
 export const OPERATOR_TOKEN_FILENAME = 'operator-token.json';
 
-/** Resolve the shared ledger/operator-token directory. */
+/**
+ * Resolve the shared ledger/operator-token directory. An explicit
+ * `SF_FACTORY_DIR` override MUST be absolute and is refused HERE, at config
+ * resolve time — not only later at factory-reset wipe time — so a relative
+ * value (which would resolve against an arbitrary working directory) fails
+ * the boot with a clear message instead of arming a delayed failure. Unset
+ * keeps the derived workspace-walk behavior.
+ */
 export function resolveFactoryDir(
   env: RuntimeEnv = process.env as RuntimeEnv,
   cwd = process.cwd(),
 ): string {
   const override = clean(env.SF_FACTORY_DIR);
   if (override !== undefined) {
+    if (!isAbsolute(override)) {
+      throw new Error(
+        `SF_FACTORY_DIR must be an absolute path; got "${override}". A relative factory dir ` +
+          'would resolve against an arbitrary working directory (and only fail later, at ' +
+          'factory-reset wipe time).',
+      );
+    }
     return override;
   }
   return findWorkspaceFactoryDir(cwd);

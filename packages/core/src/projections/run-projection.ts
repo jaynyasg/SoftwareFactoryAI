@@ -645,3 +645,17 @@ export function isRealRun(run: RunProjection): boolean {
 export function isVisibleRun(run: RunProjection): boolean {
   return isRealRun(run) && !run.archived;
 }
+
+/**
+ * Newest-first ordering for run lists: most recently STARTED first, with
+ * `lastSequence` as the tie-break for runs that never started (or started in
+ * the same instant). Pure — safe in the browser bundle — and the single
+ * definition every run-list surface (SSR loader, browser poller) sorts with,
+ * so "newest visible run" means the same thing on every tick.
+ */
+export function compareRunsNewestFirst(
+  a: Pick<RunProjection, 'startedAt' | 'lastSequence'>,
+  b: Pick<RunProjection, 'startedAt' | 'lastSequence'>,
+): number {
+  return (b.startedAt ?? 0) - (a.startedAt ?? 0) || b.lastSequence - a.lastSequence;
+}

@@ -551,12 +551,13 @@ paths:
               schema:
                 type: object
   # NOTE: POST /api/execution/factory-reset is DELIBERATELY absent from this
-  # Action. The destructive factory wipe stays off the hosted ChatGPT surface
-  # (destructive-scope rule); it remains reachable from the operator UI, the
-  # CLI, and MCP — all of which forward the server-enforced typed confirmation
-  # phrase. See CONNECTOR_SURFACE in
-  # packages/web/test/server/connector-parity.test.ts for the reviewed
-  # exclusion.
+  # Action — and from the MCP bridge. The destructive factory wipe stays off
+  # every remote model surface (destructive-scope rule): a connector schema
+  # would have to spell out the typed confirmation phrase, and a
+  # prompt-injected agent could copy it. It remains reachable from the
+  # operator UI and the CLI, where a HUMAN types the phrase. See
+  # CONNECTOR_SURFACE in packages/web/test/server/connector-parity.test.ts
+  # for the reviewed exclusion.
   /api/execution/new-session:
     post:
       operationId: startNewSession

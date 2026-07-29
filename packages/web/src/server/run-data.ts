@@ -13,6 +13,7 @@
  */
 import {
   canReviewUnblock,
+  compareRunsNewestFirst,
   computeOperatorMetrics,
   computeRunDiagnostics,
   isRealRun,
@@ -204,9 +205,7 @@ export async function loadRunList(options: LoadRunListOptions = {}): Promise<Run
   const runs = (bodyOf(res).runs as RunProjection[]) ?? [];
   // Defense-in-depth: drop phantom/empty (and, by default, archived) runs even
   // if the API ever returns one — the same filter the route applies.
-  return runs
-    .filter(includeArchived ? isRealRun : isVisibleRun)
-    .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0) || b.lastSequence - a.lastSequence);
+  return runs.filter(includeArchived ? isRealRun : isVisibleRun).sort(compareRunsNewestFirst);
 }
 
 /**

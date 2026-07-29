@@ -35,6 +35,8 @@ import {
 } from '../../src/server/execution/queue';
 import {
   FACTORY_RESET_PHRASE,
+  FactoryResetWipeError,
+  executeFactoryReset,
   factoryResetAllowlist,
   type FactoryResetRuntime,
 } from '../../src/server/factory-reset';
@@ -111,7 +113,10 @@ interface ResetHarness {
   rebuilds(): number;
 }
 
-function makeResetHarness(factoryDir: string): ResetHarness {
+function makeResetHarness(
+  factoryDir: string,
+  options: { readonly wipe?: FactoryResetRuntime['wipe'] } = {},
+): ResetHarness {
   const provider = createOperatorTokenProvider({
     store: createInMemoryOperatorTokenStore({ token: TOKEN, createdAt: 0 }),
   });
@@ -137,6 +142,7 @@ function makeResetHarness(factoryDir: string): ResetHarness {
       app = buildApp(store, daemon);
       return Promise.resolve(store);
     },
+    ...(options.wipe !== undefined ? { wipe: options.wipe } : {}),
   };
 
   const buildApp = (target: EventStore, owner: ExecutionDaemon): App =>
@@ -386,6 +392,12 @@ describe('POST /api/execution/factory-reset — allowlist', () => {
       tokenFile,
     ]);
     expect(destroyed.workspacePaths).toEqual([workspaceCheckout]);
+    // The response also reports what was ACTUALLY deleted (A4 audit surface).
+    expect(record(res).deletedPaths).toEqual([
+      join(harness.factoryDir, 'events'),
+      join(harness.factoryDir, 'workspaces'),
+      tokenFile,
+    ]);
 
     // Allowlisted paths are gone (events/ is re-created by the fresh markers).
     expect(existsSync(join(harness.factoryDir, 'workspaces'))).toBe(false);
@@ -508,5 +520,180 @@ describe('POST /api/execution/factory-reset — happy path (F3)', () => {
     expect(fresh[0]?.payload).toMatchObject({ resetGeneration: 2 });
     const overview = await harness.handle(req('GET', '/api/execution', {}));
     expect(record(overview).resetGeneration).toBe(2);
+  });
+});
+
+/* ----------------------------------------------------------------------------
+ * Sealing the outgoing store (A1): an in-flight append on a pre-reset handle
+ * must reject and must NOT re-create wiped `events/` (core's FS store append
+ * is mkdir -p + appendFile — without the seal it would resurrect the dir).
+ * ------------------------------------------------------------------------- */
+
+describe('executeFactoryReset — seals the outgoing store before deletion', () => {
+  it('an append on the pre-reset store handle rejects and does NOT recreate events/', async () => {
+    const factoryDir = await makeTempDir('sf-factory-seal-');
+    const oldStore = createFileSystemEventStore({ baseDir: join(factoryDir, 'events') });
+    await oldStore.append({
+      runId: 'run-seal',
+      type: 'run.created',
+      actor: { kind: 'operator', id: 'operator' },
+      subject: { kind: 'run', id: 'run-seal', version: 0 },
+      severity: 'info',
+      payload: {},
+    });
+    expect(existsSync(join(factoryDir, 'events'))).toBe(true);
+    const daemon = createExecutionDaemon({
+      store: oldStore,
+      timers: noopTimers(),
+      ownerId: 'daemon-seal-test',
+      config: { autoStart: false },
+    });
+    // Rebuild returns an in-memory store so nothing recreates events/ on disk
+    // — any reappearance of the dir can only come from the OLD handle.
+    const runtime: FactoryResetRuntime = {
+      factoryDir,
+      rebuild: () => Promise.resolve(createInMemoryEventStore()),
+    };
+
+    const outcome = await executeFactoryReset({
+      daemon,
+      store: oldStore,
+      runtime,
+      nextGeneration: 1,
+      wipedRunCount: 1,
+    });
+    expect(outcome.deletedPaths).toEqual([join(factoryDir, 'events')]);
+    expect(existsSync(join(factoryDir, 'events'))).toBe(false);
+
+    // The pre-reset handle is sealed: append/readAll reject loudly…
+    await expect(
+      oldStore.append({
+        runId: 'run-seal',
+        type: 'run.created',
+        actor: { kind: 'operator', id: 'operator' },
+        subject: { kind: 'run', id: 'run-seal', version: 0 },
+        severity: 'info',
+        payload: {},
+      }),
+    ).rejects.toThrow('factory_reset_in_progress');
+    await expect(oldStore.readAll()).rejects.toThrow('factory_reset_in_progress');
+    // …and the rejected append did NOT resurrect the wiped events dir.
+    expect(existsSync(join(factoryDir, 'events'))).toBe(false);
+  });
+
+  it('route-level: the pre-reset store handle is unusable after a reset; nothing resurrects', async () => {
+    const harness = await makeHarness();
+    await createRun(harness);
+    const preResetStore = harness.store();
+
+    const res = await harness.handle(resetRequest(FACTORY_RESET_PHRASE));
+    expect(res.status).toBe(200);
+
+    await expect(
+      preResetStore.append({
+        runId: 'run-late-append',
+        type: 'run.created',
+        actor: { kind: 'operator', id: 'operator' },
+        subject: { kind: 'run', id: 'run-late-append', version: 0 },
+        severity: 'info',
+        payload: {},
+      }),
+    ).rejects.toThrow('factory_reset_in_progress');
+
+    // The fresh ledger holds EXACTLY the two markers — no late-append leak.
+    const fresh = await harness.store().readAll();
+    expect(fresh.map((event) => event.type)).toEqual([
+      'factory.reset_completed',
+      'session.started',
+    ]);
+  });
+});
+
+/* ----------------------------------------------------------------------------
+ * Wipe failure (A4): rebuild ALWAYS runs (Windows EBUSY must not brick the
+ * server) and the PARTIAL deletion is surfaced, never discarded.
+ * ------------------------------------------------------------------------- */
+
+describe('POST /api/execution/factory-reset — wipe failure (A4)', () => {
+  it('rebuilds fresh singletons when the wipe throws and surfaces the partial deletion as 500', async () => {
+    const factoryDir = await makeTempDir('sf-factory-wipefail-');
+    const harness = makeResetHarness(factoryDir, {
+      // Simulate Windows EBUSY AFTER events/ was already removed: a partial
+      // deletion with a locked workspaces dir left behind.
+      wipe: async (dir) => {
+        await rm(join(dir, 'events'), { recursive: true, force: true });
+        throw new FactoryResetWipeError(
+          `could not delete "${join(dir, 'workspaces')}": EBUSY: resource busy or locked`,
+          [join(dir, 'events')],
+        );
+      },
+    });
+    await createRun(harness);
+
+    const res = await harness.handle(resetRequest(FACTORY_RESET_PHRASE));
+    expect(res.status).toBe(500);
+    const body = record(res);
+    expect(body.error).toBe('factory_reset_failed');
+    expect(String(body.message)).toContain('EBUSY');
+    // The PARTIAL deletion is reported, not discarded.
+    expect(body.deletedPaths).toEqual([join(factoryDir, 'events')]);
+    expect(body.held).toBe(true);
+
+    // The singletons were STILL rebuilt: a fresh held daemon, a working app
+    // over the (now empty) rebuilt store, and no generation bump (the reset
+    // did not complete, so no markers were appended).
+    expect(harness.rebuilds()).toBe(1);
+    expect(harness.daemon().held).toBe(true);
+    const list = await harness.handle(req('GET', '/api/runs', {}));
+    expect(list.status).toBe(200);
+    expect(record(list).runs).toEqual([]);
+    const overview = await harness.handle(req('GET', '/api/execution', {}));
+    expect(record(overview).resetGeneration).toBe(0);
+  });
+});
+
+/* ----------------------------------------------------------------------------
+ * Gate discipline on refusal (A5): the route holds the gate FIRST and
+ * re-checks leases UNDER the held gate; a refusal restores the prior state.
+ * ------------------------------------------------------------------------- */
+
+describe('POST /api/execution/factory-reset — gate discipline on refusal (A5)', () => {
+  it('a lease refusal (409) restores a previously RELEASED gate', async () => {
+    const harness = await makeHarness();
+    const runId = await createRun(harness);
+    const resumed = await harness.handle(req('POST', '/api/execution/resume', authedHeaders(), {}));
+    expect(resumed.status).toBe(200);
+    expect(harness.daemon().held).toBe(false);
+    await seedLeasedJob(harness, runId);
+
+    const res = await harness.handle(resetRequest(FACTORY_RESET_PHRASE));
+    expect(res.status).toBe(409);
+    expect(record(res).error).toBe('jobs_leased');
+    // The refused reset left the gate exactly as it was: released.
+    expect(harness.daemon().held).toBe(false);
+    expect(harness.rebuilds()).toBe(0);
+  });
+
+  it('a confirmation mismatch (400) restores a previously RELEASED gate', async () => {
+    const harness = await makeHarness();
+    await createRun(harness);
+    await harness.handle(req('POST', '/api/execution/resume', authedHeaders(), {}));
+    expect(harness.daemon().held).toBe(false);
+
+    const res = await harness.handle(resetRequest('not the phrase'));
+    expect(res.status).toBe(400);
+    expect(harness.daemon().held).toBe(false);
+    expect(harness.rebuilds()).toBe(0);
+  });
+
+  it('a refusal on an already-HELD gate leaves it held', async () => {
+    const harness = await makeHarness();
+    const runId = await createRun(harness);
+    expect(harness.daemon().held).toBe(true);
+    await seedLeasedJob(harness, runId);
+
+    const res = await harness.handle(resetRequest(FACTORY_RESET_PHRASE));
+    expect(res.status).toBe(409);
+    expect(harness.daemon().held).toBe(true);
   });
 });

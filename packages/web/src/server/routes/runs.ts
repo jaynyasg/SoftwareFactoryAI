@@ -80,16 +80,18 @@ import { projectWorkspace } from '@software-factory/worker';
 // (run-outputs + core projections), not the CLI command surface.
 import { buildRunOutputs } from '@software-factory/cli/run-outputs';
 import type { ApiResponse, RouteContext, RouteDef } from '../app';
-import { asRecord, num, reviewMode, str } from './parse';
+import { asRecord, flag, num, reviewMode, str } from './parse';
 import { requestExecutionStart } from './execution';
 import {
   appendArchive,
+  appendRunCancellation,
+  batchCancelRuns,
   guardRunCommand,
   notFound,
   refreshBuildContract,
   resolveInterventionsForArchivedRun,
-  resolveInterventionsForCancelledRun,
 } from './shared';
+import type { BatchCancelEntry } from './shared';
 
 function callerFamily(value: unknown): CallerFamily | undefined {
   return value === 'claude' || value === 'codex' || value === 'api' ? value : undefined;
@@ -354,16 +356,11 @@ async function createRun(ctx: RouteContext): Promise<ApiResponse> {
   };
 }
 
-/** Truthy query-flag values accepted for boolean list options. */
-function queryFlag(value: string | undefined): boolean {
-  return value === '1' || value === 'true';
-}
-
 async function listRunsHandler(ctx: RouteContext): Promise<ApiResponse> {
   // Archived runs leave the DEFAULT list (session lifecycle U2): archive is a
   // visibility lifecycle, so hidden runs stay on disk and replayable but never
   // clutter the floor. `includeArchived=1` opts back in (history view, R7).
-  const includeArchived = queryFlag(ctx.request.query.includeArchived);
+  const includeArchived = flag(ctx.request.query.includeArchived);
   const ids = await ctx.reader.listRuns();
   const runs: RunProjection[] = [];
   for (const id of ids) {
@@ -391,18 +388,8 @@ async function appendCancellation(
   events: readonly FactoryEvent[],
   reason: string | undefined,
 ): Promise<void> {
-  await ctx.writer.append({
-    runId,
-    type: 'run.cancelled',
-    actor: { kind: 'operator', id: 'operator' },
-    subject: { kind: 'run', id: runId, version: current.lastSequence },
-    severity: 'warn',
-    idempotencyKey: `${runId}:run.cancelled`,
-    payload: { reason },
-  });
-  // A cancelled run's open interventions are dead: resolve them so the
-  // operator queue never carries blocking entries for a run that ended.
-  await resolveInterventionsForCancelledRun(ctx.store, events, runId);
+  // The shared pair: `run.cancelled` append + open-intervention resolution.
+  await appendRunCancellation(ctx, runId, current, events, reason);
   // Cancel propagates to queued and active execution work (U5): the daemon
   // aborts in-flight jobs and releases queued/abandoned ones as cancelled.
   if (ctx.executionDaemon !== null) {
@@ -589,10 +576,9 @@ async function cancelAllRuns(ctx: RouteContext): Promise<ApiResponse> {
     }
   }
 
-  const cancelled: string[] = [];
   const alreadyCancelled: string[] = [];
   const skippedTerminal: string[] = [];
-  const errors: { runId: string; message: string }[] = [];
+  const cancellable: BatchCancelEntry[] = [];
   for (const [runId, events] of eventsByRun) {
     const run = projectRun(events, runId);
     if (!isRealRun(run)) {
@@ -606,44 +592,13 @@ async function cancelAllRuns(ctx: RouteContext): Promise<ApiResponse> {
       skippedTerminal.push(runId);
       continue;
     }
-    let cancelAppended = false;
-    try {
-      await ctx.writer.append({
-        runId,
-        type: 'run.cancelled',
-        actor: { kind: 'operator', id: 'operator' },
-        subject: { kind: 'run', id: runId, version: run.lastSequence },
-        severity: 'warn',
-        idempotencyKey: `${runId}:run.cancelled`,
-        payload: { reason },
-      });
-      cancelAppended = true;
-      // A cancelled run's open interventions are dead: resolve them so the
-      // operator queue never carries blocking entries for a run that ended.
-      await resolveInterventionsForCancelledRun(ctx.store, events, runId);
-    } catch (error) {
-      // One run's append failure must not 500 the batch with earlier
-      // cancellations already committed: record it and keep cancelling.
-      const message = error instanceof Error ? error.message : String(error);
-      errors.push({ runId, message });
-    }
-    if (cancelAppended) {
-      cancelled.push(runId);
-    }
+    cancellable.push({ runId, run, events });
   }
 
-  // ONE daemon propagation for the whole batch (aborts every in-flight
-  // executor before the single chained release pass). A propagation failure
-  // is reported, not thrown: the `run.cancelled` events are already durable
-  // and the daemon's reconcile/drain passes release cancelled work anyway.
-  if (ctx.executionDaemon !== null && cancelled.length > 0) {
-    try {
-      await ctx.executionDaemon.cancelRuns(cancelled);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      errors.push({ runId: 'factory', message: `daemon cancel propagation failed: ${message}` });
-    }
-  }
+  // The shared two-phase batch core: every `run.cancelled` appended first
+  // (per-run failures collected, never a mid-batch 500), then ONE daemon
+  // propagation over the successfully cancelled runs.
+  const { cancelled, errors } = await batchCancelRuns(ctx, cancellable, { reason });
 
   return {
     status: 200,

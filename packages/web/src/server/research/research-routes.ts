@@ -17,7 +17,7 @@
 import { projectKnowledgeIndex, projectResearch, queryKnowledge } from '@software-factory/core';
 import type { KnowledgeEntryKind, KnowledgeQuery } from '@software-factory/core';
 import type { ApiResponse, RouteContext, RouteDef } from '../app';
-import { asRecord, num, str } from '../routes/parse';
+import { asRecord, flag, num, str } from '../routes/parse';
 import { guardRunCommand, notFound } from '../routes/shared';
 
 const KNOWLEDGE_KINDS: readonly KnowledgeEntryKind[] = [
@@ -50,10 +50,6 @@ function csv(value: string | undefined): readonly string[] | undefined {
     .map((part) => part.trim())
     .filter((part) => part.length > 0);
   return parts.length > 0 ? parts : undefined;
-}
-
-function flag(value: string | undefined): boolean {
-  return value === '1' || value === 'true';
 }
 
 async function triggerResearch(ctx: RouteContext): Promise<ApiResponse> {

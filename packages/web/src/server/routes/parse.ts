@@ -25,3 +25,8 @@ export function num(value: unknown): number | undefined {
 export function reviewMode(value: unknown): ReviewMode | undefined {
   return value === 'autonomous' || value === 'human' ? value : undefined;
 }
+
+/** Truthy query-flag values ('1'/'true') accepted for boolean query options. */
+export function flag(value: string | undefined): boolean {
+  return value === '1' || value === 'true';
+}

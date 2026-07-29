@@ -7,7 +7,6 @@
  */
 import { INTERVENTION_KINDS, verifyOperatorToken } from '@software-factory/core';
 import type { ApiRequest, ApiResponse, App } from './app';
-import { FACTORY_RESET_PHRASE } from './factory-reset';
 import type { LocalSession } from '../lib/session';
 
 export interface McpHttpRequest {
@@ -170,21 +169,14 @@ const TOOLS: readonly McpTool[] = [
       additionalProperties: false,
     },
   },
-  {
-    name: 'software_factory_factory_reset',
-    description: `DESTRUCTIVE: wipe ALL factory-managed state — the event ledger (every run, visible or archived), factory-materialized workspaces, and the operator token. Irreversible. The confirm field must be EXACTLY "${FACTORY_RESET_PHRASE}" (enforced server-side; a mismatch returns the required phrase plus an enumeration of what would be destroyed, and deletes nothing). Refused while any queue-job lease is active. User-supplied localFolder workspaces are never touched. Prefer software_factory_new_session, which archives reversibly instead of destroying.`,
-    inputSchema: {
-      type: 'object',
-      required: ['confirm'],
-      properties: {
-        confirm: {
-          type: 'string',
-          description: `Must be exactly "${FACTORY_RESET_PHRASE}".`,
-        },
-      },
-      additionalProperties: false,
-    },
-  },
+  // NOTE: there is deliberately NO `software_factory_factory_reset` tool.
+  // Destructive scope: an MCP tool schema would have to spell out the typed
+  // confirmation phrase, and a prompt-injected agent could simply copy it —
+  // the phrase only protects when a HUMAN types it. The UI and CLI keep the
+  // reset because a human types the phrase there; remote model surfaces get
+  // `software_factory_new_session` (reversible archive) instead. Pinned by
+  // mcp.test.ts ("reset tool deliberately absent") and the connector-parity
+  // CONNECTOR_SURFACE exclusion for POST /api/execution/factory-reset.
   {
     name: 'software_factory_cancel_all_runs',
     description:
@@ -719,17 +711,10 @@ async function callFactoryTool(
           }),
         );
         break;
-      case 'software_factory_factory_reset':
-        // DESTRUCTIVE (U4): exposed on MCP like cancel-all — the typed
-        // confirmation phrase is verified SERVER-side by the route, which also
-        // refuses while leases are active. The bridge adds no safety theater
-        // of its own: the route owns the contract for every surface.
-        response = await deps.app.handle(
-          internalRequest('POST', '/api/execution/factory-reset', session, {
-            confirm: str(args.confirm),
-          }),
-        );
-        break;
+      // NOTE: no `software_factory_factory_reset` case — the destructive wipe
+      // is deliberately absent from MCP (see the TOOLS comment above): a
+      // prompt-injected agent could copy the typed phrase from a schema, so
+      // only surfaces where a human types it (UI, CLI) keep the reset.
       case 'software_factory_cancel_all_runs':
         // Factory-scoped guarded command: one guard check covers the batch and
         // the route converges per run (already-cancelled/terminal runs are

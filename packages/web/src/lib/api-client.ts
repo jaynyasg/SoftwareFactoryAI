@@ -8,7 +8,13 @@
  * 409 the caller can recover from. The browser supplies the `Origin` header
  * automatically; tokens therefore never leave loopback.
  */
-import type { ReviewDecision, ReviewMode, RiskTier, RunProjection } from '@software-factory/core';
+import type {
+  ReviewDecision,
+  ReviewMode,
+  RiskTier,
+  RunProjection,
+  compareRunsNewestFirst,
+} from '@software-factory/core';
 import type { ExecutionOverview, FloorStatus, InterventionItem, RunAggregate } from './types';
 import { parseExecutionOverview } from './execution-overview';
 import { parseInterventionQueue } from './intervention-queue';
@@ -508,8 +514,19 @@ export async function fetchRunList(
   return body.runs
     .filter(isRunListRow)
     .filter((row) => includeArchived || row.archived !== true)
-    .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0) || b.lastSequence - a.lastSequence);
+    .sort(compareNewestFirst);
 }
+
+/**
+ * Newest-first ordering, TYPE-pinned to core's `compareRunsNewestFirst`. The
+ * browser bundle must never VALUE-import `@software-factory/core` (its barrel
+ * pulls node:fs/child_process), so the comparator body lives here while the
+ * erased `import type` keeps the signature locked to the single core
+ * definition the SSR `loadRunList` sorts with — a core signature drift fails
+ * this file's compile.
+ */
+const compareNewestFirst: typeof compareRunsNewestFirst = (a, b) =>
+  (b.startedAt ?? 0) - (a.startedAt ?? 0) || b.lastSequence - a.lastSequence;
 
 /** Poll the projected run view, resuming the ledger from `afterSequence`. */
 export async function fetchAggregate(runId: string, afterSequence: number): Promise<RunAggregate> {

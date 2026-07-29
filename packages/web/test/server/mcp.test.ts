@@ -54,7 +54,8 @@ const EXPECTED_TOOLS = [
   'software_factory_archive_run',
   'software_factory_unarchive_run',
   'software_factory_new_session',
-  'software_factory_factory_reset',
+  // NOTE: software_factory_factory_reset is DELIBERATELY absent — see the
+  // "factory reset is deliberately absent" suite below.
   'software_factory_review_decide',
   'software_factory_materialize_workspace',
   'software_factory_get_workspace',
@@ -584,9 +585,10 @@ describe('MCP cancel-all tool', () => {
 });
 
 /* ----------------------------------------------------------------------------
- * Session lifecycle tools (U7 connector parity): archive/unarchive,
- * new-session, and factory-reset round-trip through the SAME guarded routes as
- * the web floor and the CLI — the bridge reimplements nothing.
+ * Session lifecycle tools (U7 connector parity): archive/unarchive and
+ * new-session round-trip through the SAME guarded routes as the web floor and
+ * the CLI — the bridge reimplements nothing. The destructive factory reset is
+ * DELIBERATELY absent from MCP (destructive scope; pinned below).
  * ------------------------------------------------------------------------- */
 
 describe('MCP archive/unarchive tools', () => {
@@ -701,11 +703,11 @@ describe('MCP new-session tool', () => {
   });
 });
 
-describe('MCP factory-reset tool', () => {
+describe('MCP factory reset is deliberately absent (destructive scope)', () => {
   /**
-   * A reset runtime over a nonexistent (but absolute) factory dir: the wipe
-   * finds nothing on disk to delete, and rebuild hands back a fresh in-memory
-   * store we capture so the test can read the fresh markers.
+   * A reset runtime over a nonexistent (but absolute) factory dir whose
+   * rebuild we can observe: the pin below proves the tool's absence means the
+   * runtime is NEVER exercised through MCP, even when it IS wired.
    */
   function resetRuntime(): {
     runtime: FactoryResetRuntime;
@@ -724,51 +726,34 @@ describe('MCP factory-reset tool', () => {
     };
   }
 
-  it('fails closed when the reset runtime is not wired on the instance', async () => {
-    const ctx = makeMcp();
-    const res = await callTool(ctx, 'software_factory_factory_reset', {
-      confirm: FACTORY_RESET_PHRASE,
-    });
-    expect(res.isError).toBe(true);
-    expect(res.body.error).toBe('factory_reset_disabled');
+  it('tools/list never exposes a factory-reset tool', async () => {
+    // Destructive scope: a tool schema would spell out the typed confirmation
+    // phrase and a prompt-injected agent could copy it — the phrase only
+    // protects when a HUMAN types it (UI/CLI keep the reset; MCP does not).
+    const ctx = makeMcp({ factoryReset: resetRuntime().runtime });
+    const res = await handleMcpRequest(
+      { body: { jsonrpc: '2.0', id: 1, method: 'tools/list' }, headers: {} },
+      mcpDeps(ctx),
+    );
+    const body = res.body as { result: { tools: { name: string }[] } };
+    const names = body.result.tools.map((tool) => tool.name);
+    expect(names).not.toContain('software_factory_factory_reset');
+    expect(names.some((name) => name.includes('reset') && name.includes('factory'))).toBe(false);
   });
 
-  it('rejects a wrong phrase with the required phrase and destroys nothing', async () => {
+  it('calling the removed tool (even with the exact phrase) is unknown and destroys nothing', async () => {
     const { runtime, freshStore } = resetRuntime();
     const ctx = makeMcp({ factoryReset: runtime });
     const runId = await createRunViaTool(ctx);
 
-    const res = await callTool(ctx, 'software_factory_factory_reset', { confirm: 'reset it' });
-    expect(res.isError).toBe(true);
-    expect(res.body.error).toBe('confirmation_mismatch');
-    expect(res.body.requiredPhrase).toBe(FACTORY_RESET_PHRASE);
-    expect(record(res.body.wouldDestroy).runCount).toBe(1);
-    // Nothing rebuilt, nothing wiped: the old store still lists the run.
-    expect(freshStore()).toBeUndefined();
-    expect(await ctx.store.listRuns()).toContain(runId);
-  });
-
-  it('executes the reset with the exact phrase; fresh state carries the markers', async () => {
-    const { runtime, freshStore } = resetRuntime();
-    const ctx = makeMcp({ factoryReset: runtime });
-    await createRunViaTool(ctx);
-
     const res = await callTool(ctx, 'software_factory_factory_reset', {
       confirm: FACTORY_RESET_PHRASE,
     });
-    expect(res.isError).toBe(false);
-    expect(res.body.reset).toBe(true);
-    expect(res.body.resetGeneration).toBe(1);
-    expect(res.body.held).toBe(true);
-    expect(record(res.body.destroyed).runCount).toBe(1);
-
-    const fresh = freshStore();
-    expect(fresh).toBeDefined();
-    const markers = fresh === undefined ? [] : await fresh.readRun('factory');
-    expect(markers.map((event) => event.type)).toEqual([
-      'factory.reset_completed',
-      'session.started',
-    ]);
+    expect(res.isError).toBe(true);
+    expect(String(res.body.error)).toContain('Unknown tool');
+    // Nothing rebuilt, nothing wiped: the old store still lists the run.
+    expect(freshStore()).toBeUndefined();
+    expect(await ctx.store.listRuns()).toContain(runId);
   });
 });
 

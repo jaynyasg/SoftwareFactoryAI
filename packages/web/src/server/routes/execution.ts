@@ -65,14 +65,14 @@ import type {
   RunProjection,
 } from '@software-factory/core';
 import type { ApiResponse, RouteContext, RouteDef } from '../app';
-import { asRecord, num, str } from './parse';
+import { asRecord, flag, num, str } from './parse';
 import {
   appendArchive,
+  batchCancelRuns,
   guardRunCommand,
   notFound,
   refreshBuildContract,
   resolveInterventionsForArchivedRun,
-  resolveInterventionsForCancelledRun,
 } from './shared';
 import {
   countJobFailures,
@@ -97,10 +97,12 @@ import type { PreflightRunResult } from '../execution/preflight';
 import { projectPreflight } from '../execution/preflight';
 import {
   FACTORY_RESET_PHRASE,
+  FactoryResetWipeError,
   currentResetGeneration,
   enumerateFactoryReset,
   executeFactoryReset,
 } from '../factory-reset';
+import type { FactoryResetOutcome } from '../factory-reset';
 
 const EXECUTION_DISABLED: ApiResponse = {
   status: 503,
@@ -125,6 +127,7 @@ export type StartExecutionOutcome =
   | { readonly kind: 'preflight_disabled' }
   | { readonly kind: 'not_planned'; readonly status: string }
   | { readonly kind: 'nothing_to_retry' }
+  | { readonly kind: 'run_archived' }
   | { readonly kind: 'run_cancelled' }
   | { readonly kind: 'already_active'; readonly job: QueueJobView }
   | { readonly kind: 'retry_budget_exhausted'; readonly attempt: number; readonly max: number }
@@ -161,6 +164,13 @@ export async function requestExecutionStart(
   const queue = projectExecutionQueue(events, runId);
   const job = queue.byJobId[executionJobId(runId)];
 
+  // Archived runs never (re)start execution (R16: there is no "archived but
+  // still executing" state) — checked FIRST, even before the already-active
+  // convergence, so a start/retry on an archived run always says "unarchive
+  // first" instead of touching (or reporting) queue state.
+  if (run.archived) {
+    return { kind: 'run_archived' };
+  }
   if (job !== undefined && isActiveJobStatus(job.status)) {
     return { kind: 'already_active', job };
   }
@@ -265,6 +275,15 @@ async function startOutcomeResponse(
         body: {
           error: 'run_not_planned',
           message: `Run ${runId} is "${outcome.status}"; only planned runs can start execution.`,
+          run,
+        },
+      };
+    case 'run_archived':
+      return {
+        status: 422,
+        body: {
+          error: 'run_archived',
+          message: `Run ${runId} is archived; unarchive it before starting or retrying execution.`,
           run,
         },
       };
@@ -384,6 +403,17 @@ async function pauseRun(ctx: RouteContext): Promise<ApiResponse> {
     return EXECUTION_DISABLED;
   }
   const run = guarded.run;
+  // Archived runs have no live execution to command (R16): unarchive first.
+  if (run.archived) {
+    return {
+      status: 422,
+      body: {
+        error: 'run_archived',
+        message: `Run ${runId} is archived; unarchive it before pausing execution.`,
+        run,
+      },
+    };
+  }
   if (run.executionState === 'paused') {
     return {
       status: 200,
@@ -425,6 +455,17 @@ async function resumeRun(ctx: RouteContext): Promise<ApiResponse> {
     return EXECUTION_DISABLED;
   }
   const run = guarded.run;
+  // Archived runs have no live execution to command (R16): unarchive first.
+  if (run.archived) {
+    return {
+      status: 422,
+      body: {
+        error: 'run_archived',
+        message: `Run ${runId} is archived; unarchive it before resuming execution.`,
+        run,
+      },
+    };
+  }
   if (run.executionState !== 'paused') {
     return {
       status: 422,
@@ -702,12 +743,16 @@ interface SessionSnapshotEntry {
  * open a clean, HELD floor in ONE guarded factory-scoped command.
  *
  * Execution order (per the plan's sequence diagram):
- *   1. snapshot the run set NOW — at execution time, not confirmation time, so
- *      a run created from CLI/MCP mid-confirmation is included (TOCTOU);
- *   2. ask-once gate: active runs + `confirmActive` absent -> 409 listing the
- *      actives, NOTHING changed (no hold, no events);
- *   3. hold the drain gate (R8: a fresh session never auto-runs leftovers);
- *   4. cancel actives with the cancel-all two-phase shape: every
+ *   1. hold the drain gate FIRST (R8: a fresh session never auto-runs
+ *      leftovers) — BEFORE the snapshot read, so no new claim can start
+ *      between snapshot and cancel (TOCTOU);
+ *   2. snapshot the run set under the held gate — at execution time, not
+ *      confirmation time, so a run created from CLI/MCP mid-confirmation is
+ *      included (TOCTOU);
+ *   3. ask-once gate: active runs + `confirmActive` absent -> 409 listing the
+ *      actives, NOTHING changed (the gate is restored to its prior state, no
+ *      events — a declined confirm never leaves the factory held);
+ *   4. cancel actives with the shared `batchCancelRuns` two-phase core: every
  *      `run.cancelled` appended first (per-run failures collected, never a
  *      mid-batch 500), then ONE daemon `cancelRuns` over EVERY snapshot
  *      stream — phase 2 releases queued/abandoned jobs regardless of run
@@ -720,10 +765,14 @@ interface SessionSnapshotEntry {
  *   6. append the `session.started` marker on the reserved 'factory' stream
  *      (NO idempotency key: every New Session is a real, distinct session —
  *      a repeat run converges on empty archived/cancelled lists but still
- *      records that a fresh session opened).
+ *      records that a fresh session opened). A marker append failure folds
+ *      into `errors` instead of masking the batch outcome.
  *
- * The marker never disturbs run lists or the floor: the 'factory' stream has
- * no `run.created`, so `isRealRun`/`isVisibleRun` exclude it by construction.
+ * A partial failure (any non-empty `errors`) returns 500 `new_session_partial`
+ * with the SAME body shape, so MCP/CLI callers never read a partial batch as
+ * success. The marker never disturbs run lists or the floor: the 'factory'
+ * stream has no `run.created`, so `isRealRun`/`isVisibleRun` exclude it by
+ * construction.
  */
 async function startNewSession(ctx: RouteContext): Promise<ApiResponse> {
   const denial = await ctx.guardMutation({
@@ -743,8 +792,16 @@ async function startNewSession(ctx: RouteContext): Promise<ApiResponse> {
   const confirmActive = body.confirmActive === true;
   const reason = str(body.reason) ?? 'new session';
 
-  // 1. Snapshot: ONE cross-run read serves every projection (the cancelAllRuns
-  // pattern). Grouping preserves per-run order; `projectRun` sorts defensively.
+  // 1. Hold the gate BEFORE the snapshot read (TOCTOU): once held, no new
+  // claim starts between snapshot and cancel, and any run created before the
+  // hold landed is caught by the snapshot below. The prior gate state is
+  // remembered so the ask-once refusal can restore it.
+  const wasHeld = daemon.held;
+  daemon.hold();
+
+  // 2. Snapshot UNDER the held gate: ONE cross-run read serves every
+  // projection (the cancelAllRuns pattern). Grouping preserves per-run order;
+  // `projectRun` sorts defensively.
   const eventsByRun = new Map<string, FactoryEvent[]>();
   for (const event of await ctx.reader.readAll()) {
     const runEvents = eventsByRun.get(event.runId);
@@ -762,10 +819,14 @@ async function startNewSession(ctx: RouteContext): Promise<ApiResponse> {
     }
   }
 
-  // 2. Ask-once (AE1): actives require an explicit confirmation. Nothing has
-  // changed yet — the operator can abort with the factory untouched.
+  // 3. Ask-once (AE1): actives require an explicit confirmation. Nothing has
+  // changed — the gate returns to its prior state, so a declined confirm
+  // never leaves the factory held, and the operator can abort untouched.
   const actives = visible.filter((entry) => isActiveRun(entry.run));
   if (actives.length > 0 && !confirmActive) {
+    if (!wasHeld) {
+      daemon.resume();
+    }
     return {
       status: 409,
       body: {
@@ -783,46 +844,18 @@ async function startNewSession(ctx: RouteContext): Promise<ApiResponse> {
     };
   }
 
-  // 3. Hold the gate BEFORE cancelling so no new claims start mid-command.
-  daemon.hold();
-
-  // 4a. Cancel actives: batch appends first (cancel-all shape) — one run's
-  // append failure is collected, never a 500 with earlier cancels committed.
-  const cancelled: string[] = [];
-  const errors: { runId: string; message: string }[] = [];
-  const failedCancels = new Set<string>();
-  for (const { runId, run, events } of actives) {
-    try {
-      await ctx.writer.append({
-        runId,
-        type: 'run.cancelled',
-        actor: { kind: 'operator', id: 'operator' },
-        subject: { kind: 'run', id: runId, version: run.lastSequence },
-        severity: 'warn',
-        idempotencyKey: `${runId}:run.cancelled`,
-        payload: { reason },
-      });
-      await resolveInterventionsForCancelledRun(ctx.store, events, runId);
-      cancelled.push(runId);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      errors.push({ runId, message });
-      failedCancels.add(runId);
-    }
-  }
-
-  // 4b. ONE daemon propagation over EVERY snapshot stream: aborts in-flight
-  // executors for the (now cancelled) actives and releases queued/abandoned
-  // jobs as cancelled for ALL targeted streams — including stale queued work
-  // on terminal or already-archived runs (R8: the queue truly empties). This
-  // is awaited BEFORE any archive append so the ledger shows
+  // 4. Cancel actives with the shared two-phase batch core: every
+  // `run.cancelled` appended first (one run's failure is collected, never a
+  // 500 with earlier cancels committed), then ONE daemon propagation over
+  // EVERY snapshot stream — releasing queued/abandoned jobs as cancelled for
+  // ALL targeted streams, including stale queued work on terminal or
+  // already-archived runs (R8: the queue truly empties). The propagation is
+  // awaited BEFORE any archive append so the ledger shows
   // cancel -> release -> archive -> marker in order.
-  try {
-    await daemon.cancelRuns([...eventsByRun.keys()]);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    errors.push({ runId: 'factory', message: `daemon cancel propagation failed: ${message}` });
-  }
+  const { cancelled, errors, failedCancels } = await batchCancelRuns(ctx, actives, {
+    reason,
+    propagateRunIds: [...eventsByRun.keys()],
+  });
 
   // 5. Archive every visible run. A run whose cancel append failed is NOT
   // archived — an archived-but-alive run is exactly the state R16 forbids.
@@ -846,24 +879,42 @@ async function startNewSession(ctx: RouteContext): Promise<ApiResponse> {
     }
   }
 
-  // 6. The session marker records what THIS command actually did (R12).
-  await ctx.writer.append({
-    runId: 'factory',
-    type: 'session.started',
-    actor: { kind: 'operator', id: 'operator' },
-    subject: { kind: 'factory', id: 'session' },
-    severity: 'info',
-    payload: { archivedRunIds: archived, cancelledRunIds: cancelled },
-  });
+  // 6. The session marker records what THIS command actually did (R12). A
+  // marker append failure folds into `errors` (A7): the batch outcome above is
+  // already durable, so the caller must see the partial state, not a throw.
+  try {
+    await ctx.writer.append({
+      runId: 'factory',
+      type: 'session.started',
+      actor: { kind: 'operator', id: 'operator' },
+      subject: { kind: 'factory', id: 'session' },
+      severity: 'info',
+      payload: { archivedRunIds: archived, cancelledRunIds: cancelled },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    errors.push({ runId: 'factory', message: `session.started append failed: ${message}` });
+  }
 
   auditFactoryCommand('session.start_new');
+  // Any collected failure makes this a 500-class outcome (new_session_partial)
+  // with the SAME body: MCP's isError flag and the CLI's ApiError both key off
+  // the status, so a partial batch can never read as success.
+  const partial = errors.length > 0;
   return {
-    status: 200,
+    status: partial ? 500 : 200,
     body: {
+      ...(partial
+        ? {
+            error: 'new_session_partial',
+            message:
+              'New Session completed with per-run failures; see errors for what did not land.',
+          }
+        : {}),
       archived,
       cancelled,
       held: daemon.held,
-      ...(errors.length > 0 ? { errors } : {}),
+      ...(partial ? { errors } : {}),
     },
   };
 }
@@ -879,17 +930,23 @@ async function startNewSession(ctx: RouteContext): Promise<ApiResponse> {
  *   1. command guard (factory-scoped subject, like new-session) — denials are
  *      audited on the reserved 'factory' stream;
  *   2. fail closed (503) without a daemon or a reset runtime;
- *   3. typed confirmation: the body's `confirm` field must be EXACTLY
+ *   3. hold the gate FIRST, then read the ledger UNDER the held gate — the
+ *      lease check below cannot race a new claim (TOCTOU). Every refusal
+ *      restores the prior gate state, so a refused reset leaves the gate
+ *      exactly as it was;
+ *   4. typed confirmation: the body's `confirm` field must be EXACTLY
  *      "reset the factory" (`FACTORY_RESET_PHRASE`) — enforced server-side,
  *      never just in UI. A mismatch returns 400 with the required phrase and
  *      the pre-flight enumeration so the confirmation UI can render what is
  *      at stake, and deletes nothing;
- *   4. refuse while any queue-job lease is active (409 listing the leases) —
+ *   5. refuse while any queue-job lease is active (409 listing the leases) —
  *      no force override in v1: the operator cancels first;
- *   5. only then the pinned destructive sequence (`executeFactoryReset`):
- *      hold -> stop -> wipe allowlist -> dispose/rebuild singletons -> fresh
- *      markers. The response carries the new generation plus the enumeration
- *      of what WAS destroyed.
+ *   6. only then the pinned destructive sequence (`executeFactoryReset`):
+ *      hold -> stop -> seal old store -> wipe allowlist -> dispose/rebuild
+ *      singletons -> fresh markers. The response carries the new generation,
+ *      the enumeration of what WAS destroyed, and the paths actually deleted.
+ *      A wipe failure (e.g. Windows EBUSY) still rebuilds the singletons and
+ *      surfaces the PARTIAL deletion as a 500 instead of discarding it.
  */
 async function factoryReset(ctx: RouteContext): Promise<ApiResponse> {
   const denial = await ctx.guardMutation({
@@ -914,11 +971,23 @@ async function factoryReset(ctx: RouteContext): Promise<ApiResponse> {
     };
   }
 
+  // Hold FIRST, then read + check under the held gate: no new claim can slip
+  // in between the lease check and the destructive sequence (TOCTOU). Every
+  // refusal restores the prior gate state so a refused reset changes nothing.
+  const wasHeld = daemon.held;
+  daemon.hold();
+  const restoreGate = (): void => {
+    if (!wasHeld) {
+      daemon.resume();
+    }
+  };
+
   const events = await ctx.reader.readAll();
   const enumeration = await enumerateFactoryReset(events, runtime.factoryDir);
 
   const confirm = str(asRecord(ctx.request.body).confirm);
   if (confirm !== FACTORY_RESET_PHRASE) {
+    restoreGate();
     return {
       status: 400,
       body: {
@@ -936,6 +1005,7 @@ async function factoryReset(ctx: RouteContext): Promise<ApiResponse> {
     events.filter((event) => event.type.startsWith('queue.')),
   ).jobs.filter((job) => job.status === 'leased');
   if (leased.length > 0) {
+    restoreGate();
     return {
       status: 409,
       body: {
@@ -956,12 +1026,38 @@ async function factoryReset(ctx: RouteContext): Promise<ApiResponse> {
     };
   }
 
-  await executeFactoryReset({
-    daemon,
-    runtime,
-    nextGeneration: enumeration.resetGeneration + 1,
-    wipedRunCount: enumeration.runCount + enumeration.archivedRunCount,
-  });
+  let outcome: FactoryResetOutcome;
+  try {
+    outcome = await executeFactoryReset({
+      daemon,
+      runtime,
+      store: ctx.store,
+      nextGeneration: enumeration.resetGeneration + 1,
+      wipedRunCount: enumeration.runCount + enumeration.archivedRunCount,
+    });
+  } catch (error) {
+    if (error instanceof FactoryResetWipeError) {
+      // The wipe failed partway (e.g. Windows EBUSY) but the singletons were
+      // still rebuilt (the old store/daemon are sealed and unusable). Surface
+      // the PARTIAL deletion instead of discarding it — the operator must see
+      // exactly what is already gone before retrying.
+      return {
+        status: 500,
+        body: {
+          error: 'factory_reset_failed',
+          message:
+            `Factory reset failed while deleting factory-managed state: ${error.message}. ` +
+            'The server singletons were rebuilt; the paths listed in deletedPaths were ' +
+            'already removed. Retry the reset once the blocking handle is released.',
+          deletedPaths: error.deletedPaths,
+          wouldDestroy: enumeration,
+          // A rebuilt server-runtime daemon boots held again.
+          held: true,
+        },
+      };
+    }
+    throw error;
+  }
 
   auditFactoryCommand('execution.factory_reset');
   return {
@@ -973,6 +1069,8 @@ async function factoryReset(ctx: RouteContext): Promise<ApiResponse> {
       // then stopped, and a rebuilt server-runtime daemon boots held again.
       held: true,
       destroyed: enumeration,
+      // The allowlisted paths that existed and were actually deleted.
+      deletedPaths: outcome.deletedPaths,
     },
   };
 }
@@ -1024,7 +1122,7 @@ async function listInterventions(ctx: RouteContext): Promise<ApiResponse> {
       severity: isEventSeverity(query.severity) ? query.severity : undefined,
       blockingStage: str(query.blockingStage) ?? str(query.stage),
       requiredActionText: str(query.action),
-      openOnly: query.open === '1' || query.open === 'true',
+      openOnly: flag(query.open),
     }),
   };
 }

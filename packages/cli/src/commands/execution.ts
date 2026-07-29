@@ -479,6 +479,25 @@ export async function newSessionCommand(
       }
       deps.io.err('Re-run with --confirm-active to cancel and archive them, or cancel first.');
     }
+    // Partial failure (500 new_session_partial): the batch DID run — print
+    // what landed plus every per-run failure so the operator knows the floor
+    // state, then rethrow so the exit code reports the partial command
+    // instead of pretending success.
+    if (error instanceof ApiError && error.code === 'new_session_partial') {
+      const details = error.details ?? {};
+      const archivedCount = Array.isArray(details.archived) ? details.archived.length : 0;
+      const cancelledCount = Array.isArray(details.cancelled) ? details.cancelled.length : 0;
+      deps.io.err(
+        `New session PARTIAL: archived ${archivedCount} run(s), cancelled ${cancelledCount} ` +
+          'active run(s); some operations failed:',
+      );
+      for (const entry of Array.isArray(details.errors) ? details.errors : []) {
+        const failure = entry as { runId?: string; message?: string };
+        deps.io.err(
+          `  failed ${failure.runId ?? 'unknown'}: ${failure.message ?? 'unknown error'}`,
+        );
+      }
+    }
     throw error;
   }
   if (args.json === true) {

@@ -118,23 +118,21 @@ const CONNECTOR_SURFACE: Readonly<Record<string, ConnectorMapping>> = {
     action: 'startNewSession',
     mcp: 'software_factory_new_session',
   },
-  // Session lifecycle (U4 route, U7 parity decision): DELIBERATE asymmetric
-  // coverage, recorded here because this mapping shape is both-or-excluded.
-  // The destructive Factory Reset IS exposed on MCP as
-  // `software_factory_factory_reset` (pinned by mcp.test.ts) and on the CLI
-  // as `software-factory factory-reset` — both forward the SERVER-enforced
-  // typed confirmation phrase, mirroring how the destructive cancel-all is
-  // MCP-reachable. The ChatGPT Action deliberately OMITS the operation
-  // (destructive-scope rule: a hosted web-model surface gets no
-  // wipe-everything button; see the NOTE comment in
-  // integrations/chatgpt/actions.openai.yaml). Operators reset from the UI,
-  // CLI, or MCP instead.
+  // Session lifecycle (U4 route, U7 parity decision): the destructive Factory
+  // Reset is excluded from BOTH remote model connectors (ChatGPT Action AND
+  // MCP) by destructive-scope policy. A connector tool/operation schema would
+  // have to spell out the typed confirmation phrase, and a prompt-injected
+  // agent could simply copy it — the phrase only protects when a HUMAN types
+  // it. The UI and CLI keep the reset because a human types the phrase there
+  // (see the NOTE comments in packages/web/src/server/mcp.ts and
+  // integrations/chatgpt/actions.openai.yaml; mcp.test.ts pins the tool's
+  // deliberate absence).
   'POST /api/execution/factory-reset': {
     excluded:
-      'Deliberate asymmetric coverage: MCP exposes software_factory_factory_reset (typed ' +
-      'confirmation phrase enforced server-side, like the destructive cancel-all precedent) and ' +
-      'the CLI exposes factory-reset, but the ChatGPT Action omits the destructive wipe by ' +
-      'destructive-scope policy — this entry records that reviewed decision, not drift.',
+      'Destructive-scope policy: excluded from BOTH the ChatGPT Action and MCP. A connector ' +
+      'schema would spell out the typed confirmation phrase and a prompt-injected agent could ' +
+      'copy it; only surfaces where a human types the phrase (operator UI, CLI) expose the ' +
+      'wipe — this entry records that reviewed decision, not drift.',
   },
   // Operator intervention queue.
   'GET /api/interventions': {

@@ -1387,6 +1387,74 @@ describe('POST /api/runs/cancel-all', () => {
 });
 
 /* ----------------------------------------------------------------------------
+ * Execution commands on ARCHIVED runs (R16: no "archived but still executing")
+ * ------------------------------------------------------------------------- */
+
+/** Seed `run.archived` directly (an archived-but-otherwise-live projection). */
+function archiveDirectly(store: EventStore, runId: string): Promise<unknown> {
+  return store.append({
+    runId,
+    type: 'run.archived',
+    actor: { kind: 'operator', id: 'operator' },
+    subject: { kind: 'run', id: runId, version: 0 },
+    severity: 'info',
+    payload: { reason: 'seeded archive' },
+  });
+}
+
+describe('execution commands on archived runs — 422 run_archived (unarchive first)', () => {
+  it('start on an archived run is rejected and enqueues nothing', async () => {
+    const { app, store } = makeExecApp();
+    const runId = await createPlannedRun(app);
+    await archiveDirectly(store, runId);
+
+    const res = await app.handle(req('POST', `/api/runs/${runId}/start`, authedHeaders(), {}));
+    expect(res.status).toBe(422);
+    expect(record(res).error).toBe('run_archived');
+    expect(String(record(res).message)).toContain('unarchive');
+    const seen = await types(store, runId);
+    expect(seen).not.toContain('queue.enqueued');
+    expect(seen.some((t) => t.startsWith('preflight.'))).toBe(false);
+  });
+
+  it('retry on an archived run is rejected and re-enqueues nothing — even with a prior job', async () => {
+    const { app, store } = makeExecApp();
+    const runId = await createPlannedRun(app);
+    const started = await app.handle(req('POST', `/api/runs/${runId}/start`, authedHeaders(), {}));
+    expect(started.status).toBe(202);
+    const before = (await store.readRun(runId)).filter((e) => e.type === 'queue.enqueued').length;
+    await archiveDirectly(store, runId);
+
+    // The archived check outranks even the already-active convergence: the
+    // response says "unarchive first", never queue state for a hidden run.
+    const res = await app.handle(req('POST', `/api/runs/${runId}/retry`, authedHeaders(), {}));
+    expect(res.status).toBe(422);
+    expect(record(res).error).toBe('run_archived');
+    const after = (await store.readRun(runId)).filter((e) => e.type === 'queue.enqueued').length;
+    expect(after).toBe(before);
+  });
+
+  it('pause and resume on an archived run are rejected with no execution events', async () => {
+    const { app, store } = makeExecApp();
+    const runId = await createPlannedRun(app);
+    await app.handle(req('POST', `/api/runs/${runId}/start`, authedHeaders(), {}));
+    await archiveDirectly(store, runId);
+
+    const paused = await app.handle(req('POST', `/api/runs/${runId}/pause`, authedHeaders(), {}));
+    expect(paused.status).toBe(422);
+    expect(record(paused).error).toBe('run_archived');
+
+    const resumed = await app.handle(req('POST', `/api/runs/${runId}/resume`, authedHeaders(), {}));
+    expect(resumed.status).toBe(422);
+    expect(record(resumed).error).toBe('run_archived');
+
+    const seen = await types(store, runId);
+    expect(seen).not.toContain('execution.paused');
+    expect(seen).not.toContain('execution.resumed');
+  });
+});
+
+/* ----------------------------------------------------------------------------
  * POST /api/execution/new-session (session lifecycle U3, flow F2)
  * ------------------------------------------------------------------------- */
 
@@ -1542,21 +1610,44 @@ describe('POST /api/execution/new-session', () => {
     expect(projectRun(await store.readRun(cancelledRun), cancelledRun).status).toBe('cancelled');
   });
 
-  it('TOCTOU: a run created between the confirmation ask and the command landing is included', async () => {
-    const { app, store } = makeExecApp();
+  it('TOCTOU: a run created between the confirmation ask and the command landing is included (snapshot under the held gate)', async () => {
+    // Instrument readAll to record the gate state at snapshot time: the A6
+    // ordering (hold FIRST, then snapshot) means a run created any time
+    // before the hold lands is caught — no claim can start in between.
+    const heldAtReadAll: boolean[] = [];
+    let daemonRef: ExecutionDaemon | null = null;
+    const { app, store, daemon } = makeExecApp({
+      wrapStore: (base) => ({
+        ...base,
+        readAll: () => {
+          heldAtReadAll.push(daemonRef?.held ?? false);
+          return base.readAll();
+        },
+      }),
+    });
+    daemonRef = daemon;
     const active = await createPlannedRun(app);
     await app.handle(req('POST', `/api/runs/${active}/start`, authedHeaders(), {}));
     const ask = await newSession(app);
     expect(ask.status).toBe(409);
+    // The declined ask restored the gate: a refused confirm never holds the
+    // factory (A6).
+    expect(daemon.held).toBe(false);
 
     // A CLI/MCP caller creates a run while the operator reads the confirm.
     const midConfirmation = await createPlannedRun(app);
 
+    heldAtReadAll.length = 0;
     const res = await newSession(app, { confirmActive: true });
     expect(res.status).toBe(200);
     const body = record(res) as { archived: string[] };
     expect(body.archived.sort()).toEqual([active, midConfirmation].sort());
     expect(projectRun(await store.readRun(midConfirmation), midConfirmation).archived).toBe(true);
+    // Every cross-run read the confirmed command performed happened UNDER the
+    // held gate — the post-hold snapshot is what caught midConfirmation.
+    expect(heldAtReadAll.length).toBeGreaterThan(0);
+    expect(heldAtReadAll.every((held) => held)).toBe(true);
+    expect(daemon.held).toBe(true);
   });
 
   it('a denied command changes nothing and lands a security event on the factory stream', async () => {
@@ -1724,7 +1815,7 @@ describe('POST /api/execution/new-session', () => {
     ).toHaveLength(1);
   });
 
-  it('an archive append failure for one run still archives the rest and reports errors', async () => {
+  it('an archive append failure still archives the rest but returns 500 new_session_partial (never partial-as-success)', async () => {
     const { app, store } = makeExecApp({
       wrapStore: (base) => ({
         ...base,
@@ -1741,11 +1832,15 @@ describe('POST /api/execution/new-session', () => {
     await completeRun(store, failing);
 
     const res = await newSession(app);
-    expect(res.status).toBe(200);
+    // A partial batch is a 500-class outcome (A7): MCP's isError flag and the
+    // CLI's ApiError both key off the status, so partial can't read as success.
+    expect(res.status).toBe(500);
     const body = record(res) as {
+      error?: string;
       archived: string[];
       errors?: { runId: string; message: string }[];
     };
+    expect(body.error).toBe('new_session_partial');
     expect(body.archived).toEqual([first]);
     expect(body.errors).toHaveLength(1);
     expect(body.errors?.[0].runId).toBe(failing);
@@ -1755,6 +1850,39 @@ describe('POST /api/execution/new-session', () => {
     expect((marker?.payload as { archivedRunIds?: string[] } | undefined)?.archivedRunIds).toEqual([
       first,
     ]);
+  });
+
+  it('a session.started append failure folds into errors and returns 500 new_session_partial', async () => {
+    const { app, store } = makeExecApp({
+      wrapStore: (base) => ({
+        ...base,
+        append: (event) =>
+          event.type === 'session.started'
+            ? Promise.reject(new Error('marker write refused'))
+            : base.append(event),
+      }),
+    });
+    const runId = await createPlannedRun(app);
+    await completeRun(store, runId);
+
+    const res = await newSession(app);
+    expect(res.status).toBe(500);
+    const body = record(res) as {
+      error?: string;
+      archived: string[];
+      held: boolean;
+      errors?: { runId: string; message: string }[];
+    };
+    expect(body.error).toBe('new_session_partial');
+    // The batch itself landed: the run is archived and the gate holds — only
+    // the marker is missing, and the errors say so explicitly.
+    expect(body.archived).toEqual([runId]);
+    expect(body.held).toBe(true);
+    expect(body.errors).toHaveLength(1);
+    expect(body.errors?.[0].runId).toBe('factory');
+    expect(body.errors?.[0].message).toContain('session.started append failed');
+    expect(projectRun(await store.readRun(runId), runId).archived).toBe(true);
+    expect((await store.readRun('factory')).some((e) => e.type === 'session.started')).toBe(false);
   });
 
   it('fails closed with execution_disabled when no daemon is wired', async () => {
