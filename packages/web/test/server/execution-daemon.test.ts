@@ -82,7 +82,12 @@ describe('daemon singleton — Next-mounted instance (instance.ts)', () => {
       delete globalRef.__softwareFactory__;
       await rm(tmp, { recursive: true, force: true });
     }
-  });
+    // Generous timeout: this test boots the real instance graph (store, app,
+    // daemon) and takes ~3s alone. Under full-suite parallel load the 5s
+    // default can abandon it mid-boot, and its late continuation then leaks a
+    // daemon into the NEXT test's freshly-reset module counter — a cascade
+    // that reads as "expected 2 to be 1" there.
+  }, 30_000);
 });
 
 describe('daemon singleton — standalone API server (standalone.ts)', () => {
@@ -108,7 +113,10 @@ describe('daemon singleton — standalone API server (standalone.ts)', () => {
       await rm(tmp, { recursive: true, force: true });
     }
     expect(started.daemon.running).toBe(false);
-  });
+    // Same load headroom as the instance-singleton test above: a real
+    // listen(0) server boot must never be abandoned mid-flight by the 5s
+    // default when the suite saturates the machine.
+  }, 30_000);
 });
 
 describe('daemon lifecycle + U6 executor seam', () => {

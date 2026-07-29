@@ -317,7 +317,11 @@ describe('POST /api/execution/factory-reset — refusals (AE3)', () => {
       store,
       operatorToken: provider,
       config: { allowedOrigins: [ORIGIN], csrfToken: CSRF },
-      execution: createExecutionDaemon({ store, timers: noopTimers(), config: { autoStart: false } }),
+      execution: createExecutionDaemon({
+        store,
+        timers: noopTimers(),
+        config: { autoStart: false },
+      }),
     });
     const res = await noRuntime.handle(resetRequest(FACTORY_RESET_PHRASE));
     expect(res.status).toBe(503);
@@ -421,7 +425,10 @@ describe('POST /api/execution/factory-reset — happy path (F3)', () => {
     // The fresh ledger contains EXACTLY the two markers, in order, on the
     // reserved 'factory' stream — the discontinuity explains itself (R12).
     const fresh = await harness.store().readAll();
-    expect(fresh.map((event) => event.type)).toEqual(['factory.reset_completed', 'session.started']);
+    expect(fresh.map((event) => event.type)).toEqual([
+      'factory.reset_completed',
+      'session.started',
+    ]);
     expect(fresh.every((event) => event.runId === 'factory')).toBe(true);
     expect(fresh[0].payload).toMatchObject({ resetGeneration: 1, wipedRunCount: 2 });
 
