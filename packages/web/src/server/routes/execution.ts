@@ -38,6 +38,20 @@
  *                                    `session.started` marker on the reserved
  *                                    'factory' stream. Asks once when active
  *                                    runs exist (`confirmActive`).
+ *   POST /api/execution/factory-reset (guarded) — the DESTRUCTIVE wipe of
+ *                                    factory-managed state (session lifecycle
+ *                                    U4, flow F3). Requires the exact typed
+ *                                    phrase "reset the factory" in the body's
+ *                                    `confirm` field (AE3, server-enforced);
+ *                                    refuses while any queue lease is active.
+ *                                    Deletes ONLY the allowlisted paths under
+ *                                    the factory dir, rebuilds the process
+ *                                    singletons, and opens the fresh ledger
+ *                                    with `factory.reset_completed` +
+ *                                    `session.started`. The bumped reset
+ *                                    generation rides on GET /api/execution
+ *                                    and GET /api/floor for stale-tab
+ *                                    detection (R15).
  *
  * All mutations pass the command guard first (token/origin/CSRF/stale-version)
  * and are idempotent: duplicate starts return the existing queue state instead
@@ -81,6 +95,12 @@ import type {
 } from '../execution/interventions';
 import type { PreflightRunResult } from '../execution/preflight';
 import { projectPreflight } from '../execution/preflight';
+import {
+  FACTORY_RESET_PHRASE,
+  currentResetGeneration,
+  enumerateFactoryReset,
+  executeFactoryReset,
+} from '../factory-reset';
 
 const EXECUTION_DISABLED: ApiResponse = {
   status: 503,
@@ -514,13 +534,33 @@ function executionFlags(daemon: RouteContext['executionDaemon']): {
     : { enabled: true, held: daemon.held, running: daemon.running };
 }
 
+/**
+ * The wire body GET /api/execution and the execution half of GET /api/floor
+ * share. ONE builder means the two routes cannot drift on shape (the same
+ * treatment `interventionQueueBody` gives the intervention half).
+ * `resetGeneration` (session lifecycle U4, R15) is the ledger-derived factory
+ * reset generation: stale tabs compare it against the value they loaded with
+ * and force a reload instead of failing silently on wiped tokens.
+ */
+function executionOverviewBody(
+  daemon: RouteContext['executionDaemon'],
+  events: readonly FactoryEvent[],
+): {
+  execution: { enabled: boolean; held: boolean; running: boolean };
+  queue: { queued: number; leased: number };
+  resetGeneration: number;
+} {
+  return {
+    execution: executionFlags(daemon),
+    queue: countQueueJobs(events),
+    resetGeneration: currentResetGeneration(events),
+  };
+}
+
 async function getExecutionOverview(ctx: RouteContext): Promise<ApiResponse> {
   return {
     status: 200,
-    body: {
-      execution: executionFlags(ctx.executionDaemon),
-      queue: countQueueJobs(await ctx.reader.readAll()),
-    },
+    body: executionOverviewBody(ctx.executionDaemon, await ctx.reader.readAll()),
   };
 }
 
@@ -555,17 +595,17 @@ function interventionQueueBody(
  * overview PLUS the unfiltered /api/interventions queue, folded from ONE
  * `readAll`. The body is the FLAT key-level union of those two GET bodies so
  * the client reuses the same parsers on each half — which requires the two
- * standalone bodies' top-level keys to stay disjoint (execution/queue vs
- * interventions/openCount); a colliding key would silently shadow one half.
- * Either legacy endpoint remains available for connectors and run detail.
+ * standalone bodies' top-level keys to stay disjoint
+ * (execution/queue/resetGeneration vs interventions/openCount); a colliding
+ * key would silently shadow one half. Either legacy endpoint remains
+ * available for connectors and run detail.
  */
 async function getFloorStatus(ctx: RouteContext): Promise<ApiResponse> {
   const events = await ctx.reader.readAll();
   return {
     status: 200,
     body: {
-      execution: executionFlags(ctx.executionDaemon),
-      queue: countQueueJobs(events),
+      ...executionOverviewBody(ctx.executionDaemon, events),
       ...interventionQueueBody(projectInterventionQueue(events)),
     },
   };
@@ -828,6 +868,115 @@ async function startNewSession(ctx: RouteContext): Promise<ApiResponse> {
   };
 }
 
+/* ----------------------------------------------------------------------------
+ * Factory Reset (session lifecycle U4, flow F3)
+ * ------------------------------------------------------------------------- */
+
+/**
+ * The guarded DESTRUCTIVE wipe (R9/R12/R15, AE3). Layered so a reset is
+ * impossible accidentally and refusals change NOTHING:
+ *
+ *   1. command guard (factory-scoped subject, like new-session) — denials are
+ *      audited on the reserved 'factory' stream;
+ *   2. fail closed (503) without a daemon or a reset runtime;
+ *   3. typed confirmation: the body's `confirm` field must be EXACTLY
+ *      "reset the factory" (`FACTORY_RESET_PHRASE`) — enforced server-side,
+ *      never just in UI. A mismatch returns 400 with the required phrase and
+ *      the pre-flight enumeration so the confirmation UI can render what is
+ *      at stake, and deletes nothing;
+ *   4. refuse while any queue-job lease is active (409 listing the leases) —
+ *      no force override in v1: the operator cancels first;
+ *   5. only then the pinned destructive sequence (`executeFactoryReset`):
+ *      hold -> stop -> wipe allowlist -> dispose/rebuild singletons -> fresh
+ *      markers. The response carries the new generation plus the enumeration
+ *      of what WAS destroyed.
+ */
+async function factoryReset(ctx: RouteContext): Promise<ApiResponse> {
+  const denial = await ctx.guardMutation({
+    subject: { kind: 'factory', id: 'execution' },
+    command: 'execution.factory_reset',
+  });
+  if (denial !== null) {
+    return denial;
+  }
+  const daemon = ctx.executionDaemon;
+  if (daemon === null) {
+    return EXECUTION_DISABLED;
+  }
+  const runtime = ctx.factoryReset;
+  if (runtime === null) {
+    return {
+      status: 503,
+      body: {
+        error: 'factory_reset_disabled',
+        message: 'Factory reset is not enabled on this server instance.',
+      },
+    };
+  }
+
+  const events = await ctx.reader.readAll();
+  const enumeration = await enumerateFactoryReset(events, runtime.factoryDir);
+
+  const confirm = str(asRecord(ctx.request.body).confirm);
+  if (confirm !== FACTORY_RESET_PHRASE) {
+    return {
+      status: 400,
+      body: {
+        error: 'confirmation_mismatch',
+        message:
+          `Factory reset requires the exact phrase "${FACTORY_RESET_PHRASE}" in the request ` +
+          `body's "confirm" field. Nothing was deleted.`,
+        requiredPhrase: FACTORY_RESET_PHRASE,
+        wouldDestroy: enumeration,
+      },
+    };
+  }
+
+  const leased = projectExecutionQueue(
+    events.filter((event) => event.type.startsWith('queue.')),
+  ).jobs.filter((job) => job.status === 'leased');
+  if (leased.length > 0) {
+    return {
+      status: 409,
+      body: {
+        error: 'jobs_leased',
+        message:
+          `${leased.length} queue job(s) hold an active lease. Cancel the leased work ` +
+          '(or wait for it to release) before resetting the factory. Nothing was deleted.',
+        leasedJobs: leased.map((job) => ({
+          jobId: job.jobId,
+          runId: job.runId,
+          jobKind: job.jobKind,
+          attempt: job.attempt,
+          ownerId: job.ownerId,
+          leaseExpiresAt: job.leaseExpiresAt,
+        })),
+        wouldDestroy: enumeration,
+      },
+    };
+  }
+
+  await executeFactoryReset({
+    daemon,
+    runtime,
+    nextGeneration: enumeration.resetGeneration + 1,
+    wipedRunCount: enumeration.runCount + enumeration.archivedRunCount,
+  });
+
+  auditFactoryCommand('execution.factory_reset');
+  return {
+    status: 200,
+    body: {
+      reset: true,
+      resetGeneration: enumeration.resetGeneration + 1,
+      // The gate the operator owns is engaged: the pre-wipe daemon was held
+      // then stopped, and a rebuilt server-runtime daemon boots held again.
+      held: true,
+      destroyed: enumeration,
+    },
+  };
+}
+
 async function getExecution(ctx: RouteContext): Promise<ApiResponse> {
   const runId = ctx.params.id;
   const events = await ctx.reader.readRun(runId);
@@ -940,6 +1089,7 @@ export function executionRoutes(): RouteDef[] {
     { method: 'POST', pattern: '/api/execution/resume', handler: resumeAllExecution },
     { method: 'POST', pattern: '/api/execution/hold', handler: holdAllExecution },
     { method: 'POST', pattern: '/api/execution/new-session', handler: startNewSession },
+    { method: 'POST', pattern: '/api/execution/factory-reset', handler: factoryReset },
     { method: 'POST', pattern: '/api/runs/:id/start', handler: startRun },
     { method: 'POST', pattern: '/api/runs/:id/pause', handler: pauseRun },
     { method: 'POST', pattern: '/api/runs/:id/resume', handler: resumeRun },

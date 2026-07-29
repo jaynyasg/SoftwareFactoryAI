@@ -53,6 +53,7 @@ import type {
 } from './workspace/runtime-materializer';
 import { createGenomePlanner } from './planner';
 import type { RunPlanInput, RunPlanner } from './planner';
+import type { FactoryResetRuntime } from './factory-reset';
 import type { RuntimeConfig } from './runtime';
 import type { ResearchRunResult, WorkspaceMaterializationResult } from '@software-factory/worker';
 
@@ -169,6 +170,15 @@ export interface AppDeps {
    * then enforced fail-closed at execution time by the scheduler setup probe.
    */
   readonly adapterCatalog?: AdapterCatalog | null;
+  /**
+   * Factory Reset dispose/rebuild capability (session lifecycle U4). Like the
+   * daemon, the app never constructs one: singleton ownership belongs to the
+   * server entry points (`instance.ts` implements it over the globalThis
+   * singletons). Omitted/`null` disables POST /api/execution/factory-reset
+   * (fails closed with 503) — e.g. on apps whose store is not the process
+   * singleton and could not be rebuilt coherently.
+   */
+  readonly factoryReset?: FactoryResetRuntime | null;
 }
 
 /* ----------------------------------------------------------------------------
@@ -243,6 +253,11 @@ export interface RouteContext {
    * mutations and to propagate cancellation — never to run work in-request.
    */
   readonly executionDaemon: ExecutionDaemon | null;
+  /**
+   * The Factory Reset dispose/rebuild capability (U4), or `null` when the
+   * destructive reset command is disabled on this instance.
+   */
+  readonly factoryReset: FactoryResetRuntime | null;
   /**
    * Run one preflight rehearsal pass (X2) for a run, appending `preflight.*`
    * events and interventions for failures. Resolves `null` when preflight is
@@ -641,6 +656,7 @@ export function createApp(deps: AppDeps): App {
       materializeWorkspace: materializeWorkspaceForRun,
       workspaceEnabled: materializer !== null,
       executionDaemon,
+      factoryReset: deps.factoryReset ?? null,
       runPreflight: runPreflightForRun,
     };
   }

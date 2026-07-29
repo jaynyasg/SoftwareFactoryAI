@@ -383,6 +383,13 @@ export function scaleSafetyStartupLine(config: Pick<RuntimeConfig, 'mode'>): str
   );
 }
 
+/**
+ * The file-backed operator session filename under the factory dir. Shared with
+ * the Factory Reset allowlist (`factory-reset.ts`) so the reset always deletes
+ * the SAME file this provider reads — the two can never drift apart.
+ */
+export const OPERATOR_TOKEN_FILENAME = 'operator-token.json';
+
 /** Resolve the shared ledger/operator-token directory. */
 export function resolveFactoryDir(
   env: RuntimeEnv = process.env as RuntimeEnv,
@@ -454,6 +461,6 @@ export function createRuntimeOperatorTokenProvider(
     throw new Error('SF_OPERATOR_TOKEN is required when SF_RUNTIME=cloud.');
   }
   return createOperatorTokenProvider({
-    store: createFileOperatorTokenStore(join(config.factoryDir, 'operator-token.json')),
+    store: createFileOperatorTokenStore(join(config.factoryDir, OPERATOR_TOKEN_FILENAME)),
   });
 }

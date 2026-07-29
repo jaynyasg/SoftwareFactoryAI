@@ -125,6 +125,17 @@ const CONNECTOR_SURFACE: Readonly<Record<string, ConnectorMapping>> = {
       'Session-lifecycle U3 ships the route server-first; U7 (connector parity unit of the same ' +
       'plan) adds the MCP tool + Action operation and replaces this staged exclusion.',
   },
+  // Session lifecycle (U4). INTERIM exclusion, same staging as new-session
+  // above: the destructive Factory Reset command ships server-first with its
+  // typed-confirmation phrase; U7 (connector parity unit of the same plan)
+  // decides the connector treatment (CLI prompts for the phrase; the ChatGPT
+  // Action likely keeps a written destructive-scope exclusion) and replaces
+  // this staged entry.
+  'POST /api/execution/factory-reset': {
+    excluded:
+      'Session-lifecycle U4 ships the destructive reset server-first; U7 (connector parity unit ' +
+      'of the same plan) adds the CLI/MCP treatment and replaces this staged exclusion.',
+  },
   // Operator intervention queue.
   'GET /api/interventions': {
     action: 'listInterventions',

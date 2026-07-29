@@ -668,10 +668,12 @@ describe('FactoryCommandBar (factory drain gate)', () => {
   const HELD_EXECUTION: ExecutionOverview = {
     execution: { enabled: true, held: true, running: true },
     queue: { queued: 2, leased: 0 },
+    resetGeneration: 0,
   };
   const ACTIVE_EXECUTION: ExecutionOverview = {
     execution: { enabled: true, held: false, running: true },
     queue: { queued: 0, leased: 1 },
+    resetGeneration: 0,
   };
 
   function jsonResponse(body: unknown, status = 200): Response {
@@ -755,6 +757,7 @@ describe('FactoryCommandBar (factory drain gate)', () => {
           overview={{
             execution: { enabled: false, held: false, running: false },
             queue: { queued: 0, leased: 0 },
+            resetGeneration: 0,
           }}
         />,
       ),
@@ -1227,6 +1230,7 @@ describe('FactoryFloor blueprint-first hierarchy (U9/KTD7)', () => {
     renderFloor({
       execution: { enabled: true, held: true, running: true },
       queue: { queued: 1, leased: 0 },
+      resetGeneration: 0,
     });
 
     // The drain gate outranks even the intervention queue: nothing runs until

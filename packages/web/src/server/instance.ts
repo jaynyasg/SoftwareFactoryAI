@@ -39,6 +39,7 @@ import type { ExecutionDaemon } from './execution/daemon';
 import { createRuntimeCompletionStage } from './execution/completion-stage';
 import { createRuntimeGateStages } from './execution/gate-stages';
 import { createSchedulerTicketExecutor } from './execution/ticket-executor';
+import type { FactoryResetRuntime } from './factory-reset';
 import {
   createRuntimeOperatorTokenProvider,
   resolveRuntimeConfig,
@@ -146,6 +147,38 @@ export function getExecutionDaemon(): ExecutionDaemon {
   return singletons.daemon;
 }
 
+/**
+ * The Factory Reset dispose/rebuild capability (session lifecycle U4) over
+ * THESE globalThis singletons. `rebuild()` is called by the reset route AFTER
+ * the daemon was stopped and the allowlisted factory paths were deleted; it
+ * drops every factory-STATE singleton so nothing cached survives the wipe:
+ *   - `store` — its in-memory event cache, idempotency map, and sequence
+ *     high-water marks would otherwise resurrect the deleted ledger;
+ *   - `provider` — the file-backed operator token it served was just deleted;
+ *     the next `getLocalSession()` mints a fresh one;
+ *   - `app` — bound to the old store/daemon; the next request's `getApp()`
+ *     rebuilds it over the fresh singletons (the Next catch-all calls
+ *     `getApp()` per request, so the swap is picked up immediately);
+ *   - `daemon` — stopped by the route; the rebuilt daemon boots HELD again
+ *     (server runtimes resolve `autoStart` to false).
+ * The CSRF token and adapter catalog deliberately SURVIVE: they are process
+ * capabilities, not factory state (the CSRF secret is documented as stable
+ * for the whole server process — open tabs re-auth via the reset-generation
+ * reload banner, R15).
+ */
+function factoryResetRuntime(): FactoryResetRuntime {
+  return {
+    factoryDir: resolveRuntimeConfig().factoryDir,
+    rebuild: (): Promise<EventStore> => {
+      delete singletons.store;
+      delete singletons.provider;
+      delete singletons.app;
+      delete singletons.daemon;
+      return Promise.resolve(getStore());
+    },
+  };
+}
+
 /** The process-wide local API app. Built once, reused across requests. */
 export function getApp(): App {
   const runtime = resolveRuntimeConfig();
@@ -154,6 +187,7 @@ export function getApp(): App {
     operatorToken: operatorTokenProvider(),
     execution: getExecutionDaemon(),
     adapterCatalog: getAdapterCatalog(),
+    factoryReset: factoryResetRuntime(),
     config: {
       allowedOrigins: runtime.allowedOrigins,
       csrfToken: csrfToken(),

@@ -41,6 +41,7 @@ describe('fetchExecutionOverview', () => {
           jsonResponse({
             execution: { enabled: true, held: true, running: true },
             queue: { queued: 2, leased: 1 },
+            resetGeneration: 1,
           }),
         ),
       ),
@@ -48,6 +49,7 @@ describe('fetchExecutionOverview', () => {
     await expect(fetchExecutionOverview()).resolves.toEqual({
       execution: { enabled: true, held: true, running: true },
       queue: { queued: 2, leased: 1 },
+      resetGeneration: 1,
     });
   });
 
@@ -59,6 +61,7 @@ describe('fetchExecutionOverview', () => {
     await expect(fetchExecutionOverview()).resolves.toEqual({
       execution: { enabled: false, held: false, running: false },
       queue: { queued: 0, leased: 0 },
+      resetGeneration: 0,
     });
   });
 
@@ -102,6 +105,7 @@ describe('fetchFloorStatus', () => {
     expect(floor.overview).toEqual({
       execution: { enabled: true, held: true, running: false },
       queue: { queued: 3, leased: 1 },
+      resetGeneration: 0,
     });
     // Well-formed rows extract; malformed rows drop — never `undefined` in the queue.
     expect(floor.interventionQueue.interventions.map((item) => item.interventionId)).toEqual([
@@ -128,6 +132,7 @@ describe('fetchFloorStatus', () => {
       overview: {
         execution: { enabled: false, held: false, running: false },
         queue: { queued: 0, leased: 0 },
+        resetGeneration: 0,
       },
       interventionQueue: { interventions: [], openCount: 0 },
     });

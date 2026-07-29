@@ -16,8 +16,22 @@ describe('parseExecutionOverview', () => {
     const body = {
       execution: { enabled: true, held: true, running: false },
       queue: { queued: 3, leased: 1 },
+      resetGeneration: 2,
     };
     expect(parseExecutionOverview(body)).toEqual(body);
+  });
+
+  it('degrades a missing resetGeneration to 0 (older server payloads)', () => {
+    expect(
+      parseExecutionOverview({
+        execution: { enabled: true, held: true, running: false },
+        queue: { queued: 3, leased: 1 },
+      }),
+    ).toEqual({
+      execution: { enabled: true, held: true, running: false },
+      queue: { queued: 3, leased: 1 },
+      resetGeneration: 0,
+    });
   });
 
   it('degrades a missing execution/queue section to the disabled defaults', () => {
@@ -29,6 +43,7 @@ describe('parseExecutionOverview', () => {
       parseExecutionOverview({
         execution: { enabled: 'yes', held: 1, running: null },
         queue: { queued: 'many', leased: undefined },
+        resetGeneration: 'three',
       }),
     ).toEqual(DISABLED_EXECUTION_OVERVIEW);
   });
@@ -38,10 +53,12 @@ describe('parseExecutionOverview', () => {
       parseExecutionOverview({
         execution: { enabled: true, held: 'nope' },
         queue: { queued: 2 },
+        resetGeneration: 1,
       }),
     ).toEqual({
       execution: { enabled: true, held: false, running: false },
       queue: { queued: 2, leased: 0 },
+      resetGeneration: 1,
     });
   });
 });

@@ -153,6 +153,14 @@ export interface ExecutionOverview {
   };
   /** Cross-run queue job counts (what a resume would start / a hold stops). */
   readonly queue: { readonly queued: number; readonly leased: number };
+  /**
+   * Monotonic Factory Reset generation (session lifecycle U4, R15): 0 for a
+   * never-reset factory (and for older server payloads that omit the field —
+   * the parser degrades to 0), bumped by every POST /api/execution/factory-reset.
+   * Open tabs compare it against the value they loaded with and render a
+   * forced-reload banner instead of failing silently on wiped tokens.
+   */
+  readonly resetGeneration: number;
 }
 
 /**

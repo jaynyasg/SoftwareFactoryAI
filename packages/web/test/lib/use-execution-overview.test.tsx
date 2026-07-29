@@ -15,10 +15,12 @@ import type { ExecutionOverview } from '../../src/lib/types';
 const HELD: ExecutionOverview = {
   execution: { enabled: true, held: true, running: true },
   queue: { queued: 2, leased: 0 },
+  resetGeneration: 0,
 };
 const ACTIVE: ExecutionOverview = {
   execution: { enabled: true, held: false, running: true },
   queue: { queued: 0, leased: 1 },
+  resetGeneration: 0,
 };
 
 function jsonResponse(body: unknown): Response {

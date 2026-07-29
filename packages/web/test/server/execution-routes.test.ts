@@ -935,6 +935,10 @@ describe('factory-wide execution controls', () => {
     const interventions = await app.handle(req('GET', '/api/interventions', {}, undefined));
     expect(record(floor).execution).toEqual(record(execution).execution);
     expect(record(floor).queue).toEqual(record(execution).queue);
+    // The floor union carries the reset generation too (U4/R15): stale-tab
+    // detection works whether a tab polls /api/execution or /api/floor.
+    expect(record(floor).resetGeneration).toEqual(record(execution).resetGeneration);
+    expect(record(floor).resetGeneration).toBe(0);
     expect(record(floor).interventions).toEqual(record(interventions).interventions);
     expect(record(floor).openCount).toEqual(record(interventions).openCount);
 
