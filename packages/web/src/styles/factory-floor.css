@@ -43,6 +43,45 @@
   letter-spacing: 0.08em;
 }
 
+.app-header__home {
+  color: inherit;
+  text-decoration: none;
+}
+
+.app-header__home:hover h1 {
+  color: var(--accent);
+}
+
+/* Shared view switcher — present on every AppShell surface. */
+.app-header__nav {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  margin-right: auto;
+  padding-left: var(--space-16);
+}
+
+.app-header__nav-link {
+  color: var(--text-secondary);
+  text-decoration: none;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  padding: var(--space-4) var(--space-12);
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+}
+
+.app-header__nav-link:hover {
+  color: var(--text-primary);
+  background: var(--bg-overlay);
+}
+
+.app-header__nav-link--active {
+  color: var(--text-primary);
+  background: var(--accent-quiet);
+  border-color: var(--border-strong);
+}
+
 .app-main {
   flex: 1;
   width: 100%;

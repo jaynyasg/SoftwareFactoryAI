@@ -206,13 +206,11 @@ export function FactoryFloor({
     return counts;
   }, [queue.snapshot.interventions]);
 
-  const operatorHref =
-    focusedRunId !== null ? `/operator?runId=${encodeURIComponent(focusedRunId)}` : '/operator';
-
   return (
     <div className="factory-screen">
-      {/* Nav + the compact cross-run strip share one row (density, KTD7). */}
-      <div className="factory-screen__nav" aria-label="Factory view switcher">
+      {/* The compact cross-run strip (density, KTD7). View switching lives in
+          the AppShell header so it exists on every surface, not just here. */}
+      <div className="factory-screen__nav" aria-label="Run strip">
         <span className="label">Factory floor</span>
         <RunStrip
           runs={initialRuns}
@@ -220,9 +218,6 @@ export function FactoryFloor({
           openInterventionsByRun={openByRun}
           onFocus={setFocusedRunId}
         />
-        <Link className="btn btn--sm btn--ghost factory-screen__nav-link" href={operatorHref}>
-          Operator view
-        </Link>
       </div>
 
       {/* 0 — factory-wide controls: the held/resume gate (nothing runs
