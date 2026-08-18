@@ -49,7 +49,7 @@ accent set carries meaning. All text/background pairings below meet WCAG AA (>= 
 | `--border-strong`  | `#2c3645` | Card edges, focus targets      |
 | `--text-primary`   | `#e6e9ef` | Primary text                   |
 | `--text-secondary` | `#a4adbd` | Secondary text, labels         |
-| `--text-muted`     | `#6b7686` | Metadata, timestamps           |
+| `--text-muted`     | `#8592a4` | Metadata, timestamps           |
 
 ### Brand / accent
 
