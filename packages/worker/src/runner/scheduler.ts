@@ -62,6 +62,8 @@ export interface SchedulerConfig {
   readonly maxAttempts?: number;
   /** Soft per-task timeout (ms), forwarded to the adapter. */
   readonly timeoutMs?: number;
+  /** Explicit model override forwarded to every ticket (absent = adapter default). */
+  readonly model?: string;
   /** Caller agent family, for nested-agent metadata. */
   readonly callerFamily?: AdapterFamily;
   /** Injected clock for deterministic event timestamps. */
@@ -282,6 +284,7 @@ export async function runScheduler<TNode extends ScheduleNode = ScheduleNode>(
         compileInput: node.compileInput,
         workspaceDir: node.workspaceDir,
         signal: token.signal,
+        model: config.model,
         callerFamily: node.callerFamily ?? config.callerFamily,
         maxAttempts: config.maxAttempts,
         timeoutMs: config.timeoutMs,

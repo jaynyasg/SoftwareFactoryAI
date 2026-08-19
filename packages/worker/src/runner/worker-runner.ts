@@ -59,6 +59,8 @@ export interface RunTicketParams {
   readonly workspaceDir: string;
   /** Ticket-level cancellation signal (composes with the run-level token). */
   readonly signal: AbortSignal;
+  /** Explicit model override forwarded to the adapter (absent = adapter default). */
+  readonly model?: string;
   /** Family of the agent that invoked the factory, for nested-agent metadata. */
   readonly callerFamily?: AdapterFamily;
   /** Bounded retry budget (total attempts). Defaults to DEFAULT_MAX_ATTEMPTS. */
@@ -181,6 +183,7 @@ export async function runTicket(
     title: context.title,
     context,
     workspaceDir: params.workspaceDir,
+    model: params.model,
     callerFamily: params.callerFamily,
   };
 

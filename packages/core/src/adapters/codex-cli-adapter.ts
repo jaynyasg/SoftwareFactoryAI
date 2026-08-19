@@ -52,7 +52,12 @@ const LOGIN_ACTIONS: readonly SetupAction[] = [
 
 /** Compose the non-interactive Codex execution arguments for a task. */
 function buildExecArgs(task: AdapterTask): readonly string[] {
-  return ['exec', '--cd', task.workspaceDir, '--json', composePrompt(task)];
+  const args = ['exec', '--cd', task.workspaceDir, '--json'];
+  if (task.model !== undefined) {
+    args.push('--model', task.model);
+  }
+  args.push(composePrompt(task));
+  return args;
 }
 
 function composePrompt(task: AdapterTask): string {

@@ -46,10 +46,42 @@ export interface AdapterTask {
   /** Isolated working directory the adapter may read/write within. */
   readonly workspaceDir: string;
   /**
+   * Explicit model override for this task (e.g. `claude-opus-5`,
+   * `gpt-5.1-codex`). When set, CLI adapters pass it through as their model
+   * flag; when absent the adapter runs on its own default model.
+   */
+  readonly model?: string;
+  /**
    * The family of the agent that invoked the factory, when known. The runner
    * uses this to record nested-agent metadata (caller family == adapter family).
    */
   readonly callerFamily?: AdapterFamily;
+}
+
+/**
+ * Sentinel model-profile values that mean "use the adapter's default model".
+ * The run setting `modelProfile` predates explicit model selection, so ledgers
+ * may carry these legacy profile hints; none of them is a real model id.
+ */
+const DEFAULT_MODEL_PROFILES: ReadonlySet<string> = new Set([
+  'default',
+  'adapter-default',
+  'codex-default',
+  'claude-default',
+  'api-override',
+]);
+
+/**
+ * Resolve a run's `modelProfile` setting to an explicit model override for
+ * adapter tasks: real model ids pass through, sentinel "default" profiles
+ * (and empty values) resolve to undefined so the adapter uses its own default.
+ */
+export function resolveModelOverride(modelProfile: string | undefined): string | undefined {
+  const trimmed = modelProfile?.trim();
+  if (trimmed === undefined || trimmed.length === 0 || DEFAULT_MODEL_PROFILES.has(trimmed)) {
+    return undefined;
+  }
+  return trimmed;
 }
 
 /** Streaming progress: a coarse milestone with an optional percentage. */

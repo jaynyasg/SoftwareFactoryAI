@@ -52,6 +52,9 @@ const LOGIN_ACTIONS: readonly SetupAction[] = [
 /** Compose the non-interactive Claude Code execution arguments for a task. */
 function buildExecArgs(task: AdapterTask): readonly string[] {
   const args = ['--print', '--output-format', 'json'];
+  if (task.model !== undefined) {
+    args.push('--model', task.model);
+  }
   if (task.context.allowedTools.length > 0) {
     args.push('--allowedTools', task.context.allowedTools.join(','));
   }

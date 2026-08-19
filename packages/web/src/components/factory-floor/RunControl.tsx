@@ -22,12 +22,37 @@ const ADAPTERS = [
   { id: 'api', label: 'API adapter' },
 ] as const;
 
-const MODELS = [
-  { id: 'default', label: 'Adapter default' },
-  { id: 'codex-default', label: 'Codex default' },
-  { id: 'claude-default', label: 'Claude default' },
-  { id: 'api-override', label: 'API override' },
-] as const;
+/**
+ * Per-adapter model choices. `default` passes NO model flag (the adapter runs
+ * on its own default); every other id is passed verbatim to the adapter's
+ * model flag (`claude --model`, `codex exec --model`), so the list is a
+ * curated convenience, not a hard allow-list — extend it as models ship.
+ */
+const MODELS_BY_ADAPTER: Readonly<
+  Record<string, readonly { readonly id: string; readonly label: string }[]>
+> = {
+  'codex-cli': [
+    { id: 'default', label: 'Adapter default' },
+    { id: 'gpt-5.1-codex-max', label: 'GPT-5.1 Codex Max' },
+    { id: 'gpt-5.1-codex', label: 'GPT-5.1 Codex' },
+    { id: 'gpt-5.1-codex-mini', label: 'GPT-5.1 Codex Mini' },
+  ],
+  'claude-code-cli': [
+    { id: 'default', label: 'Adapter default' },
+    { id: 'claude-fable-5', label: 'Claude Fable 5' },
+    { id: 'claude-opus-5', label: 'Claude Opus 5' },
+    { id: 'claude-sonnet-5', label: 'Claude Sonnet 5' },
+    { id: 'claude-haiku-4-5', label: 'Claude Haiku 4.5' },
+  ],
+  api: [
+    { id: 'default', label: 'Adapter default' },
+    { id: 'claude-opus-5', label: 'Claude Opus 5' },
+    { id: 'claude-sonnet-5', label: 'Claude Sonnet 5' },
+    { id: 'claude-haiku-4-5', label: 'Claude Haiku 4.5' },
+  ],
+};
+
+const DEFAULT_MODEL_ID = 'default';
 
 const EFFORTS = ['minimal', 'low', 'medium', 'high', 'extra high', 'maximum'] as const;
 
@@ -57,7 +82,8 @@ export function RunControl({
   const [folderBrowseStatus, setFolderBrowseStatus] = useState<string | null>(null);
   const [githubRepo, setGithubRepo] = useState('');
   const [adapter, setAdapter] = useState<string>(ADAPTERS[0].id);
-  const [model, setModel] = useState<string>(MODELS[0].id);
+  const [model, setModel] = useState<string>(DEFAULT_MODEL_ID);
+  const modelOptions = MODELS_BY_ADAPTER[adapter] ?? MODELS_BY_ADAPTER[ADAPTERS[0].id];
   const [effort, setEffort] = useState<(typeof EFFORTS)[number]>('extra high');
   const [reviewMode, setReviewMode] = useState<ReviewMode>('human');
   const [workerCap, setWorkerCap] = useState(10);
@@ -254,7 +280,13 @@ export function RunControl({
               id={`${fieldId}-adapter`}
               className="select"
               value={adapter}
-              onChange={(e) => setAdapter(e.target.value)}
+              onChange={(e) => {
+                // Model lists are adapter-specific: switching adapters resets
+                // the model to the new adapter's default so a Claude adapter
+                // can never carry a Codex model (and vice versa).
+                setAdapter(e.target.value);
+                setModel(DEFAULT_MODEL_ID);
+              }}
             >
               {ADAPTERS.map((a) => (
                 <option key={a.id} value={a.id}>
@@ -266,7 +298,7 @@ export function RunControl({
 
           <div className="field">
             <label className="field__label" htmlFor={`${fieldId}-model`}>
-              Model profile
+              Model
             </label>
             <select
               id={`${fieldId}-model`}
@@ -274,7 +306,7 @@ export function RunControl({
               value={model}
               onChange={(e) => setModel(e.target.value)}
             >
-              {MODELS.map((m) => (
+              {modelOptions.map((m) => (
                 <option key={m.id} value={m.id}>
                   {m.label}
                 </option>

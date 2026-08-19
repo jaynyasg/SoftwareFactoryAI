@@ -57,6 +57,7 @@ import {
   parseRunRequest,
   projectRun,
   projectTickets,
+  resolveModelOverride,
   selectExecutionAdapter,
 } from '@software-factory/core';
 import type {
@@ -597,6 +598,10 @@ export function createSchedulerTicketExecutor(
         store: heartbeatingStore,
         config: {
           requestedCap: run.requestedWorkerCap ?? DEFAULT_EXECUTION_WORKER_CAP,
+          // The operator's model selection (run.modelProfile) reaches every
+          // ticket's adapter invocation; sentinel "default" profiles resolve
+          // to undefined so the adapter runs on its own default model.
+          model: resolveModelOverride(run.modelProfile),
           callerFamily: run.callerFamily,
           maxAttempts: options.ticketMaxAttempts,
           timeoutMs: options.ticketTimeoutMs,
