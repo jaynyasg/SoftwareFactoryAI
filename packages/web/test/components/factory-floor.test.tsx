@@ -421,10 +421,9 @@ describe('FactoryFloor empty state', () => {
 
     expect(screen.getByLabelText('Prompt (optional)')).toBeInTheDocument();
     expect(screen.getByLabelText('PRD (optional)')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Operator view' })).toHaveAttribute(
-      'href',
-      '/operator',
-    );
+    // View switching lives in the AppShell header now (AppShellNav), so the
+    // floor itself renders no Operator link — see app-shell.test.tsx.
+    expect(screen.queryByRole('link', { name: 'Operator view' })).toBeNull();
     expect(screen.getByLabelText('Setup checklist')).toBeInTheDocument();
     expect(screen.getByText('No runs yet.')).toBeInTheDocument();
     // Anti-slop: no fake progress in the empty state.
@@ -1057,7 +1056,10 @@ describe('InterventionQueue (U9/X4)', () => {
 
       expect(fetchMock).toHaveBeenCalledWith('/api/interventions', expect.anything());
       expect(screen.queryByRole('button', { name: /resolve intervention/i })).toBeNull();
-      expect(screen.getByTestId('interventions-empty')).toHaveTextContent(/nothing matches/i);
+      // Zero OPEN interventions is the clean state — the resolved item is
+      // hidden history, not a "nothing matches your filters" puzzle.
+      expect(screen.getByTestId('interventions-empty')).toHaveTextContent(/nothing needs you/i);
+      expect(screen.getByTestId('interventions-empty')).toHaveTextContent(/1 resolved/i);
     } finally {
       vi.unstubAllGlobals();
       vi.useRealTimers();

@@ -223,14 +223,16 @@ export function InterventionQueue({
         {items.length === 0 ? (
           <div className="state-block iq__empty" data-testid="interventions-empty">
             <span className="state-block__title">
-              {snapshot.interventions.length === 0
+              {snapshot.openCount === 0
                 ? 'Nothing needs you — the factory is running clean.'
                 : 'Nothing matches these filters.'}
             </span>
             <span className="muted">
-              {snapshot.interventions.length === 0
-                ? 'Approvals, missing credentials, blocked stages, and retry decisions will appear here the moment a run needs a human — across every run.'
-                : `${snapshot.openCount} open intervention(s) exist outside the current filters.`}
+              {snapshot.openCount === 0
+                ? snapshot.interventions.length === 0
+                  ? 'Approvals, missing credentials, blocked stages, and retry decisions will appear here the moment a run needs a human — across every run.'
+                  : `${snapshot.interventions.length} resolved intervention(s) are hidden — turn on "show resolved" for the history.`
+                : `${snapshot.openCount} open intervention(s) are hidden by the current filters — clear them to see what needs you.`}
             </span>
           </div>
         ) : (
