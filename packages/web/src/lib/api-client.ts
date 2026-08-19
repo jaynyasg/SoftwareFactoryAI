@@ -301,6 +301,45 @@ export function clearAllRuns(
 }
 
 /* ----------------------------------------------------------------------------
+ * Local filesystem browsing (Run control folder picker)
+ * ------------------------------------------------------------------------- */
+
+/** One browsable directory entry on the operator's machine. */
+export interface FolderBrowseEntry {
+  readonly name: string;
+  readonly path: string;
+  /** Whether a run may bind this folder under the workspace boundary (U4). */
+  readonly withinBoundary: boolean;
+}
+
+/** A directory listing from the local-first server's filesystem. */
+export interface FolderBrowseResult {
+  /** The resolved absolute path that was listed. */
+  readonly path: string;
+  /** Parent directory, or null at a filesystem root. */
+  readonly parent: string | null;
+  readonly withinBoundary: boolean;
+  readonly boundaryRoot: string | null;
+  readonly approvedFolders: readonly string[];
+  readonly dirs: readonly FolderBrowseEntry[];
+  /** Filesystem roots (drive letters on Windows, `/` elsewhere). */
+  readonly roots: readonly string[];
+}
+
+/**
+ * Browse the operator machine's directories (POST /api/fs/browse). The web
+ * `showDirectoryPicker()` never reveals absolute paths, so the folder picker
+ * browses through the local-first server instead. Omit `path` to start at
+ * the workspace boundary root.
+ */
+export function browseLocalFolders(
+  session: LocalSession,
+  path?: string,
+): Promise<MutationResult<FolderBrowseResult>> {
+  return mutate('/api/fs/browse', session, { path });
+}
+
+/* ----------------------------------------------------------------------------
  * Operator intervention queue (X4)
  * ------------------------------------------------------------------------- */
 

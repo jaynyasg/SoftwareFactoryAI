@@ -40,6 +40,7 @@ import { eventRoutes } from './routes/events';
 import { reviewRoutes } from './routes/review';
 import { setupRoutes } from './routes/setup';
 import { executionRoutes } from './routes/execution';
+import { fsRoutes } from './routes/fs';
 import { researchRoutes } from './research/research-routes';
 import { createRuntimePreflight } from './execution/preflight';
 import type { PreflightRunResult, PreflightRunner } from './execution/preflight';
@@ -549,6 +550,7 @@ export function createApp(deps: AppDeps): App {
     ...setupRoutes(),
     ...researchRoutes(),
     ...executionRoutes(),
+    ...fsRoutes(),
   ];
 
   async function guardMutation(

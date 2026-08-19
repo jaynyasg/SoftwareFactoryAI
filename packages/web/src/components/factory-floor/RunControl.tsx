@@ -14,7 +14,8 @@ import { useId, useRef, useState } from 'react';
 import type { ChangeEvent, FormEvent } from 'react';
 import type { ReviewMode } from '@software-factory/core';
 import { useSession } from '../session-context';
-import { startRun } from '../../lib/api-client';
+import { browseLocalFolders, startRun } from '../../lib/api-client';
+import type { FolderBrowseResult } from '../../lib/api-client';
 
 const ADAPTERS = [
   { id: 'codex-cli', label: 'Codex CLI (local)' },
@@ -57,14 +58,6 @@ const DEFAULT_MODEL_ID = 'default';
 
 const EFFORTS = ['minimal', 'low', 'medium', 'high', 'extra high', 'maximum'] as const;
 
-interface DirectoryHandle {
-  readonly name?: string;
-}
-
-type WindowWithDirectoryPicker = Window & {
-  readonly showDirectoryPicker?: () => Promise<DirectoryHandle>;
-};
-
 export function RunControl({
   defaultLocalFolder,
   onStarted,
@@ -80,7 +73,12 @@ export function RunControl({
   const [prdRef, setPrdRef] = useState('');
   const [prdText, setPrdText] = useState('');
   const [localFolder, setLocalFolder] = useState(defaultLocalFolder ?? '');
-  const [folderBrowseStatus, setFolderBrowseStatus] = useState<string | null>(null);
+  // Server-backed folder browser (the web picker never reveals absolute
+  // paths, so browsing goes through the local-first server instead).
+  const [browser, setBrowser] = useState<FolderBrowseResult | null>(null);
+  const [browserOpen, setBrowserOpen] = useState(false);
+  const [browserBusy, setBrowserBusy] = useState(false);
+  const [browserError, setBrowserError] = useState<string | null>(null);
   const [githubRepo, setGithubRepo] = useState('');
   const [adapter, setAdapter] = useState<string>(ADAPTERS[0].id);
   const [model, setModel] = useState<string>(DEFAULT_MODEL_ID);
@@ -111,24 +109,32 @@ export function RunControl({
     }
   }
 
+  async function browseTo(path?: string): Promise<void> {
+    setBrowserBusy(true);
+    setBrowserError(null);
+    try {
+      const result = await browseLocalFolders(session, path);
+      if (result.ok) {
+        setBrowser(result.data);
+      } else {
+        setBrowserError(result.message ?? `Could not browse folders (${result.error}).`);
+      }
+    } catch (caught) {
+      setBrowserError(caught instanceof Error ? caught.message : 'Network error while browsing.');
+    } finally {
+      setBrowserBusy(false);
+    }
+  }
+
   async function onBrowseLocalFolder(): Promise<void> {
-    setFolderBrowseStatus(null);
-    const picker = (window as WindowWithDirectoryPicker).showDirectoryPicker;
-    if (picker === undefined) {
-      setFolderBrowseStatus('Folder picker unavailable; paste the absolute path instead.');
+    if (browserOpen) {
+      setBrowserOpen(false);
       return;
     }
-    try {
-      const folder = await picker();
-      setFolderBrowseStatus(
-        `${folder.name ?? 'Folder'} selected. Browser keeps absolute paths private; verify the path field.`,
-      );
-    } catch (caught) {
-      if (caught instanceof DOMException && caught.name === 'AbortError') {
-        return;
-      }
-      setFolderBrowseStatus('Could not open the folder picker; paste the path instead.');
-    }
+    setBrowserOpen(true);
+    // Start where the field points; the server falls back to the workspace
+    // boundary root when the field is empty or unreadable.
+    await browseTo(localFolder.trim() || undefined);
   }
 
   async function onStart(event: FormEvent): Promise<void> {
@@ -247,14 +253,90 @@ export function RunControl({
               className="input mono"
               value={localFolder}
               onChange={(e) => setLocalFolder(e.target.value)}
-              aria-describedby={
-                folderBrowseStatus !== null ? `${fieldId}-folder-status` : undefined
-              }
             />
-            {folderBrowseStatus !== null ? (
-              <span className="field__note" id={`${fieldId}-folder-status`} role="status">
-                {folderBrowseStatus}
-              </span>
+            {browserOpen ? (
+              <div className="folder-browser" data-testid="folder-browser">
+                {browserError !== null ? (
+                  <span className="field__note sev-error" role="alert">
+                    {browserError}
+                  </span>
+                ) : null}
+                {browser !== null ? (
+                  <>
+                    <div className="folder-browser__bar">
+                      <span className="mono folder-browser__path" title={browser.path}>
+                        {browser.path}
+                      </span>
+                      <button
+                        type="button"
+                        className="btn btn--sm btn--ghost"
+                        disabled={browserBusy || browser.parent === null}
+                        onClick={() => void browseTo(browser.parent ?? undefined)}
+                      >
+                        Up
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn--sm btn--primary"
+                        data-testid="use-this-folder"
+                        disabled={browserBusy}
+                        onClick={() => {
+                          setLocalFolder(browser.path);
+                          setBrowserOpen(false);
+                        }}
+                      >
+                        Use this folder
+                      </button>
+                    </div>
+                    {!browser.withinBoundary ? (
+                      <span className="field__note sev-warn" role="status">
+                        Outside the approved workspace boundary
+                        {browser.boundaryRoot !== null ? ` (${browser.boundaryRoot})` : ''} — a run
+                        from here needs SF_WORKSPACE_BOUNDARY or SF_WORKSPACE_APPROVED_FOLDERS to
+                        admit it.
+                      </span>
+                    ) : null}
+                    <ul className="folder-browser__list">
+                      {browser.dirs.length === 0 ? (
+                        <li className="muted">No subfolders.</li>
+                      ) : (
+                        browser.dirs.map((dir) => (
+                          <li key={dir.path}>
+                            <button
+                              type="button"
+                              className="folder-browser__dir mono"
+                              disabled={browserBusy}
+                              onClick={() => void browseTo(dir.path)}
+                            >
+                              {dir.name}
+                              {!dir.withinBoundary ? (
+                                <span className="muted"> · outside boundary</span>
+                              ) : null}
+                            </button>
+                          </li>
+                        ))
+                      )}
+                    </ul>
+                    {browser.roots.length > 1 ? (
+                      <div className="row folder-browser__roots">
+                        {browser.roots.map((root) => (
+                          <button
+                            key={root}
+                            type="button"
+                            className="btn btn--sm btn--ghost mono"
+                            disabled={browserBusy}
+                            onClick={() => void browseTo(root)}
+                          >
+                            {root}
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                  </>
+                ) : browserError === null ? (
+                  <span className="field__note">Loading folders…</span>
+                ) : null}
+              </div>
             ) : null}
           </div>
 

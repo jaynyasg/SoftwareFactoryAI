@@ -25,6 +25,7 @@ import { reviewRoutes } from '../../src/server/routes/review';
 import { setupRoutes } from '../../src/server/routes/setup';
 import { researchRoutes } from '../../src/server/research/research-routes';
 import { executionRoutes } from '../../src/server/routes/execution';
+import { fsRoutes } from '../../src/server/routes/fs';
 import { handleMcpRequest } from '../../src/server/mcp';
 
 const SCHEMA_FILE = fileURLToPath(
@@ -110,6 +111,14 @@ const CONNECTOR_SURFACE: Readonly<Record<string, ConnectorMapping>> = {
   },
   // Setup diagnostics.
   'GET /api/setup': { action: 'getSetup', mcp: 'software_factory_get_setup' },
+  // Local filesystem browsing (Run control folder picker).
+  'POST /api/fs/browse': {
+    excluded:
+      'Web-only affordance: browses the OPERATOR MACHINE filesystem so the Run control ' +
+      'folder picker can produce absolute paths the browser sandbox cannot. Remote ' +
+      'connectors (ChatGPT Action, MCP) must never enumerate the operator disk; cloud ' +
+      'mode answers 409 (KTD5).',
+  },
 };
 
 /** The same composition `createApp` uses — new factories must be added HERE. */
@@ -121,6 +130,7 @@ function allRoutes(): readonly RouteDef[] {
     ...setupRoutes(),
     ...researchRoutes(),
     ...executionRoutes(),
+    ...fsRoutes(),
   ];
 }
 

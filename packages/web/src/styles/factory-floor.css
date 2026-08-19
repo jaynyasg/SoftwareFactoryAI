@@ -82,6 +82,75 @@
   border-color: var(--border-strong);
 }
 
+/* ----------------------------------------------------------------------------
+ * Folder browser (Run control) — server-backed local directory picker.
+ * ------------------------------------------------------------------------- */
+.folder-browser {
+  margin-top: var(--space-8);
+  padding: var(--space-8);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg-inset);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+}
+
+.folder-browser__bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+}
+
+.folder-browser__path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl; /* long paths keep the informative tail visible */
+  text-align: left;
+  font-size: var(--fs-xs);
+}
+
+.folder-browser__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 220px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.folder-browser__dir {
+  width: 100%;
+  text-align: left;
+  padding: var(--space-4) var(--space-8);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: var(--fs-xs);
+}
+
+.folder-browser__dir:hover {
+  background: var(--bg-overlay);
+  border-color: var(--border-subtle);
+}
+
+.folder-browser__dir:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
+}
+
+.folder-browser__roots {
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+
 .app-main {
   flex: 1;
   width: 100%;
