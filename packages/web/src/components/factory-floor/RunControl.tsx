@@ -32,12 +32,16 @@ const ADAPTERS = [
 const MODELS_BY_ADAPTER: Readonly<
   Record<string, readonly { readonly id: string; readonly label: string }[]>
 > = {
-  // Mirrors the models evidenced in the operator's ~/.codex/config.toml
-  // (provider-prefixed ids pass through verbatim); update alongside it.
+  // Mirrors the operator's ChatGPT-plan model catalog (~/.codex/
+  // models_cache.json; default = gpt-5.5). The TrueFoundry models
+  // (gpt-5.6-sol) live behind `codex --profile tfy` and are not listed
+  // because plain `codex exec` cannot resolve them. Update alongside.
   'codex-cli': [
     { id: 'default', label: 'Adapter default' },
-    { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol' },
-    { id: 'openai-group/gpt-5.3-codex', label: 'GPT-5.3 Codex' },
+    { id: 'gpt-5.5', label: 'GPT-5.5' },
+    { id: 'gpt-5.4', label: 'GPT-5.4' },
+    { id: 'gpt-5.4-mini', label: 'GPT-5.4 Mini' },
+    { id: 'gpt-5.3-codex-spark', label: 'GPT-5.3 Codex Spark' },
   ],
   'claude-code-cli': [
     { id: 'default', label: 'Adapter default' },
