@@ -382,6 +382,7 @@ function failingOnceStore(
     readRun: (runId) => store.readRun(runId),
     readAll: () => store.readAll(),
     listRuns: () => store.listRuns(),
+    deleteRuns: (runIds) => store.deleteRuns(runIds),
   };
 }
 
@@ -671,6 +672,7 @@ describe('shutdown re-entrancy and interval tick stacking', () => {
         return raw.readAll();
       },
       listRuns: () => raw.listRuns(),
+      deleteRuns: (runIds) => raw.deleteRuns(runIds),
     };
 
     let intervalCallback: (() => void) | undefined;

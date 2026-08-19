@@ -54,6 +54,10 @@ const CONNECTOR_SURFACE: Readonly<Record<string, ConnectorMapping>> = {
     action: 'cancelAllRuns',
     mcp: 'software_factory_cancel_all_runs',
   },
+  'POST /api/runs/clear-all': {
+    action: 'clearAllRuns',
+    mcp: 'software_factory_clear_all_runs',
+  },
   'POST /api/runs/:id/cancel': { action: 'cancelRun', mcp: 'software_factory_cancel_run' },
   'GET /api/runs/:id': { action: 'getRun', mcp: 'software_factory_get_run' },
   'GET /api/runs/:id/events': { action: 'getRunEvents', mcp: 'software_factory_get_events' },

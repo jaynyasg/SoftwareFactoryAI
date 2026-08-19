@@ -36,7 +36,7 @@
  * ("Hosted Scale Migration Seam") for the full upgrade path.
  */
 import { randomUUID } from 'node:crypto';
-import { appendFile, mkdir, readdir, readFile } from 'node:fs/promises';
+import { appendFile, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { EVENT_ENVELOPE_VERSION, compareEventsBySequence, isFactoryEvent } from './event-types';
 import type { AppendableEvent, EventEnvelope, FactoryEvent } from './event-types';
@@ -58,6 +58,16 @@ export interface EventStore {
   readAll(): Promise<FactoryEvent[]>;
   /** The distinct run ids known to the store. */
   listRuns(): Promise<string[]>;
+  /**
+   * Permanently delete every event for the given runs (the operator
+   * "clear everything" command). Destructive and NOT append-only by design:
+   * this is the one operator escape hatch for purging terminal-run history
+   * (e.g. accumulated e2e fixtures) from the ledger. Returns the run ids that
+   * actually had events; unknown ids are ignored. Idempotency keys and
+   * sequence state for deleted runs are forgotten, so a reused run id starts
+   * fresh.
+   */
+  deleteRuns(runIds: readonly string[]): Promise<{ deleted: string[] }>;
 }
 
 /** Injectable, deterministic-in-tests dependencies common to all stores. */
@@ -187,6 +197,25 @@ export function createInMemoryEventStore(options: EventStoreOptions = {}): Event
     },
     listRuns() {
       return Promise.resolve([...byRun.keys()]);
+    },
+    deleteRuns(runIds) {
+      const targets = new Set(runIds);
+      const deleted: string[] = [];
+      for (const runId of targets) {
+        if (byRun.delete(runId)) {
+          deleted.push(runId);
+          allocator.reset(runId);
+        }
+      }
+      if (deleted.length > 0) {
+        for (const [key, event] of byIdempotencyKey) {
+          if (targets.has(event.runId)) {
+            byIdempotencyKey.delete(key);
+          }
+        }
+        readAllCache = null;
+      }
+      return Promise.resolve({ deleted });
     },
   };
 }
@@ -394,7 +423,77 @@ export function createFileSystemEventStore(options: FileSystemEventStoreOptions)
     listRuns() {
       return enqueue(async () => {
         await hydrateAll();
-        return [...cache.keys()];
+        // Only runs with at least one event: `readRun`/`hydrateRun` caches an
+        // empty [] for a run that was merely ASKED about (or deleted), and a
+        // never-persisted run id must not leak into the run list.
+        return [...cache.entries()]
+          .filter(([, events]) => events.length > 0)
+          .map(([runId]) => runId);
+      });
+    },
+    deleteRuns(runIds) {
+      return enqueue(async () => {
+        await hydrateAll();
+        const targets = new Set(runIds);
+        const deleted = [...targets].filter((runId) => cache.has(runId));
+        if (deleted.length === 0) {
+          return { deleted };
+        }
+        // Filenames are sanitized, so distinct run ids CAN collide on one
+        // file; a file is unlinked only when every run stored in it is being
+        // deleted, otherwise it is rewritten with the surviving events.
+        const survivorsByFile = new Map<string, FactoryEvent[]>();
+        for (const [runId, events] of cache) {
+          if (targets.has(runId)) {
+            continue;
+          }
+          const path = runFile(runId);
+          const list = survivorsByFile.get(path) ?? [];
+          list.push(...events);
+          survivorsByFile.set(path, list);
+        }
+        for (const runId of deleted) {
+          const path = runFile(runId);
+          const survivors = survivorsByFile.get(path);
+          try {
+            if (survivors === undefined) {
+              await rm(path, { force: true });
+              tornTailFiles.delete(path);
+            } else {
+              const lines = survivors
+                .sort(compareEventsBySequence)
+                .map((event) => JSON.stringify(event))
+                .join('\n');
+              await writeFile(path, `${lines}\n`, 'utf8');
+              tornTailFiles.delete(path);
+              // The file was rewritten once; colliding survivors stay put and
+              // later deleted run ids mapping here see survivors again.
+            }
+          } catch (error) {
+            const code = isErrnoException(error) ? error.code : undefined;
+            const message = error instanceof Error ? error.message : String(error);
+            throw new EventStorePersistenceError(
+              `Failed to delete run ${runId} ledger at ${path}` +
+                `${code !== undefined ? ` (${code})` : ''}: ${message}`,
+              { code, path },
+            );
+          }
+        }
+        for (const runId of deleted) {
+          for (const event of cache.get(runId) ?? []) {
+            if (
+              event.idempotencyKey !== undefined &&
+              byIdempotencyKey.get(event.idempotencyKey)?.runId === runId
+            ) {
+              byIdempotencyKey.delete(event.idempotencyKey);
+            }
+          }
+          cache.delete(runId);
+          hydratedRuns.delete(runId);
+          allocator.reset(runId);
+        }
+        readAllCache = null;
+        return { deleted };
       });
     },
   };

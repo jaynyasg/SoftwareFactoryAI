@@ -230,6 +230,27 @@ export interface CancelAllRunsResult {
   readonly errors?: readonly { readonly runId: string; readonly message: string }[];
 }
 
+export interface ClearAllRunsInput {
+  /** Recorded on each `run.cancelled` event in the cancel phase. */
+  readonly reason?: string;
+}
+
+/**
+ * Batch outcome of POST /api/runs/clear-all (DESTRUCTIVE): cancel-all
+ * semantics first, then every terminal run's ledger is permanently deleted.
+ */
+export interface ClearAllRunsResult {
+  /** Run ids whose ledgers were permanently deleted. */
+  readonly cleared: readonly string[];
+  readonly clearedCount: number;
+  /** Run ids the cancel phase cancelled before deletion. */
+  readonly cancelled: readonly string[];
+  /** Runs still non-terminal after the cancel phase — kept, never deleted. */
+  readonly skipped: readonly { readonly runId: string; readonly status: string }[];
+  /** Failures from the cancel phase or the ledger deletion. */
+  readonly errors?: readonly { readonly runId: string; readonly message: string }[];
+}
+
 export interface InterventionSummary {
   readonly interventionId: string;
   readonly runId: string;
@@ -345,6 +366,11 @@ export interface ApiClient {
   holdExecution(): Promise<ExecutionGateResult>;
   /** Cancel EVERY cancellable run in one guarded command. */
   cancelAllRuns(input?: CancelAllRunsInput): Promise<CancelAllRunsResult>;
+  /**
+   * DESTRUCTIVE: cancel every cancellable run, then permanently delete every
+   * terminal run's ledger (the operator "clear everything" purge).
+   */
+  clearAllRuns(input?: ClearAllRunsInput): Promise<ClearAllRunsResult>;
   listInterventions(query?: ListInterventionsQuery): Promise<ListInterventionsResult>;
   resolveIntervention(
     interventionId: string,
@@ -457,21 +483,47 @@ function toRunIdList(value: unknown): readonly string[] {
     : [];
 }
 
-function toCancelAllRunsResult(body: Record<string, unknown>): CancelAllRunsResult {
-  const errors = Array.isArray(body.errors)
-    ? body.errors.flatMap((entry) => {
+function toRunErrorList(
+  value: unknown,
+): readonly { readonly runId: string; readonly message: string }[] | undefined {
+  return Array.isArray(value)
+    ? value.flatMap((entry) => {
         const record = asRecord(entry);
         const runId = optStr(record.runId);
         const message = optStr(record.message);
         return runId !== undefined && message !== undefined ? [{ runId, message }] : [];
       })
     : undefined;
+}
+
+function toCancelAllRunsResult(body: Record<string, unknown>): CancelAllRunsResult {
+  const errors = toRunErrorList(body.errors);
   const cancelled = toRunIdList(body.cancelled);
   return {
     cancelled,
     alreadyCancelled: toRunIdList(body.alreadyCancelled),
     skippedTerminal: toRunIdList(body.skippedTerminal),
     cancelledCount: optNum(body.cancelledCount) ?? cancelled.length,
+    ...(errors !== undefined && errors.length > 0 ? { errors } : {}),
+  };
+}
+
+function toClearAllRunsResult(body: Record<string, unknown>): ClearAllRunsResult {
+  const errors = toRunErrorList(body.errors);
+  const cleared = toRunIdList(body.cleared);
+  const skipped = Array.isArray(body.skipped)
+    ? body.skipped.flatMap((entry) => {
+        const record = asRecord(entry);
+        const runId = optStr(record.runId);
+        const status = optStr(record.status);
+        return runId !== undefined && status !== undefined ? [{ runId, status }] : [];
+      })
+    : [];
+  return {
+    cleared,
+    clearedCount: optNum(body.clearedCount) ?? cleared.length,
+    cancelled: toRunIdList(body.cancelled),
+    skipped,
     ...(errors !== undefined && errors.length > 0 ? { errors } : {}),
   };
 }
@@ -734,6 +786,9 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
     },
     async cancelAllRuns(input = {}) {
       return toCancelAllRunsResult(await mutate('/api/runs/cancel-all', { reason: input.reason }));
+    },
+    async clearAllRuns(input = {}) {
+      return toClearAllRunsResult(await mutate('/api/runs/clear-all', { reason: input.reason }));
     },
     async listInterventions(query = {}) {
       const params = new URLSearchParams();

@@ -10,6 +10,10 @@
  *                             run: appends `run.cancelled` per run FIRST, then
  *                             propagates the whole batch to queued/in-flight
  *                             execution in one daemon call.
+ *   POST /api/runs/clear-all  (mutating, guarded, DESTRUCTIVE) — cancel every
+ *                             cancellable run, then permanently delete every
+ *                             terminal run's ledger (the operator purge for
+ *                             accumulated history and stale fixture leases).
  *   POST /api/runs/:id/cancel (mutating, guarded) — append `run.cancelled`.
  *   POST /api/runs/:id/workspace (mutating, guarded) — materialize (or retry
  *                             materializing) the run workspace (full-factory
@@ -439,17 +443,22 @@ async function cancelRun(ctx: RouteContext): Promise<ApiResponse> {
  * immediately before its single chained release pass, so cancelling run A
  * never waits behind (or keeps executing) work for run B.
  */
-async function cancelAllRuns(ctx: RouteContext): Promise<ApiResponse> {
-  const body = asRecord(ctx.request.body);
-  const denial = await ctx.guardMutation({
-    subject: { kind: 'factory', id: 'runs' },
-    command: 'run.cancel_all',
-  });
-  if (denial !== null) {
-    return denial;
-  }
-  const reason = str(body.reason) ?? 'operator cancel-all';
+interface CancelBatchResult {
+  readonly cancelled: string[];
+  readonly alreadyCancelled: string[];
+  readonly skippedTerminal: string[];
+  readonly errors: { runId: string; message: string }[];
+}
 
+/**
+ * The shared batch-cancel core for cancel-all and clear-all: appends
+ * `run.cancelled` per cancellable run, resolves the dead interventions, and
+ * hands the whole batch to the daemon in ONE `cancelRuns` call.
+ */
+async function cancelEveryCancellableRun(
+  ctx: RouteContext,
+  reason: string,
+): Promise<CancelBatchResult> {
   // ONE cross-run read serves every projection in the batch (perf: no
   // readRun per run). Grouping preserves per-run order; `projectRun` sorts
   // defensively anyway.
@@ -519,6 +528,24 @@ async function cancelAllRuns(ctx: RouteContext): Promise<ApiResponse> {
     }
   }
 
+  return { cancelled, alreadyCancelled, skippedTerminal, errors };
+}
+
+async function cancelAllRuns(ctx: RouteContext): Promise<ApiResponse> {
+  const body = asRecord(ctx.request.body);
+  const denial = await ctx.guardMutation({
+    subject: { kind: 'factory', id: 'runs' },
+    command: 'run.cancel_all',
+  });
+  if (denial !== null) {
+    return denial;
+  }
+  const reason = str(body.reason) ?? 'operator cancel-all';
+  const { cancelled, alreadyCancelled, skippedTerminal, errors } = await cancelEveryCancellableRun(
+    ctx,
+    reason,
+  );
+
   return {
     status: 200,
     body: {
@@ -526,6 +553,79 @@ async function cancelAllRuns(ctx: RouteContext): Promise<ApiResponse> {
       alreadyCancelled,
       skippedTerminal,
       cancelledCount: cancelled.length,
+      ...(errors.length > 0 ? { errors } : {}),
+    },
+  };
+}
+
+/**
+ * Clear everything (mutating, guarded, DESTRUCTIVE): cancel every cancellable
+ * run, then permanently DELETE every terminal run's ledger. This is the
+ * operator's purge for accumulated history — cancelled e2e fixtures, stale
+ * leased jobs whose (far-future) leases the reconciler must respect, finished
+ * runs nobody needs on the floor. Runs that are still non-terminal after the
+ * cancel phase (a cancel append failed) are reported skipped, never deleted:
+ * clearing must not destroy evidence of live work.
+ */
+async function clearAllRuns(ctx: RouteContext): Promise<ApiResponse> {
+  const body = asRecord(ctx.request.body);
+  const denial = await ctx.guardMutation({
+    subject: { kind: 'factory', id: 'runs' },
+    command: 'run.clear_all',
+  });
+  if (denial !== null) {
+    return denial;
+  }
+  const reason = str(body.reason) ?? 'operator clear-all';
+
+  // Phase 1 — the same batch cancel as cancel-all (aborts in-flight work).
+  const cancelBatch = await cancelEveryCancellableRun(ctx, reason);
+  const errors = [...cancelBatch.errors];
+
+  // Phase 2 — re-project from the post-cancel ledger and delete every run
+  // that is now terminal. Anything else (cancel failed, still transitioning)
+  // is skipped with its observed status so the operator sees what survived.
+  const eventsByRun = new Map<string, FactoryEvent[]>();
+  for (const event of await ctx.reader.readAll()) {
+    const runEvents = eventsByRun.get(event.runId);
+    if (runEvents === undefined) {
+      eventsByRun.set(event.runId, [event]);
+    } else {
+      runEvents.push(event);
+    }
+  }
+  const deletable: string[] = [];
+  const skipped: { runId: string; status: string }[] = [];
+  for (const [runId, events] of eventsByRun) {
+    const run = projectRun(events, runId);
+    if (!isRealRun(run)) {
+      // Non-run ledger groups (malformed/foreign events) are left untouched.
+      continue;
+    }
+    if (run.status === 'cancelled' || run.status === 'completed' || run.status === 'failed') {
+      deletable.push(runId);
+    } else {
+      skipped.push({ runId, status: run.status });
+    }
+  }
+
+  let cleared: string[] = [];
+  if (deletable.length > 0) {
+    try {
+      cleared = (await ctx.store.deleteRuns(deletable)).deleted;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      errors.push({ runId: 'factory', message: `ledger deletion failed: ${message}` });
+    }
+  }
+
+  return {
+    status: 200,
+    body: {
+      cleared,
+      clearedCount: cleared.length,
+      cancelled: cancelBatch.cancelled,
+      skipped,
       ...(errors.length > 0 ? { errors } : {}),
     },
   };
@@ -610,6 +710,7 @@ export function runRoutes(): RouteDef[] {
     { method: 'POST', pattern: '/api/runs', handler: createRun },
     { method: 'GET', pattern: '/api/runs', handler: listRunsHandler },
     { method: 'POST', pattern: '/api/runs/cancel-all', handler: cancelAllRuns },
+    { method: 'POST', pattern: '/api/runs/clear-all', handler: clearAllRuns },
     { method: 'POST', pattern: '/api/runs/:id/cancel', handler: cancelRun },
     { method: 'POST', pattern: '/api/runs/:id/workspace', handler: materializeWorkspaceRoute },
     { method: 'GET', pattern: '/api/runs/:id/workspace', handler: getWorkspace },

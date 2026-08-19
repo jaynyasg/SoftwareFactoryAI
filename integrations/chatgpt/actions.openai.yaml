@@ -90,6 +90,36 @@ paths:
             application/json:
               schema:
                 type: object
+  /api/runs/clear-all:
+    post:
+      operationId: clearAllRuns
+      summary: >-
+        DESTRUCTIVE — the operator's "clear everything" control: cancel every
+        cancellable run, then permanently DELETE every terminal run's ledger
+        (accumulated history, cancelled fixtures, stale leased jobs). Runs
+        still non-terminal after the cancel phase are reported skipped, never
+        deleted. This cannot be undone.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClearAllRunsRequest'
+      responses:
+        '200':
+          description: >-
+            Batch outcome: which run ledgers were deleted, which runs the
+            cancel phase cancelled, and which non-terminal runs were skipped.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClearAllRunsResponse'
+        '401':
+          description: Operator token missing or invalid (command guard denial).
+          content:
+            application/json:
+              schema:
+                type: object
   /api/runs/{runId}:
     get:
       operationId: getRun
@@ -688,6 +718,51 @@ components:
         errors:
           type: array
           description: Per-run failures, when any run in the batch could not be cancelled.
+          items:
+            type: object
+            properties:
+              runId:
+                type: string
+              message:
+                type: string
+    ClearAllRunsRequest:
+      type: object
+      properties:
+        reason:
+          type: string
+          description: Recorded on each `run.cancelled` event in the cancel phase.
+      additionalProperties: false
+    ClearAllRunsResponse:
+      type: object
+      properties:
+        cleared:
+          type: array
+          items:
+            type: string
+          description: Run ids whose ledgers were permanently deleted.
+        clearedCount:
+          type: integer
+          description: Length of `cleared`.
+        cancelled:
+          type: array
+          items:
+            type: string
+          description: Run ids cancelled by the cancel phase of THIS command.
+        skipped:
+          type: array
+          description: >-
+            Runs that were still non-terminal after the cancel phase and were
+            therefore NOT deleted (clearing never destroys live work).
+          items:
+            type: object
+            properties:
+              runId:
+                type: string
+              status:
+                type: string
+        errors:
+          type: array
+          description: Per-run failures from the cancel phase or the ledger deletion.
           items:
             type: object
             properties:

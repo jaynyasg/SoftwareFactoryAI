@@ -118,6 +118,16 @@ const TOOLS: readonly McpTool[] = [
     },
   },
   {
+    name: 'software_factory_clear_all_runs',
+    description:
+      'DESTRUCTIVE: cancel every cancellable run, then permanently DELETE every terminal run\'s ledger (the operator "clear everything" control). Purges accumulated run history — cancelled fixtures, finished runs, stale leased jobs — from the factory floor; non-terminal runs that survive the cancel phase are reported skipped, never deleted. This cannot be undone.',
+    inputSchema: {
+      type: 'object',
+      properties: { reason: { type: 'string' } },
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'software_factory_start_run',
     description:
       'Start execution for a planned run. Runs the dry-run preflight rehearsal first and enqueues the run-execution job for the execution daemon; duplicate starts return the existing queue state. NOTE: the daemon boots with the factory-wide drain gate HELD by default (SF_EXEC_AUTOSTART=1 opts back in), so a started run queues but does NOT execute until software_factory_resume_execution releases the gate.',
@@ -610,6 +620,13 @@ async function callFactoryTool(
         // reported, never re-cancelled) — no per-run expectedVersion applies.
         response = await deps.app.handle(
           internalRequest('POST', '/api/runs/cancel-all', session, { reason: str(args.reason) }),
+        );
+        break;
+      case 'software_factory_clear_all_runs':
+        // DESTRUCTIVE factory-scoped command: cancel-all semantics first, then
+        // terminal-run ledgers are permanently deleted (the operator purge).
+        response = await deps.app.handle(
+          internalRequest('POST', '/api/runs/clear-all', session, { reason: str(args.reason) }),
         );
         break;
       /* Factory-wide drain gate (operator autostart surface): the daemon boots

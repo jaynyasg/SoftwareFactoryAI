@@ -6,20 +6,31 @@
  *
  *   - HELD banner + Resume: the daemon boots held, so opening the factory
  *     never runs queued work automatically. The banner says so honestly and
- *     the Resume button is the single explicit way to start draining.
+ *     the Resume button is the single explicit way to start draining. Only
+ *     QUEUED work counts as "waiting for resume" — leased jobs belong to a
+ *     running (or crashed) owner and resume does not start them.
  *   - Hold: re-engage the gate (stop starting NEW work) while active.
  *   - Cancel all tasks: one guarded command that cancels every cancellable
  *     run and propagates to queued/in-flight execution work. Destructive, so
  *     it takes an inline two-step confirm instead of firing on first click.
+ *   - Clear everything: cancel-all THEN permanently delete every terminal
+ *     run's ledger — the operator purge for accumulated history and stale
+ *     fixture leases. Irreversible; same two-step confirm pattern.
  *
  * State is never optimistic: every render is derived from the polled
  * GET /api/execution projection, and mutations go through the command guard
  * (token + CSRF) exactly like the per-run command bar.
  */
 import { useEffect, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import { useSession } from '../session-context';
-import { cancelAllRuns, holdFactoryExecution, resumeFactoryExecution } from '../../lib/api-client';
-import type { CancelAllRunsResult, MutationResult } from '../../lib/api-client';
+import {
+  cancelAllRuns,
+  clearAllRuns,
+  holdFactoryExecution,
+  resumeFactoryExecution,
+} from '../../lib/api-client';
+import type { CancelAllRunsResult, ClearAllRunsResult, MutationResult } from '../../lib/api-client';
 import { useExecutionOverview } from '../../lib/use-execution-overview';
 import type { ExecutionOverview } from '../../lib/types';
 
@@ -27,6 +38,7 @@ type Phase =
   | { readonly kind: 'idle' }
   | { readonly kind: 'busy'; readonly action: string }
   | { readonly kind: 'confirm-cancel-all' }
+  | { readonly kind: 'confirm-clear-all' }
   | { readonly kind: 'notice'; readonly message: string }
   | { readonly kind: 'error'; readonly message: string };
 
@@ -43,7 +55,8 @@ export function FactoryCommandBar({
   const [phase, setPhase] = useState<Phase>({ kind: 'idle' });
   const busy = phase.kind === 'busy';
   const { execution, queue } = live.overview;
-  const waiting = queue.queued + queue.leased;
+  // Cancel-all reaches queued AND leased work; resume only starts QUEUED work.
+  const cancellable = queue.queued + queue.leased;
 
   // Unmount guard (same contract as RunCommandBar): an in-flight command that
   // settles after unmount must not set state or trigger the parent refresh.
@@ -100,6 +113,18 @@ export function FactoryCommandBar({
       : `Cancelled ${count} run${count === 1 ? '' : 's'}; queued and in-flight work stops.`;
   }
 
+  function describeClearAll(data: ClearAllRunsResult): string {
+    const cleared = data.clearedCount;
+    const skipped = data.skipped.length;
+    const base =
+      cleared === 0
+        ? 'Nothing to clear — no terminal run history on the ledger.'
+        : `Cleared ${cleared} run${cleared === 1 ? '' : 's'} from the ledger.`;
+    return skipped > 0
+      ? `${base} ${skipped} run${skipped === 1 ? ' is' : 's are'} still active and kept.`
+      : base;
+  }
+
   // A resume that leaves the daemon loop stopped is a trap: the gate is open
   // but nothing drains. Surface it as a notice instead of returning to idle.
   function describeResume(data: { running?: boolean }): string | undefined {
@@ -108,16 +133,53 @@ export function FactoryCommandBar({
       : undefined;
   }
 
-  // One shared element so the held banner and the active row cannot drift
-  // (the server defaults the cancel reason to "operator cancel-all").
+  // Shared elements so the held banner and the active row cannot drift (the
+  // server defaults the reasons to "operator cancel-all" / "operator clear-all").
   const cancelAll = (
-    <CancelAllControl
+    <ConfirmedDestructiveControl
       busy={busy}
-      phase={phase}
-      waiting={waiting}
+      confirming={phase.kind === 'confirm-cancel-all'}
+      busyLabel={phase.kind === 'busy' && phase.action === 'cancel all' ? 'Cancelling…' : null}
+      armLabel="Cancel all tasks"
+      armTestId="cancel-all-tasks"
+      confirmGroupLabel="Confirm cancel all tasks"
+      confirmQuestion={
+        <>
+          Cancel every active run
+          {cancellable > 0 ? ` (${cancellable} task${cancellable === 1 ? '' : 's'} in the queue)` : ''}
+          ? Queued and in-flight work stops.
+        </>
+      }
+      confirmLabel="Confirm cancel all"
+      confirmTestId="cancel-all-confirm"
+      keepLabel="Keep running"
+      keepTestId="cancel-all-keep"
       onArm={() => setPhase({ kind: 'confirm-cancel-all' })}
       onDisarm={() => setPhase({ kind: 'idle' })}
       onConfirm={() => void perform('cancel all', () => cancelAllRuns(session), describeCancelAll)}
+    />
+  );
+  const clearAll = (
+    <ConfirmedDestructiveControl
+      busy={busy}
+      confirming={phase.kind === 'confirm-clear-all'}
+      busyLabel={phase.kind === 'busy' && phase.action === 'clear all' ? 'Clearing…' : null}
+      armLabel="Clear everything"
+      armTestId="clear-all-tasks"
+      confirmGroupLabel="Confirm clear everything"
+      confirmQuestion={
+        <>
+          Permanently delete ALL run history? Active runs are cancelled first; finished, failed,
+          and cancelled runs are erased from the ledger. This cannot be undone.
+        </>
+      }
+      confirmLabel="Confirm clear everything"
+      confirmTestId="clear-all-confirm"
+      keepLabel="Keep history"
+      keepTestId="clear-all-keep"
+      onArm={() => setPhase({ kind: 'confirm-clear-all' })}
+      onDisarm={() => setPhase({ kind: 'idle' })}
+      onConfirm={() => void perform('clear all', () => clearAllRuns(session), describeClearAll)}
     />
   );
 
@@ -131,9 +193,12 @@ export function FactoryCommandBar({
         <div className="banner banner--warn" role="status" data-testid="factory-held-banner">
           <span className="banner__body">
             Execution is held — nothing runs automatically.
-            {waiting > 0
-              ? ` ${waiting} task${waiting === 1 ? ' is' : 's are'} waiting for your resume.`
+            {queue.queued > 0
+              ? ` ${queue.queued} task${queue.queued === 1 ? ' is' : 's are'} waiting for your resume.`
               : ' Queued work will wait for your resume.'}
+            {queue.leased > 0
+              ? ` ${queue.leased} leased task${queue.leased === 1 ? '' : 's'} belong${queue.leased === 1 ? 's' : ''} to a running or previous owner — resume does not start them.`
+              : ''}
           </span>
           <button
             type="button"
@@ -147,6 +212,7 @@ export function FactoryCommandBar({
             {phase.kind === 'busy' && phase.action === 'resume' ? 'Resuming…' : 'Resume execution'}
           </button>
           {cancelAll}
+          {clearAll}
           {live.reconnecting ? <span className="badge sev-warn">reconnecting</span> : null}
         </div>
       ) : (
@@ -164,6 +230,7 @@ export function FactoryCommandBar({
             {phase.kind === 'busy' && phase.action === 'hold' ? 'Holding…' : 'Hold new work'}
           </button>
           {cancelAll}
+          {clearAll}
           {live.reconnecting ? <span className="badge sev-warn">reconnecting</span> : null}
         </div>
       )}
@@ -197,28 +264,44 @@ export function FactoryCommandBar({
 }
 
 /**
- * The destructive cancel-all control with its inline two-step confirm. Kept
- * as one component so the held banner and the active row render the exact
- * same behavior. Keyboard contract: arming moves focus to the SAFE "Keep
- * running" option, Escape disarms, and closing the confirm (either way)
- * returns focus to the arm button so keyboard users never lose their place.
+ * A destructive control with its inline two-step confirm — shared by
+ * cancel-all and clear-everything so both render the exact same behavior.
+ * Keyboard contract: arming moves focus to the SAFE "keep" option, Escape
+ * disarms, and closing the confirm (either way) returns focus to the arm
+ * button so keyboard users never lose their place.
  */
-function CancelAllControl({
+function ConfirmedDestructiveControl({
   busy,
-  phase,
-  waiting,
+  confirming,
+  busyLabel,
+  armLabel,
+  armTestId,
+  confirmGroupLabel,
+  confirmQuestion,
+  confirmLabel,
+  confirmTestId,
+  keepLabel,
+  keepTestId,
   onArm,
   onDisarm,
   onConfirm,
 }: {
   readonly busy: boolean;
-  readonly phase: Phase;
-  readonly waiting: number;
+  readonly confirming: boolean;
+  /** Label shown while THIS control's command is in flight (null when idle). */
+  readonly busyLabel: string | null;
+  readonly armLabel: string;
+  readonly armTestId: string;
+  readonly confirmGroupLabel: string;
+  readonly confirmQuestion: ReactNode;
+  readonly confirmLabel: string;
+  readonly confirmTestId: string;
+  readonly keepLabel: string;
+  readonly keepTestId: string;
   readonly onArm: () => void;
   readonly onDisarm: () => void;
   readonly onConfirm: () => void;
 }) {
-  const confirming = phase.kind === 'confirm-cancel-all';
   const armRef = useRef<HTMLButtonElement>(null);
   const keepRef = useRef<HTMLButtonElement>(null);
   // Track the PREVIOUS confirm state so focus returns to the arm button
@@ -239,7 +322,7 @@ function CancelAllControl({
       <span
         className="row"
         role="group"
-        aria-label="Confirm cancel all tasks"
+        aria-label={confirmGroupLabel}
         onKeyDown={(event) => {
           if (event.key === 'Escape') {
             onDisarm();
@@ -247,26 +330,24 @@ function CancelAllControl({
         }}
       >
         <span className="sev-warn" style={{ fontSize: 'var(--fs-2xs)' }}>
-          Cancel every active run
-          {waiting > 0 ? ` (${waiting} task${waiting === 1 ? '' : 's'} in the queue)` : ''}? Queued
-          and in-flight work stops.
+          {confirmQuestion}
         </span>
         <button
           type="button"
           className="btn btn--sm btn--danger"
-          data-testid="cancel-all-confirm"
+          data-testid={confirmTestId}
           onClick={onConfirm}
         >
-          Confirm cancel all
+          {confirmLabel}
         </button>
         <button
           ref={keepRef}
           type="button"
           className="btn btn--sm btn--ghost"
-          data-testid="cancel-all-keep"
+          data-testid={keepTestId}
           onClick={onDisarm}
         >
-          Keep running
+          {keepLabel}
         </button>
       </span>
     );
@@ -277,10 +358,10 @@ function CancelAllControl({
       type="button"
       className="btn btn--sm btn--danger"
       disabled={busy}
-      data-testid="cancel-all-tasks"
+      data-testid={armTestId}
       onClick={onArm}
     >
-      {phase.kind === 'busy' && phase.action === 'cancel all' ? 'Cancelling…' : 'Cancel all tasks'}
+      {busyLabel ?? armLabel}
     </button>
   );
 }

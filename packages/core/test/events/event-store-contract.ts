@@ -181,6 +181,35 @@ export function describeEventStoreContract(harness: EventStoreContractHarness): 
       await expect(store.append(bad)).rejects.toBeInstanceOf(TypeError);
     });
 
+    it('deleteRuns purges a run completely and ignores unknown ids', async () => {
+      const store = await harness.create();
+      await store.append(runCreated('run-keep'));
+      await store.append(workerProgress('run-keep', 'kept'));
+      await store.append(runCreated('run-gone', 'gone-create-key'));
+      await store.append(workerProgress('run-gone', 'doomed'));
+
+      const result = await store.deleteRuns(['run-gone', 'run-never-existed']);
+      expect(result.deleted).toEqual(['run-gone']);
+
+      expect(await store.readRun('run-gone')).toEqual([]);
+      expect(await store.listRuns()).toEqual(['run-keep']);
+      expect((await store.readAll()).every((e) => e.runId === 'run-keep')).toBe(true);
+      // The kept run is untouched.
+      expect((await store.readRun('run-keep')).map((e) => e.sequence)).toEqual([1, 2]);
+    });
+
+    it('a deleted run id starts fresh: sequences restart and keys are forgotten', async () => {
+      const store = await harness.create();
+      await store.append(runCreated('run-1', 'recreate-key'));
+      await store.append(workerProgress('run-1', 'old life'));
+      await store.deleteRuns(['run-1']);
+
+      const recreated = await store.append(runCreated('run-1', 'recreate-key'));
+      expect(recreated.deduplicated).toBe(false);
+      expect(recreated.event.sequence).toBe(1);
+      expect(await store.readRun('run-1')).toHaveLength(1);
+    });
+
     // ------------------------------------------------------------------------
     // Restart/replay — persistent stores only (U11: single-instance cloud
     // restart must replay planned/active/completed state from storage alone).
@@ -238,6 +267,18 @@ export function describeEventStoreContract(harness: EventStoreContractHarness): 
       const restarted = await harness.reopen!();
       await restarted.append(workerProgress('run-1', 'b'));
       expect((await restarted.readRun('run-1')).map((e) => e.sequence)).toEqual([1, 2, 3]);
+    });
+
+    itPersistent('a deleted run stays deleted across a restart', async () => {
+      const store = await harness.create();
+      await store.append(runCreated('run-keep'));
+      await store.append(runCreated('run-gone'));
+      await store.append(workerProgress('run-gone', 'doomed'));
+      await store.deleteRuns(['run-gone']);
+
+      const restarted = await harness.reopen!();
+      expect(await restarted.readRun('run-gone')).toEqual([]);
+      expect(await restarted.listRuns()).toEqual(['run-keep']);
     });
 
     itPersistent('idempotency keys keep deduplicating across a restart', async () => {

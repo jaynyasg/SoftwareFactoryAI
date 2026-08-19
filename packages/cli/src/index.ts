@@ -14,6 +14,7 @@
  *   software-factory artifacts <runId> [--json]
  *   software-factory factory-status | factory-resume | factory-hold [--json]
  *   software-factory cancel-all [--reason <text>] [--json]
+ *   software-factory clear-all --yes [--reason <text>] [--json]
  *
  * Global: --base-url <url> (or SF_BASE_URL, default http://127.0.0.1:3000),
  *         --operator-token <t> (or SF_OPERATOR_TOKEN; else the shared
@@ -42,6 +43,7 @@ import { startCommand } from './commands/start';
 import type { SpawnedBackend } from './commands/start';
 import {
   cancelAllRunsCommand,
+  clearAllRunsCommand,
   factoryHoldCommand,
   factoryResumeCommand,
   factoryStatusCommand,
@@ -234,6 +236,7 @@ a deployment back into drain-on-start):
   software-factory factory-resume  [--json]          release the gate; queued work starts
   software-factory factory-hold    [--json]          re-engage the gate; stop claiming new work
   software-factory cancel-all      [--reason <text>] [--json]  cancel every cancellable run
+  software-factory clear-all       --yes [--reason <text>] [--json]  DESTRUCTIVE: cancel-all, then delete every terminal run ledger
 
 Review (unblock a human-review run):
   software-factory review       <runId> --decision approved|rejected [--rationale <r>]
@@ -431,6 +434,15 @@ export async function runCli(argv: readonly string[], deps: RunCliDeps = {}): Pr
         await cancelAllRunsCommand({ reason: flagStr(flags, 'reason'), json }, { client, io });
         return 0;
       }
+      case 'clear-all': {
+        const client = await buildClient();
+        const result = await clearAllRunsCommand(
+          { reason: flagStr(flags, 'reason'), yes: flagBool(flags, 'yes'), json },
+          { client, io },
+        );
+        // A refused clear (missing --yes) is an error exit for scripted callers.
+        return result === null ? 1 : 0;
+      }
       case 'interventions': {
         const client = await buildClient();
         await interventionsCommand(
@@ -583,6 +595,7 @@ export {
   factoryResumeCommand,
   factoryHoldCommand,
   cancelAllRunsCommand,
+  clearAllRunsCommand,
 } from './commands/execution';
 export { reviewCommand, isReviewDecision, isRiskTier } from './commands/review';
 export { materializeWorkspaceCommand, workspaceStatusCommand } from './commands/workspace';

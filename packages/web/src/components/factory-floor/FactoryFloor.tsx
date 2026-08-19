@@ -195,6 +195,15 @@ export function FactoryFloor({
   );
   const queue = useInterventionQueue(initialInterventions);
 
+  // Self-heal a stale focus: clear-everything (or any refresh that drops the
+  // focused run from the list) must not strand the blueprint on a 404 for a
+  // run that no longer exists — refocus the newest surviving run, or none.
+  useEffect(() => {
+    if (focusedRunId !== null && !initialRuns.some((run) => run.runId === focusedRunId)) {
+      setFocusedRunId(initialRuns[0]?.runId ?? null);
+    }
+  }, [focusedRunId, initialRuns]);
+
   const visibleRuns = historyCleared ? [] : initialRuns;
   const openByRun = useMemo(() => {
     const counts: Record<string, number> = {};

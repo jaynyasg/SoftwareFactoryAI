@@ -188,6 +188,7 @@ function withLeaseHeartbeat(
     readRun: (runId) => store.readRun(runId),
     readAll: () => store.readAll(),
     listRuns: () => store.listRuns(),
+    deleteRuns: (runIds) => store.deleteRuns(runIds),
   };
 }
 

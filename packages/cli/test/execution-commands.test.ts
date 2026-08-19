@@ -135,6 +135,15 @@ function makeFakeClient(): { client: ApiClient; calls: RecordedCall[] } {
         cancelledCount: 2,
       });
     },
+    clearAllRuns(input) {
+      calls.push({ method: 'clearAllRuns', input });
+      return Promise.resolve({
+        cleared: ['run-1', 'run-2'],
+        clearedCount: 2,
+        cancelled: ['run-1'],
+        skipped: [{ runId: 'run-4', status: 'running' }],
+      });
+    },
     listInterventions(query) {
       calls.push({ method: 'listInterventions', input: query });
       return Promise.resolve({

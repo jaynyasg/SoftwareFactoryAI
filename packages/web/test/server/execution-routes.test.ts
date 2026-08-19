@@ -1307,6 +1307,139 @@ describe('POST /api/runs/cancel-all', () => {
   });
 });
 
+describe('POST /api/runs/clear-all', () => {
+  it('cancels active runs, deletes every terminal run ledger, and keeps live evidence', async () => {
+    const { app, store, daemon } = makeExecApp();
+    const active = await createPlannedRun(app); // cancellable → cancelled → deleted
+    const preCancelled = await createPlannedRun(app);
+    await app.handle(req('POST', `/api/runs/${preCancelled}/cancel`, authedHeaders(), {}));
+    const failed = await createPlannedRun(app);
+    await store.append({
+      runId: failed,
+      type: 'run.failed',
+      actor: { kind: 'operator', id: 'operator' },
+      subject: { kind: 'run', id: failed },
+      severity: 'error',
+      payload: { reason: 'exploded before clear-all' },
+    });
+
+    const res = await app.handle(
+      req('POST', '/api/runs/clear-all', authedHeaders(), { reason: 'operator clear-all' }),
+    );
+    expect(res.status).toBe(200);
+    const body = record(res) as {
+      cleared: string[];
+      clearedCount: number;
+      cancelled: string[];
+      skipped: { runId: string; status: string }[];
+      errors?: unknown;
+    };
+    expect(body.cancelled).toEqual([active]);
+    expect(body.cleared.sort()).toEqual([active, failed, preCancelled].sort());
+    expect(body.clearedCount).toBe(3);
+    expect(body.skipped).toEqual([]);
+    expect(body.errors).toBeUndefined();
+
+    // The ledgers are GONE, not just projected differently.
+    for (const runId of [active, preCancelled, failed]) {
+      expect(await store.readRun(runId)).toEqual([]);
+    }
+    const runs = await app.handle(req('GET', '/api/runs', {}));
+    expect(record(runs).runs).toEqual([]);
+    // The queue overview holds no phantom jobs from the deleted runs.
+    const overview = await app.handle(req('GET', '/api/execution', {}));
+    expect(record(overview).queue).toEqual({ queued: 0, leased: 0 });
+
+    // The daemon's next pass sees a clean ledger.
+    const tick = await daemon.tick();
+    expect(tick.claimed).toBe(0);
+
+    // Repeat clear-all converges on the empty ledger.
+    const again = await app.handle(req('POST', '/api/runs/clear-all', authedHeaders(), {}));
+    expect(again.status).toBe(200);
+    expect((record(again) as { clearedCount: number }).clearedCount).toBe(0);
+  });
+
+  it('clears a stale leased job by deleting its cancelled run (the fixture-lease purge)', async () => {
+    // A leased job with a FAR-FUTURE lease from a dead owner: the reconciler
+    // must respect the unexpired lease forever, so clear-all is the only
+    // operator remedy once its run is terminal.
+    const { app, store } = makeExecApp();
+    const runId = await createPlannedRun(app);
+    await store.append({
+      runId,
+      type: 'queue.enqueued',
+      actor: { kind: 'system', id: 'daemon-ghost' },
+      subject: { kind: 'queue-job', id: `${runId}:execution` },
+      severity: 'info',
+      payload: { jobId: `${runId}:execution`, jobKind: 'run-execution', attempt: 1 },
+    });
+    await store.append({
+      runId,
+      type: 'queue.claimed',
+      actor: { kind: 'system', id: 'daemon-ghost' },
+      subject: { kind: 'queue-job', id: `${runId}:execution` },
+      severity: 'info',
+      payload: {
+        jobId: `${runId}:execution`,
+        jobKind: 'run-execution',
+        attempt: 1,
+        leaseId: 'ghost-lease',
+        ownerId: 'daemon-ghost',
+        leaseExpiresAt: 4_100_000_000_000,
+      },
+    });
+    const before = await app.handle(req('GET', '/api/execution', {}));
+    expect(record(before).queue).toMatchObject({ leased: 1 });
+
+    const res = await app.handle(req('POST', '/api/runs/clear-all', authedHeaders(), {}));
+    expect(res.status).toBe(200);
+    expect((record(res) as { cleared: string[] }).cleared).toEqual([runId]);
+
+    const after = await app.handle(req('GET', '/api/execution', {}));
+    expect(record(after).queue).toEqual({ queued: 0, leased: 0 });
+  });
+
+  it('never deletes a run that survives the cancel phase non-terminal', async () => {
+    // The wrapped store refuses the run.cancelled append, so the run stays
+    // planned through the cancel phase — clear-all must keep its ledger.
+    const { app, store } = makeExecApp({
+      wrapStore: (base) => ({
+        ...base,
+        append: (event) =>
+          event.type === 'run.cancelled'
+            ? Promise.reject(new Error('ledger write refused'))
+            : base.append(event),
+      }),
+    });
+    const runId = await createPlannedRun(app);
+
+    const res = await app.handle(req('POST', '/api/runs/clear-all', authedHeaders(), {}));
+    expect(res.status).toBe(200);
+    const body = record(res) as {
+      cleared: string[];
+      skipped: { runId: string; status: string }[];
+      errors?: { runId: string }[];
+    };
+    expect(body.cleared).toEqual([]);
+    expect(body.skipped).toEqual([{ runId, status: 'planned' }]);
+    expect(body.errors?.[0]?.runId).toBe(runId);
+    expect((await store.readRun(runId)).length).toBeGreaterThan(0);
+  });
+
+  it('requires the command guard before clearing anything', async () => {
+    const { app, store } = makeExecApp();
+    const runId = await createPlannedRun(app);
+    await app.handle(req('POST', `/api/runs/${runId}/cancel`, authedHeaders(), {}));
+
+    const denied = await app.handle(
+      req('POST', '/api/runs/clear-all', { origin: ORIGIN, 'x-csrf-token': CSRF }, {}),
+    );
+    expect(denied.status).toBe(401);
+    expect((await store.readRun(runId)).length).toBeGreaterThan(0);
+  });
+});
+
 // NOTE: the ChatGPT Action schema assertions that previously lived here were
 // upgraded to REAL OpenAPI 3.1 validation in chatgpt-action-schema.test.ts
 // (full-factory U10).

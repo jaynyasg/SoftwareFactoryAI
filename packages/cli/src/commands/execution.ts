@@ -17,6 +17,8 @@
  *   software-factory factory-resume       — release the gate; queued work starts
  *   software-factory factory-hold         — re-engage the gate; stop claiming new work
  *   software-factory cancel-all           — cancel every cancellable run
+ *   software-factory clear-all --yes      — DESTRUCTIVE: cancel-all, then delete
+ *                                           every terminal run's ledger
  *
  * Commands enqueue or mutate execution state through the guarded HTTP API and
  * print projected state; the execution daemon owns the actual work (E1).
@@ -29,6 +31,7 @@
 import type {
   ApiClient,
   CancelAllRunsResult,
+  ClearAllRunsResult,
   ExecutionCommandResult,
   ExecutionGateResult,
   ExecutionOverviewResult,
@@ -324,6 +327,52 @@ export async function cancelAllRunsCommand(
     deps.io.out(`  cancelled ${runId}`);
   }
   // Per-run failures go to stderr so scripted callers notice partial batches.
+  for (const failure of result.errors ?? []) {
+    deps.io.err(`  failed ${failure.runId}: ${failure.message}`);
+  }
+  return result;
+}
+
+export interface ClearAllCommandArgs {
+  readonly reason?: string;
+  readonly json?: boolean;
+  /** DESTRUCTIVE commands require the explicit --yes acknowledgement. */
+  readonly yes?: boolean;
+}
+
+/**
+ * Clear everything: cancel every cancellable run, then permanently delete
+ * every terminal run's ledger. Irreversible, so the CLI refuses without an
+ * explicit `--yes` (there is no interactive confirm in scripted contexts).
+ */
+export async function clearAllRunsCommand(
+  args: ClearAllCommandArgs,
+  deps: ExecutionCommandDeps,
+): Promise<ClearAllRunsResult | null> {
+  if (args.yes !== true) {
+    deps.io.err(
+      'clear-all permanently deletes every terminal run ledger and cannot be undone. ' +
+        'Re-run with --yes to confirm.',
+    );
+    return null;
+  }
+  const result = await deps.client.clearAllRuns({ reason: args.reason });
+  if (args.json === true) {
+    deps.io.out(JSON.stringify(result, null, 2));
+    return result;
+  }
+  deps.io.out(
+    `Cleared ${result.clearedCount} run(s) from the ledger; ` +
+      `${result.cancelled.length} cancelled first; ` +
+      `${result.skipped.length} still active (kept).`,
+  );
+  for (const runId of result.cleared) {
+    deps.io.out(`  cleared ${runId}`);
+  }
+  for (const kept of result.skipped) {
+    deps.io.out(`  kept ${kept.runId} (${kept.status})`);
+  }
+  // Failures go to stderr so scripted callers notice partial batches.
   for (const failure of result.errors ?? []) {
     deps.io.err(`  failed ${failure.runId}: ${failure.message}`);
   }

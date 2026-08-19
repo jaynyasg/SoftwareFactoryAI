@@ -47,6 +47,7 @@ const EXPECTED_TOOLS = [
   'software_factory_get_events',
   'software_factory_cancel_run',
   'software_factory_cancel_all_runs',
+  'software_factory_clear_all_runs',
   'software_factory_review_decide',
   'software_factory_materialize_workspace',
   'software_factory_get_workspace',
@@ -569,6 +570,37 @@ describe('MCP cancel-all tool', () => {
     expect((await ctx.store.readRun(runId)).map((event) => event.type)).not.toContain(
       'run.cancelled',
     );
+  });
+});
+
+describe('MCP clear-all tool', () => {
+  it('cancels then permanently deletes every terminal run ledger', async () => {
+    const ctx = makeMcp();
+    const first = await createRunViaTool(ctx);
+    const second = await createRunViaTool(ctx);
+
+    const res = await callTool(ctx, 'software_factory_clear_all_runs', { reason: 'purge' });
+    expect(res.isError).toBe(false);
+    expect(res.body.cancelled).toEqual(expect.arrayContaining([first, second]));
+    expect(res.body.cleared).toEqual(expect.arrayContaining([first, second]));
+    expect(res.body.clearedCount).toBe(2);
+    expect(res.body.skipped).toEqual([]);
+    // The ledgers are gone, not just re-projected.
+    expect(await ctx.store.readRun(first)).toEqual([]);
+    expect(await ctx.store.readRun(second)).toEqual([]);
+
+    // Repeat converges on the now-empty ledger.
+    const again = await callTool(ctx, 'software_factory_clear_all_runs', {});
+    expect(again.isError).toBe(false);
+    expect(again.body.clearedCount).toBe(0);
+  });
+
+  it('rejects an unauthorized clear-all before any ledger is touched', async () => {
+    const ctx = makeMcp();
+    const runId = await createRunViaTool(ctx);
+    const denied = await callTool(ctx, 'software_factory_clear_all_runs', {}, 'wrong-token');
+    expect(denied.isError).toBe(true);
+    expect((await ctx.store.readRun(runId)).length).toBeGreaterThan(0);
   });
 });
 

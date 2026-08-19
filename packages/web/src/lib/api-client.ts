@@ -277,6 +277,29 @@ export function cancelAllRuns(
   return mutate('/api/runs/cancel-all', session, { reason });
 }
 
+/** Outcome lists from the guarded, DESTRUCTIVE clear-all command. */
+export interface ClearAllRunsResult {
+  /** Run ids whose ledgers were permanently deleted. */
+  readonly cleared: readonly string[];
+  readonly clearedCount: number;
+  /** Run ids the cancel phase cancelled before deletion. */
+  readonly cancelled: readonly string[];
+  /** Runs still non-terminal after the cancel phase — kept, never deleted. */
+  readonly skipped: readonly { readonly runId: string; readonly status: string }[];
+  readonly errors?: readonly { readonly runId: string; readonly message: string }[];
+}
+
+/**
+ * Clear everything (POST /api/runs/clear-all): cancel every cancellable run,
+ * then permanently delete every terminal run's ledger. Irreversible.
+ */
+export function clearAllRuns(
+  session: LocalSession,
+  reason?: string,
+): Promise<MutationResult<ClearAllRunsResult>> {
+  return mutate('/api/runs/clear-all', session, { reason });
+}
+
 /* ----------------------------------------------------------------------------
  * Operator intervention queue (X4)
  * ------------------------------------------------------------------------- */

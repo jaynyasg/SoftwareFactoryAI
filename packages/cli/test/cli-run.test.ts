@@ -147,6 +147,9 @@ function makeFakeBackend(opts: { failCreateWith?: ApiError } = {}): FakeBackend 
     holdExecution() {
       return Promise.reject(new Error('not used'));
     },
+    clearAllRuns() {
+      return Promise.reject(new Error('not used'));
+    },
     cancelAllRuns() {
       return Promise.reject(new Error('not used'));
     },
