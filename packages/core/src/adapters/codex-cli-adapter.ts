@@ -50,11 +50,36 @@ const LOGIN_ACTIONS: readonly SetupAction[] = [
   },
 ];
 
+/**
+ * A model override may carry a Codex config profile as `<profile>:<model>`
+ * (e.g. `tfy:gpt-5.6-sol` → `--profile tfy --model gpt-5.6-sol`), so runs can
+ * reach models served only by an alternate provider profile (~/.codex/
+ * <profile>.config.toml). A bare id stays a plain `--model`.
+ */
+function parseModelOverride(model: string | undefined): {
+  profile?: string;
+  model?: string;
+} {
+  if (model === undefined) {
+    return {};
+  }
+  const colon = model.indexOf(':');
+  if (colon > 0 && /^[A-Za-z0-9_-]+$/.test(model.slice(0, colon))) {
+    const rest = model.slice(colon + 1);
+    return { profile: model.slice(0, colon), ...(rest.length > 0 ? { model: rest } : {}) };
+  }
+  return { model };
+}
+
 /** Compose the non-interactive Codex execution arguments for a task. */
 function buildExecArgs(task: AdapterTask): readonly string[] {
   const args = ['exec', '--cd', task.workspaceDir, '--json'];
-  if (task.model !== undefined) {
-    args.push('--model', task.model);
+  const override = parseModelOverride(task.model);
+  if (override.profile !== undefined) {
+    args.push('--profile', override.profile);
+  }
+  if (override.model !== undefined) {
+    args.push('--model', override.model);
   }
   args.push(composePrompt(task));
   return args;

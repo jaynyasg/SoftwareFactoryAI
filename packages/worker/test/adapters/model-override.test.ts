@@ -81,6 +81,36 @@ describe('CLI adapters pass the task model through as a model flag', () => {
     expect(exec!.args[exec!.args.length - 1]).toContain('Model ticket');
   });
 
+  it('codex-cli expands a `profile:model` override to --profile + --model', async () => {
+    const runner = createFakeRunner({
+      responses: { 'codex exec': { code: 0, stdout: '{"ok":true}', stderr: '' } },
+    });
+    const adapter = createCodexCliAdapter({ runner });
+
+    await adapter.execute(task('tfy:gpt-5.6-sol'), execOptions);
+
+    const exec = runner.calls.find((call) => call.args[0] === 'exec');
+    expect(exec, 'codex exec invocation').toBeDefined();
+    const profileIndex = exec!.args.indexOf('--profile');
+    expect(profileIndex).toBeGreaterThan(-1);
+    expect(exec!.args[profileIndex + 1]).toBe('tfy');
+    const modelIndex = exec!.args.indexOf('--model');
+    expect(exec!.args[modelIndex + 1]).toBe('gpt-5.6-sol');
+  });
+
+  it('codex-cli treats a non-profile-shaped colon id as a plain model', async () => {
+    const runner = createFakeRunner({
+      responses: { 'codex exec': { code: 0, stdout: '{"ok":true}', stderr: '' } },
+    });
+    const adapter = createCodexCliAdapter({ runner });
+
+    // A leading colon (empty prefix) is not a profile form — pass verbatim.
+    await adapter.execute(task(':odd-id'), execOptions);
+    const exec = runner.calls.find((call) => call.args[0] === 'exec');
+    expect(exec!.args).not.toContain('--profile');
+    expect(exec!.args[exec!.args.indexOf('--model') + 1]).toBe(':odd-id');
+  });
+
   it('omits the model flag entirely when the task has no model', async () => {
     const claudeRunner = createFakeRunner({
       responses: { 'claude --print': { code: 0, stdout: '{"ok":true}', stderr: '' } },
