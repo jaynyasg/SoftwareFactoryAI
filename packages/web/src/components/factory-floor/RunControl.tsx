@@ -33,17 +33,20 @@ const MODELS_BY_ADAPTER: Readonly<
   Record<string, readonly { readonly id: string; readonly label: string }[]>
 > = {
   // Mirrors the operator's ChatGPT-plan model catalog (~/.codex/
-  // models_cache.json; default = gpt-5.5) plus TrueFoundry models reachable
-  // via `codex --profile tfy` — the codex adapter expands `tfy:<model>` to
-  // `--profile tfy --model <model>` (API-billed, not the ChatGPT plan; the
-  // plan rejects every 5.6-family id). Update alongside those configs.
+  // models_cache.json, refreshed by codex-cli >= 0.148: gpt-5.6-sol/terra/
+  // luna, 5.5, 5.4, 5.4-mini, 5.3-codex-spark; adapter default = gpt-5.5).
+  // All plan-billed. Models behind other provider profiles remain reachable
+  // via the `profile:<model>` form the codex adapter expands to
+  // `--profile <p> --model <m>`. Update alongside those configs.
   'codex-cli': [
     { id: 'default', label: 'Adapter default' },
+    { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol' },
+    { id: 'gpt-5.6-terra', label: 'GPT-5.6 Terra' },
+    { id: 'gpt-5.6-luna', label: 'GPT-5.6 Luna' },
     { id: 'gpt-5.5', label: 'GPT-5.5' },
     { id: 'gpt-5.4', label: 'GPT-5.4' },
     { id: 'gpt-5.4-mini', label: 'GPT-5.4 Mini' },
     { id: 'gpt-5.3-codex-spark', label: 'GPT-5.3 Codex Spark' },
-    { id: 'tfy:gpt-5.6-sol', label: 'GPT-5.6 Sol (TrueFoundry · API-billed)' },
   ],
   'claude-code-cli': [
     { id: 'default', label: 'Adapter default' },
