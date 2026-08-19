@@ -31,11 +31,12 @@ const ADAPTERS = [
 const MODELS_BY_ADAPTER: Readonly<
   Record<string, readonly { readonly id: string; readonly label: string }[]>
 > = {
+  // Mirrors the models evidenced in the operator's ~/.codex/config.toml
+  // (provider-prefixed ids pass through verbatim); update alongside it.
   'codex-cli': [
     { id: 'default', label: 'Adapter default' },
-    { id: 'gpt-5.1-codex-max', label: 'GPT-5.1 Codex Max' },
-    { id: 'gpt-5.1-codex', label: 'GPT-5.1 Codex' },
-    { id: 'gpt-5.1-codex-mini', label: 'GPT-5.1 Codex Mini' },
+    { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol' },
+    { id: 'openai-group/gpt-5.3-codex', label: 'GPT-5.3 Codex' },
   ],
   'claude-code-cli': [
     { id: 'default', label: 'Adapter default' },

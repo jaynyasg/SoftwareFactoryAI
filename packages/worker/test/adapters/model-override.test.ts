@@ -70,13 +70,13 @@ describe('CLI adapters pass the task model through as a model flag', () => {
     });
     const adapter = createCodexCliAdapter({ runner });
 
-    await adapter.execute(task('gpt-5.1-codex'), execOptions);
+    await adapter.execute(task('openai-group/gpt-5.3-codex'), execOptions);
 
     const exec = runner.calls.find((call) => call.args[0] === 'exec');
     expect(exec, 'codex exec invocation').toBeDefined();
     const modelIndex = exec!.args.indexOf('--model');
     expect(modelIndex).toBeGreaterThan(-1);
-    expect(exec!.args[modelIndex + 1]).toBe('gpt-5.1-codex');
+    expect(exec!.args[modelIndex + 1]).toBe('openai-group/gpt-5.3-codex');
     // The prompt stays the LAST positional argument.
     expect(exec!.args[exec!.args.length - 1]).toContain('Model ticket');
   });
