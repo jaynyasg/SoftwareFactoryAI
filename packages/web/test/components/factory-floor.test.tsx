@@ -700,6 +700,68 @@ describe('FactoryCommandBar (factory drain gate)', () => {
     expect(screen.queryByTestId('factory-held-banner')).toBeNull();
   });
 
+  it('an EMPTY held factory shows only the quiet gate badge — no banner, no dead buttons', () => {
+    render(
+      withSession(
+        <FactoryCommandBar
+          initial={{
+            execution: { enabled: true, held: true, running: true },
+            queue: { queued: 0, leased: 0 },
+          }}
+          runCount={0}
+          cancellableRunCount={0}
+        />,
+      ),
+    );
+
+    expect(screen.getByTestId('factory-held-badge')).toHaveTextContent(/execution held/);
+    expect(screen.queryByTestId('factory-held-banner')).toBeNull();
+    expect(screen.queryByTestId('factory-resume')).toBeNull();
+    expect(screen.queryByTestId('cancel-all-tasks')).toBeNull();
+    expect(screen.queryByTestId('clear-all-tasks')).toBeNull();
+  });
+
+  it('an EMPTY active factory shows only the quiet active badge', () => {
+    render(
+      withSession(
+        <FactoryCommandBar
+          initial={{
+            execution: { enabled: true, held: false, running: true },
+            queue: { queued: 0, leased: 0 },
+          }}
+          runCount={0}
+          cancellableRunCount={0}
+        />,
+      ),
+    );
+
+    expect(screen.getByTestId('factory-active-badge')).toBeInTheDocument();
+    expect(screen.queryByTestId('factory-hold')).toBeNull();
+    expect(screen.queryByTestId('cancel-all-tasks')).toBeNull();
+    expect(screen.queryByTestId('clear-all-tasks')).toBeNull();
+  });
+
+  it('held with terminal-only history: quiet badge + Clear everything, but no Resume or Cancel all', () => {
+    render(
+      withSession(
+        <FactoryCommandBar
+          initial={{
+            execution: { enabled: true, held: true, running: true },
+            queue: { queued: 0, leased: 0 },
+          }}
+          runCount={3}
+          cancellableRunCount={0}
+        />,
+      ),
+    );
+
+    expect(screen.getByTestId('factory-held-badge')).toBeInTheDocument();
+    expect(screen.getByTestId('clear-all-tasks')).toBeEnabled();
+    expect(screen.queryByTestId('factory-resume')).toBeNull();
+    expect(screen.queryByTestId('cancel-all-tasks')).toBeNull();
+    expect(screen.queryByTestId('factory-held-banner')).toBeNull();
+  });
+
   it('renders nothing on an instance without execution controls', () => {
     const { container } = render(
       withSession(

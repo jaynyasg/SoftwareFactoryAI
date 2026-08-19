@@ -2,20 +2,26 @@
 
 /**
  * FactoryCommandBar — factory-wide execution controls, rendered above the
- * intervention queue on the first screen:
+ * intervention queue on the first screen. CONTEXTUAL by design (calm by
+ * default, loud on risk — DESIGN.md §1): every control renders only while it
+ * can actually do something, so an empty factory shows a single quiet gate
+ * badge instead of a permanent banner with dead buttons.
  *
- *   - HELD banner + Resume: the daemon boots held, so opening the factory
- *     never runs queued work automatically. The banner says so honestly and
- *     the Resume button is the single explicit way to start draining. Only
+ *   - HELD banner + Resume: shown only while held work exists on the queue.
+ *     The daemon boots held, so opening the factory never runs queued work
+ *     automatically; the banner says so honestly the moment it matters. Only
  *     QUEUED work counts as "waiting for resume" — leased jobs belong to a
  *     running (or crashed) owner and resume does not start them.
- *   - Hold: re-engage the gate (stop starting NEW work) while active.
- *   - Cancel all tasks: one guarded command that cancels every cancellable
- *     run and propagates to queued/in-flight execution work. Destructive, so
- *     it takes an inline two-step confirm instead of firing on first click.
- *   - Clear everything: cancel-all THEN permanently delete every terminal
- *     run's ledger — the operator purge for accumulated history and stale
- *     fixture leases. Irreversible; same two-step confirm pattern.
+ *   - Hold: re-engage the gate (stop starting NEW work) while active work
+ *     or runs exist.
+ *   - Cancel all tasks: shown only while cancellable work exists. One guarded
+ *     command that cancels every cancellable run and propagates to queued and
+ *     in-flight execution work. Destructive: inline two-step confirm.
+ *   - Clear everything: shown only while run history exists. Cancel-all THEN
+ *     permanently delete every terminal run's ledger. Irreversible; same
+ *     two-step confirm pattern.
+ *   - Empty factory: a quiet "execution held/active" badge — the gate state
+ *     is never hidden (truth over decoration), but it never shouts either.
  *
  * State is never optimistic: every render is derived from the polled
  * GET /api/execution projection, and mutations go through the command guard
@@ -44,9 +50,15 @@ type Phase =
 
 export function FactoryCommandBar({
   initial,
+  runCount = 0,
+  cancellableRunCount = 0,
   onChanged,
 }: {
   readonly initial: ExecutionOverview;
+  /** Total runs on the ledger — Clear everything is pointless without any. */
+  readonly runCount?: number;
+  /** Non-terminal runs — Cancel all is pointless without any (or queue work). */
+  readonly cancellableRunCount?: number;
   /** Called after a successful mutation so the parent reloads run state. */
   readonly onChanged?: () => void;
 }) {
@@ -57,6 +69,11 @@ export function FactoryCommandBar({
   const { execution, queue } = live.overview;
   // Cancel-all reaches queued AND leased work; resume only starts QUEUED work.
   const cancellable = queue.queued + queue.leased;
+  // Contextual visibility: a queue job implies a run even if the run props
+  // lag one refresh behind, so queue counts back up the run-derived counts.
+  const hasQueue = cancellable > 0;
+  const showCancelAll = hasQueue || cancellableRunCount > 0;
+  const showClearAll = hasQueue || runCount > 0;
 
   // Unmount guard (same contract as RunCommandBar): an in-flight command that
   // settles after unmount must not set state or trigger the parent refresh.
@@ -190,47 +207,66 @@ export function FactoryCommandBar({
       style={{ gap: 'var(--space-4)' }}
     >
       {execution.held ? (
-        <div className="banner banner--warn" role="status" data-testid="factory-held-banner">
-          <span className="banner__body">
-            Execution is held — nothing runs automatically.
-            {queue.queued > 0
-              ? ` ${queue.queued} task${queue.queued === 1 ? ' is' : 's are'} waiting for your resume.`
-              : ' Queued work will wait for your resume.'}
-            {queue.leased > 0
-              ? ` ${queue.leased} leased task${queue.leased === 1 ? '' : 's'} belong${queue.leased === 1 ? 's' : ''} to a running or previous owner — resume does not start them.`
-              : ''}
-          </span>
-          <button
-            type="button"
-            className="btn btn--sm btn--primary"
-            disabled={busy}
-            data-testid="factory-resume"
-            onClick={() =>
-              void perform('resume', () => resumeFactoryExecution(session), describeResume)
-            }
-          >
-            {phase.kind === 'busy' && phase.action === 'resume' ? 'Resuming…' : 'Resume execution'}
-          </button>
-          {cancelAll}
-          {clearAll}
-          {live.reconnecting ? <span className="badge sev-warn">reconnecting</span> : null}
-        </div>
+        hasQueue ? (
+          // Held work is actually waiting: this is the loud moment the gate
+          // banner exists for, with Resume as the single explicit release.
+          <div className="banner banner--warn" role="status" data-testid="factory-held-banner">
+            <span className="banner__body">
+              Execution is held — nothing runs automatically.
+              {queue.queued > 0
+                ? ` ${queue.queued} task${queue.queued === 1 ? ' is' : 's are'} waiting for your resume.`
+                : ' Queued work will wait for your resume.'}
+              {queue.leased > 0
+                ? ` ${queue.leased} leased task${queue.leased === 1 ? '' : 's'} belong${queue.leased === 1 ? 's' : ''} to a running or previous owner — resume does not start them.`
+                : ''}
+            </span>
+            <button
+              type="button"
+              className="btn btn--sm btn--primary"
+              disabled={busy}
+              data-testid="factory-resume"
+              onClick={() =>
+                void perform('resume', () => resumeFactoryExecution(session), describeResume)
+              }
+            >
+              {phase.kind === 'busy' && phase.action === 'resume'
+                ? 'Resuming…'
+                : 'Resume execution'}
+            </button>
+            {cancelAll}
+            {clearAll}
+            {live.reconnecting ? <span className="badge sev-warn">reconnecting</span> : null}
+          </div>
+        ) : (
+          // Nothing queued: the gate state stays visible but quiet, and the
+          // destructive controls appear only when history/runs exist for them.
+          <div className="row" role="group" aria-label="Factory-wide execution commands">
+            <span className="badge" data-testid="factory-held-badge">
+              execution held — runs start only after you resume
+            </span>
+            {showCancelAll ? cancelAll : null}
+            {showClearAll ? clearAll : null}
+            {live.reconnecting ? <span className="badge sev-warn">reconnecting</span> : null}
+          </div>
+        )
       ) : (
         <div className="row" role="group" aria-label="Factory-wide execution commands">
           <span className="badge" data-testid="factory-active-badge">
             execution active
           </span>
-          <button
-            type="button"
-            className="btn btn--sm btn--ghost"
-            disabled={busy}
-            data-testid="factory-hold"
-            onClick={() => void perform('hold', () => holdFactoryExecution(session))}
-          >
-            {phase.kind === 'busy' && phase.action === 'hold' ? 'Holding…' : 'Hold new work'}
-          </button>
-          {cancelAll}
-          {clearAll}
+          {hasQueue || runCount > 0 ? (
+            <button
+              type="button"
+              className="btn btn--sm btn--ghost"
+              disabled={busy}
+              data-testid="factory-hold"
+              onClick={() => void perform('hold', () => holdFactoryExecution(session))}
+            >
+              {phase.kind === 'busy' && phase.action === 'hold' ? 'Holding…' : 'Hold new work'}
+            </button>
+          ) : null}
+          {showCancelAll ? cancelAll : null}
+          {showClearAll ? clearAll : null}
           {live.reconnecting ? <span className="badge sev-warn">reconnecting</span> : null}
         </div>
       )}

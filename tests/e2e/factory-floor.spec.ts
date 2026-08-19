@@ -353,6 +353,11 @@ test('mobile 390x844: interventions first, lanes stack, no horizontal scroll', a
 test('factory drain gate: held banner shows on open and cancel-all arm backs out safely', async ({
   page,
 }) => {
+  // The gate bar is CONTEXTUAL: on an empty factory it collapses to a quiet
+  // badge, so seed a run with queue work to make the held banner (and the
+  // destructive controls) appear — deterministic instead of depending on
+  // sibling specs' seeds.
+  await seedFullFactoryRun(page.request, 'e2e-gate');
   await page.goto('/');
 
   // The daemon boots HELD: the banner says nothing runs automatically and

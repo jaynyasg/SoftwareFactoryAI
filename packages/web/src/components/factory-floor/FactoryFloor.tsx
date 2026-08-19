@@ -230,12 +230,21 @@ export function FactoryFloor({
       </div>
 
       {/* 0 — factory-wide controls: the held/resume gate (nothing runs
-          automatically on open) and the destructive cancel-all command. */}
+          automatically on open) and the destructive cancel-all/clear-all
+          commands. Run counts make the bar CONTEXTUAL: controls render only
+          while they have something to act on. */}
       <FactoryCommandBar
         initial={initialExecution}
+        runCount={initialRuns.length}
+        cancellableRunCount={
+          initialRuns.filter(
+            (run) =>
+              run.status !== 'cancelled' && run.status !== 'completed' && run.status !== 'failed',
+          ).length
+        }
         onChanged={() => {
-          // A resume/hold/cancel-all changes every run's projected state:
-          // re-render the server-provided props and re-poll the queue.
+          // A resume/hold/cancel-all/clear-all changes every run's projected
+          // state: re-render the server-provided props and re-poll the queue.
           queue.refresh();
           router.refresh();
         }}
