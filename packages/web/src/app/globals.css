@@ -18,6 +18,11 @@ body {
   padding: 0;
 }
 
+html {
+  /* On <html> (not just body) so nothing ever computes the browser serif. */
+  font-family: var(--font-sans);
+}
+
 body {
   background: var(--bg-base);
   color: var(--text-primary);
