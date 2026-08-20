@@ -232,14 +232,18 @@ describe('command guard over mutating routes', () => {
     expect(await types(store, 'run-cloud')).toEqual(['run.created']);
   });
 
-  it('rejects CSRF-suspicious requests before side effects', async () => {
+  it('header-token callers are CSRF-exempt — browsers cannot set custom headers cross-site', async () => {
+    // Plan decision (multi-user U3): bearer/header-token calls skip the CSRF
+    // double-submit in EVERY mode; the unforgeable header IS the CSRF defense.
+    // Session-cookie callers still present their per-session CSRF (covered in
+    // auth-routes.test.ts). The pure csrf_failed policy stays pinned above in
+    // the checkCommand suite.
     const { app, store } = makeApp();
     const res = await app.handle(
       req('POST', '/api/runs', authedHeaders({ 'x-csrf-token': undefined }), { prompt: 'x' }),
     );
-    expect(res.status).toBe(403);
-    expect(errorOf(res)).toBe('csrf_failed');
-    expect(await types(store, 'run-1')).toEqual(['security.block']);
+    expect(res.status).toBe(201);
+    expect(await types(store, 'run-1')).toEqual(['run.created']);
   });
 
   it('rejects a stale review command and appends security.command_rejected, not review.decided', async () => {

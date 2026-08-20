@@ -692,19 +692,20 @@ async function resolveInterventionRoute(ctx: RouteContext): Promise<ApiResponse>
 
 export function executionRoutes(): RouteDef[] {
   return [
-    { method: 'GET', pattern: '/api/execution', handler: getExecutionOverview },
-    { method: 'POST', pattern: '/api/execution/resume', handler: resumeAllExecution },
-    { method: 'POST', pattern: '/api/execution/hold', handler: holdAllExecution },
-    { method: 'POST', pattern: '/api/runs/:id/start', handler: startRun },
-    { method: 'POST', pattern: '/api/runs/:id/pause', handler: pauseRun },
-    { method: 'POST', pattern: '/api/runs/:id/resume', handler: resumeRun },
-    { method: 'POST', pattern: '/api/runs/:id/retry', handler: retryRun },
-    { method: 'POST', pattern: '/api/runs/:id/gates/rerun', handler: rerunGates },
-    { method: 'GET', pattern: '/api/runs/:id/execution', handler: getExecution },
-    { method: 'GET', pattern: '/api/interventions', handler: listInterventions },
+    { method: 'GET', pattern: '/api/execution', access: 'authenticated', handler: getExecutionOverview },
+    { method: 'POST', pattern: '/api/execution/resume', access: 'admin', handler: resumeAllExecution },
+    { method: 'POST', pattern: '/api/execution/hold', access: 'admin', handler: holdAllExecution },
+    { method: 'POST', pattern: '/api/runs/:id/start', access: 'owner-scoped', handler: startRun },
+    { method: 'POST', pattern: '/api/runs/:id/pause', access: 'owner-scoped', handler: pauseRun },
+    { method: 'POST', pattern: '/api/runs/:id/resume', access: 'owner-scoped', handler: resumeRun },
+    { method: 'POST', pattern: '/api/runs/:id/retry', access: 'owner-scoped', handler: retryRun },
+    { method: 'POST', pattern: '/api/runs/:id/gates/rerun', access: 'owner-scoped', handler: rerunGates },
+    { method: 'GET', pattern: '/api/runs/:id/execution', access: 'owner-scoped', handler: getExecution },
+    { method: 'GET', pattern: '/api/interventions', access: 'owner-scoped', handler: listInterventions },
     {
       method: 'POST',
       pattern: '/api/interventions/:id/resolve',
+      access: 'owner-scoped',
       handler: resolveInterventionRoute,
     },
   ];

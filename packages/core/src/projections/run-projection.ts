@@ -283,6 +283,11 @@ export interface RunProjection {
   readonly callerFamily?: CallerFamily;
   /** Requested run mode (from the `run.created` payload); absent = plan-only. */
   readonly mode?: RunMode;
+  /**
+   * Owning account (multi-user). Absent on legacy/single-tenant ledgers —
+   * those runs are ADMIN-OWNED by definition (migration G5).
+   */
+  readonly ownerId?: string;
   /** Explicit execution state — see `RunExecutionState` (realized in U5). */
   readonly executionState: RunExecutionState;
   /** Human-facing reason for a blocked/failed/paused execution state. */
@@ -320,6 +325,7 @@ export function projectRun(raw: readonly unknown[], runId?: string): RunProjecti
   let requestedWorkerCap: number | undefined;
   let reviewMode: ReviewMode | undefined;
   let callerFamily: CallerFamily | undefined;
+  let ownerId: string | undefined;
   let mode: RunMode | undefined;
   let buildContract: BuildContractView | undefined;
   let plannedTicketCount: number | undefined;
@@ -353,6 +359,7 @@ export function projectRun(raw: readonly unknown[], runId?: string): RunProjecti
         reviewMode = event.payload.reviewMode ?? reviewMode;
         callerFamily = event.payload.callerFamily ?? callerFamily;
         mode = event.payload.mode ?? mode;
+        ownerId = event.payload.ownerId ?? ownerId;
         break;
       case 'run.settings_overridden':
         // Mid-run operator course-change: the LATEST override wins for every
@@ -536,6 +543,7 @@ export function projectRun(raw: readonly unknown[], runId?: string): RunProjecti
     reviewMode,
     callerFamily,
     mode,
+    ownerId,
     executionState,
     executionReason,
     buildContract,

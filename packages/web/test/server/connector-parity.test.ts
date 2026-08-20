@@ -26,6 +26,7 @@ import { setupRoutes } from '../../src/server/routes/setup';
 import { researchRoutes } from '../../src/server/research/research-routes';
 import { executionRoutes } from '../../src/server/routes/execution';
 import { fsRoutes } from '../../src/server/routes/fs';
+import { authRoutes } from '../../src/server/routes/auth';
 import { handleMcpRequest } from '../../src/server/mcp';
 
 const SCHEMA_FILE = fileURLToPath(
@@ -121,6 +122,55 @@ const CONNECTOR_SURFACE: Readonly<Record<string, ConnectorMapping>> = {
   },
   // Setup diagnostics.
   'GET /api/setup': { action: 'getSetup', mcp: 'software_factory_get_setup' },
+  // Platform liveness probe (Render healthCheckPath).
+  'GET /api/healthz': {
+    excluded:
+      'Infrastructure liveness probe: static {status:"ok"} for the hosting platform health ' +
+      'check (render.yaml healthCheckPath). Carries no factory state and takes no auth — ' +
+      'exposing it as a connector operation would be noise, not capability.',
+  },
+  // Multi-user auth surface (U3). These are browser/session affordances:
+  // remote connectors authenticate with personal `sfai_` API tokens minted in
+  // Settings and sent as Authorization bearers — they never drive login
+  // forms, invite redemption, session cookies, or the admin panel remotely.
+  'POST /api/auth/login': {
+    excluded: 'Session login form target — connectors use sfai_ bearer tokens, not cookies.',
+  },
+  'POST /api/auth/logout': {
+    excluded: 'Session cookie teardown — meaningless for bearer-token connector callers.',
+  },
+  'GET /api/auth/identity': {
+    excluded:
+      'Who-am-I + per-session CSRF bootstrap for the browser shell; connectors already know ' +
+      'their identity from the token they hold.',
+  },
+  'POST /api/auth/invite/redeem': {
+    excluded:
+      'Invite redemption is a human onboarding step (choose username/password in a browser); ' +
+      'never a connector operation.',
+  },
+  'POST /api/auth/token': {
+    excluded:
+      'Mints/rotates the personal API token, shown once in the Settings UI. A connector ' +
+      'minting its own credentials would be a privilege-escalation footgun.',
+  },
+  'GET /api/auth/invites': {
+    excluded: 'Admin panel read — invite administration stays a human-in-browser activity.',
+  },
+  'POST /api/auth/invites': {
+    excluded: 'Admin panel action — invite tokens must pass through a human, not a connector.',
+  },
+  'POST /api/auth/invites/:id/revoke': {
+    excluded: 'Admin panel action — see POST /api/auth/invites.',
+  },
+  'GET /api/auth/users': {
+    excluded: 'Admin panel read — user administration stays a human-in-browser activity.',
+  },
+  'POST /api/auth/users/:id/revoke': {
+    excluded:
+      'Destructive admin action (kills sessions/tokens and cancels the user\'s runs); ' +
+      'deliberately unreachable from remote connectors.',
+  },
   // Local filesystem browsing (Run control folder picker).
   'POST /api/fs/browse': {
     excluded:
@@ -141,6 +191,7 @@ function allRoutes(): readonly RouteDef[] {
     ...researchRoutes(),
     ...executionRoutes(),
     ...fsRoutes(),
+    ...authRoutes(),
   ];
 }
 

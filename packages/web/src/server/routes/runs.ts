@@ -820,15 +820,15 @@ async function getRunOutputs(ctx: RouteContext): Promise<ApiResponse> {
 
 export function runRoutes(): RouteDef[] {
   return [
-    { method: 'POST', pattern: '/api/runs', handler: createRun },
-    { method: 'GET', pattern: '/api/runs', handler: listRunsHandler },
-    { method: 'POST', pattern: '/api/runs/cancel-all', handler: cancelAllRuns },
-    { method: 'POST', pattern: '/api/runs/clear-all', handler: clearAllRuns },
-    { method: 'POST', pattern: '/api/runs/:id/cancel', handler: cancelRun },
-    { method: 'POST', pattern: '/api/runs/:id/settings', handler: overrideRunSettings },
-    { method: 'POST', pattern: '/api/runs/:id/publish', handler: publishRunWorkspace },
-    { method: 'POST', pattern: '/api/runs/:id/workspace', handler: materializeWorkspaceRoute },
-    { method: 'GET', pattern: '/api/runs/:id/workspace', handler: getWorkspace },
-    { method: 'GET', pattern: '/api/runs/:id/outputs', handler: getRunOutputs },
+    { method: 'POST', pattern: '/api/runs', access: 'authenticated', handler: createRun },
+    { method: 'GET', pattern: '/api/runs', access: 'owner-scoped', handler: listRunsHandler },
+    { method: 'POST', pattern: '/api/runs/cancel-all', access: 'admin', handler: cancelAllRuns },
+    { method: 'POST', pattern: '/api/runs/clear-all', access: 'admin', handler: clearAllRuns },
+    { method: 'POST', pattern: '/api/runs/:id/cancel', access: 'owner-scoped', handler: cancelRun },
+    { method: 'POST', pattern: '/api/runs/:id/settings', access: 'owner-scoped', handler: overrideRunSettings },
+    { method: 'POST', pattern: '/api/runs/:id/publish', access: 'owner-scoped', handler: publishRunWorkspace },
+    { method: 'POST', pattern: '/api/runs/:id/workspace', access: 'owner-scoped', handler: materializeWorkspaceRoute },
+    { method: 'GET', pattern: '/api/runs/:id/workspace', access: 'owner-scoped', handler: getWorkspace },
+    { method: 'GET', pattern: '/api/runs/:id/outputs', access: 'owner-scoped', handler: getRunOutputs },
   ];
 }

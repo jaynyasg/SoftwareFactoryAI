@@ -153,6 +153,12 @@ export interface RunCreatedPayload {
    * execution controls (U5 queue/daemon) will act on.
    */
   readonly mode?: RunMode;
+  /**
+   * The account that owns this run (multi-user cloud). Absent on
+   * single-tenant and pre-multi-user ledgers — those runs project as
+   * admin-owned (same optional-field compatibility pattern as `mode`).
+   */
+  readonly ownerId?: string;
 }
 /**
  * Mid-run operator override of run settings (model/effort). Append-only and

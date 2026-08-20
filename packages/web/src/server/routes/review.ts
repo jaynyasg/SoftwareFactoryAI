@@ -275,5 +275,5 @@ async function decideReview(ctx: RouteContext): Promise<ApiResponse> {
 }
 
 export function reviewRoutes(): RouteDef[] {
-  return [{ method: 'POST', pattern: '/api/runs/:id/review', handler: decideReview }];
+  return [{ method: 'POST', pattern: '/api/runs/:id/review', access: 'owner-scoped', handler: decideReview }];
 }

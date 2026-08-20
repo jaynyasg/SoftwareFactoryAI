@@ -144,8 +144,8 @@ async function queryKnowledgeIndex(ctx: RouteContext): Promise<ApiResponse> {
 
 export function researchRoutes(): RouteDef[] {
   return [
-    { method: 'POST', pattern: '/api/runs/:id/research', handler: triggerResearch },
-    { method: 'GET', pattern: '/api/runs/:id/research', handler: getResearch },
-    { method: 'GET', pattern: '/api/knowledge', handler: queryKnowledgeIndex },
+    { method: 'POST', pattern: '/api/runs/:id/research', access: 'owner-scoped', handler: triggerResearch },
+    { method: 'GET', pattern: '/api/runs/:id/research', access: 'owner-scoped', handler: getResearch },
+    { method: 'GET', pattern: '/api/knowledge', access: 'authenticated', handler: queryKnowledgeIndex },
   ];
 }

@@ -16,7 +16,9 @@ services:
     # land (see ARCHITECTURE.md "Hosted Scale Migration Seam" and
     # docs/runbooks/cloud-deployment.md "Scaling Limits And The Migration Seam").
     numInstances: 1
-    healthCheckPath: /api/setup
+    # Static liveness probe: stays public + byte-identical in multi-user mode
+    # (/api/setup requires auth once SF_MULTI_USER is on).
+    healthCheckPath: /api/healthz
     envVars:
       - key: SF_RUNTIME
         value: cloud

@@ -148,5 +148,5 @@ async function browse(ctx: RouteContext): Promise<ApiResponse> {
 }
 
 export function fsRoutes(): RouteDef[] {
-  return [{ method: 'POST', pattern: '/api/fs/browse', handler: browse }];
+  return [{ method: 'POST', pattern: '/api/fs/browse', access: 'admin', handler: browse }];
 }

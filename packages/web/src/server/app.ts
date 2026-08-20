@@ -26,6 +26,9 @@ import {
   verifyOperatorToken,
 } from '@software-factory/core';
 import { resolveAdapterCatalogOptions } from './adapter-env';
+import { deriveClientIp } from './auth/throttle';
+import type { AuthService } from './auth/service';
+import type { Identity } from './auth/records';
 import type {
   AdapterCatalog,
   AppendableEvent,
@@ -37,6 +40,7 @@ import type {
   OperatorTokenProvider,
 } from '@software-factory/core';
 import { runRoutes } from './routes/runs';
+import { authRoutes } from './routes/auth';
 import { eventRoutes } from './routes/events';
 import { reviewRoutes } from './routes/review';
 import { setupRoutes } from './routes/setup';
@@ -181,6 +185,18 @@ export interface AppDeps {
    * then enforced fail-closed at execution time by the scheduler setup probe.
    */
   readonly adapterCatalog?: AdapterCatalog | null;
+  /**
+   * Multi-user auth (U3). Present = multi-user mode ON: identities resolve
+   * from session cookies and per-user `sfai_` API tokens, declared route
+   * access is enforced, the shared operator token is REFUSED with a
+   * migration message, and per-session CSRF replaces the process-wide token.
+   * Absent/null = single-tenant: today's behavior byte-for-byte.
+   */
+  readonly auth?: {
+    readonly service: AuthService;
+    /** SF_INSECURE_COOKIES=1: plain-HTTP LAN opt-out (drops __Host-/Secure). */
+    readonly insecureCookies?: boolean;
+  } | null;
 }
 
 /* ----------------------------------------------------------------------------
@@ -268,6 +284,21 @@ export interface RouteContext {
    */
   readonly adapterCatalog: AdapterCatalog | null;
   /**
+   * The resolved caller identity (multi-user U3). In single-tenant mode this
+   * is the implicit admin; in multi-user mode it is the session/API-token
+   * identity, and `null` never reaches a non-public handler (the dispatcher
+   * rejects first).
+   */
+  readonly identity: Identity | null;
+  /** The auth service in multi-user mode, `null` in single-tenant mode. */
+  readonly authService: AuthService | null;
+  /** Whether multi-user auth is active on this instance. */
+  readonly multiUser: boolean;
+  /** Session-cookie writer for auth routes (mode-aware naming/flags). */
+  sessionCookie(value: string | null): string;
+  /** The caller's throttle key (proxy-aware client IP). */
+  readonly clientIp: string;
+  /**
    * Run one preflight rehearsal pass (X2) for a run, appending `preflight.*`
    * events and interventions for failures. Resolves `null` when preflight is
    * disabled (start then fails closed).
@@ -277,10 +308,37 @@ export interface RouteContext {
 
 export type RouteHandler = (ctx: RouteContext) => Promise<ApiResponse>;
 
+/**
+ * Declared access class for a route (multi-user U3). Enforcement is
+ * DEFAULT-DENY: createApp refuses to register a route without a valid class,
+ * so a new route can never ship unguarded by omission.
+ *
+ *  - `public`        — reachable anonymously in every mode (login, invite
+ *                      redemption, the static liveness endpoint).
+ *  - `authenticated` — any signed-in identity in multi-user mode.
+ *  - `owner-scoped`  — authenticated; handlers additionally filter/authorize
+ *                      by run ownership (enforced with `ownerId`, U5).
+ *  - `admin`         — admin role only in multi-user mode.
+ *
+ * In single-tenant mode every caller resolves to the implicit admin and
+ * access enforcement is skipped entirely — behavior stays byte-identical to
+ * the pre-multi-user factory (reads open, mutations guarded by the operator
+ * token as before).
+ */
+export type RouteAccess = 'public' | 'authenticated' | 'owner-scoped' | 'admin';
+
+const ROUTE_ACCESS_VALUES: readonly RouteAccess[] = [
+  'public',
+  'authenticated',
+  'owner-scoped',
+  'admin',
+];
+
 /** A registered route. `pattern` segments may be `:params`. */
 export interface RouteDef {
   readonly method: string;
   readonly pattern: string;
+  readonly access: RouteAccess;
   readonly handler: RouteHandler;
 }
 
@@ -321,6 +379,103 @@ export function statusForRejection(reason: CommandRejectionReason): number {
       return exhaustive;
     }
   }
+}
+
+/**
+ * DEFAULT-DENY registration: a route without a valid declared access class
+ * never registers, so a future route cannot ship unguarded by omission. The
+ * type system enforces this for TS callers; this runtime check catches routes
+ * composed in plain JS or smuggled through a cast.
+ */
+export function assertRoutesClassified(routes: readonly RouteDef[]): void {
+  for (const route of routes) {
+    if (!ROUTE_ACCESS_VALUES.includes(route.access)) {
+      throw new Error(
+        `Route ${route.method} ${route.pattern} has no valid access class ` +
+          `(got ${JSON.stringify((route as { access?: unknown }).access)}); ` +
+          `declare one of: ${ROUTE_ACCESS_VALUES.join(', ')}.`,
+      );
+    }
+  }
+}
+
+/** Session cookie names: prefixed+Secure by default, plain on the opt-out. */
+export function sessionCookieName(insecure: boolean): string {
+  return insecure ? 'sf_session' : '__Host-sf_session';
+}
+
+/** Parse one cookie value out of a Cookie header (no external deps). */
+export function readCookie(
+  headers: ApiRequest['headers'],
+  name: string,
+): string | undefined {
+  const header = headers['cookie'];
+  if (typeof header !== 'string' || header.length === 0) {
+    return undefined;
+  }
+  for (const part of header.split(';')) {
+    const eq = part.indexOf('=');
+    if (eq === -1) {
+      continue;
+    }
+    if (part.slice(0, eq).trim() === name) {
+      return decodeURIComponent(part.slice(eq + 1).trim());
+    }
+  }
+  return undefined;
+}
+
+/** Serialize the session cookie (set or clear). */
+export function serializeSessionCookie(value: string | null, insecure: boolean): string {
+  const name = sessionCookieName(insecure);
+  const flags = insecure
+    ? 'Path=/; HttpOnly; SameSite=Lax'
+    : 'Path=/; HttpOnly; Secure; SameSite=Lax';
+  if (value === null) {
+    return `${name}=; ${flags}; Max-Age=0`;
+  }
+  return `${name}=${encodeURIComponent(value)}; ${flags}`;
+}
+
+/** How the caller authenticated (drives CSRF + attribution semantics). */
+type CredentialSource = 'session' | 'api_token' | 'legacy_token' | 'none';
+
+interface ResolvedIdentity {
+  readonly identity: Identity | null;
+  readonly source: CredentialSource;
+  /** Per-session CSRF secret when the caller is session-authenticated. */
+  readonly sessionCsrf?: string;
+}
+
+/**
+ * Strict-precedence, validate-or-reject identity resolution (multi-user).
+ * Exactly one credential class is authoritative per request: a PRESENT
+ * session cookie wins (an invalid one rejects — it never falls through to a
+ * bearer), then an `sfai_` bearer, then the legacy operator token (which in
+ * multi-user mode is always refused with migration guidance).
+ */
+async function resolveIdentity(
+  request: ApiRequest,
+  auth: { readonly service: AuthService; readonly insecureCookies?: boolean },
+): Promise<ResolvedIdentity> {
+  const cookie = readCookie(request.headers, sessionCookieName(auth.insecureCookies === true));
+  if (cookie !== undefined) {
+    const session = await auth.service.verifySession(cookie);
+    if (session === null) {
+      return { identity: null, source: 'session' };
+    }
+    const { csrfToken, ...identity } = session;
+    return { identity, source: 'session', sessionCsrf: csrfToken };
+  }
+  const token = extractToken(request.headers);
+  if (token !== undefined) {
+    if (token.startsWith('sfai_')) {
+      const identity = await auth.service.verifyApiToken(token);
+      return { identity, source: 'api_token' };
+    }
+    return { identity: null, source: 'legacy_token' };
+  }
+  return { identity: null, source: 'none' };
 }
 
 /** Extract the operator token from the standard headers. */
@@ -383,6 +538,7 @@ function normalizePath(path: string): string {
 }
 
 interface RouteMatch {
+  readonly route: RouteDef;
   readonly handler: RouteHandler;
   readonly params: Record<string, string>;
 }
@@ -418,7 +574,7 @@ function matchRoute(
     }
     pathMatched = true;
     if (route.method.toUpperCase() === method.toUpperCase()) {
-      return { match: { handler: route.handler, params }, pathMatched: true };
+      return { match: { route, handler: route.handler, params }, pathMatched: true };
     }
   }
   return { match: null, pathMatched };
@@ -554,6 +710,9 @@ export function createApp(deps: AppDeps): App {
   // stays with the server entry points. Omitted/null -> execution disabled.
   const executionDaemon: ExecutionDaemon | null = deps.execution ?? null;
 
+  // Multi-user auth (U3): present = enforce identities + declared access.
+  const auth = deps.auth ?? null;
+
   // Adapter catalog (U6): `undefined` -> the real default catalog (with the
   // shared env-derived skill options); `null` -> no catalog (readiness
   // enforced fail-closed at execution time instead).
@@ -588,24 +747,53 @@ export function createApp(deps: AppDeps): App {
     ...researchRoutes(),
     ...executionRoutes(),
     ...fsRoutes(),
+    ...authRoutes(),
   ];
+
+  assertRoutesClassified(routes);
 
   async function guardMutation(
     request: ApiRequest,
     input: GuardMutationInput,
+    resolved?: ResolvedIdentity,
   ): Promise<ApiResponse | null> {
     const session = await operatorToken.current();
+    const headerToken = extractToken(request.headers);
+    // Multi-user: the dispatcher already resolved+authorized the identity, so
+    // the guard's token layer verifies "this request carries the identity the
+    // dispatcher accepted". Session callers present their PER-SESSION CSRF;
+    // header-token callers (sfai_ bearers — and legacy tokens in
+    // single-tenant) are CSRF-exempt because browsers cannot set those
+    // headers cross-site. Origin and stale-version checks are unchanged.
+    const multiUserIdentity = auth != null ? (resolved?.identity ?? null) : null;
+    const token =
+      auth != null
+        ? multiUserIdentity !== null
+          ? (headerToken ?? 'session-authenticated')
+          : headerToken
+        : headerToken;
+    const csrfToken =
+      auth != null
+        ? resolved?.source === 'session'
+          ? resolved.sessionCsrf
+          : undefined
+        : headerToken !== undefined
+          ? undefined
+          : config.csrfToken;
     const guardRequest: CommandGuardRequest = {
       method: request.method,
-      token: extractToken(request.headers),
+      token,
       origin: request.headers['origin'],
       csrfHeader: request.headers['x-csrf-token'],
       subject: input.subject,
     };
     const result = checkCommand(guardRequest, {
-      verifyToken: (token) => session !== null && verifyOperatorToken(session.token, token),
+      verifyToken: (presented) =>
+        auth != null
+          ? multiUserIdentity !== null
+          : session !== null && verifyOperatorToken(session.token, presented),
       allowedOrigins: allowedOriginsFor(request, config),
-      csrfToken: config.csrfToken,
+      csrfToken,
       currentSubjectVersion: input.currentVersion,
     });
     if (result.allowed) {
@@ -662,7 +850,17 @@ export function createApp(deps: AppDeps): App {
     });
   }
 
-  function buildContext(request: ApiRequest, params: Record<string, string>): RouteContext {
+  function buildContext(
+    request: ApiRequest,
+    params: Record<string, string>,
+    resolved: ResolvedIdentity | undefined,
+  ): RouteContext {
+    const insecureCookies = auth?.insecureCookies === true;
+    // Single-tenant callers act as the implicit admin (today's model).
+    const identity: Identity | null =
+      auth != null
+        ? (resolved?.identity ?? null)
+        : { userId: 'operator', username: 'operator', role: 'admin' };
     return {
       request,
       params,
@@ -673,7 +871,7 @@ export function createApp(deps: AppDeps): App {
       clock,
       idGenerator,
       config,
-      guardMutation: (input) => guardMutation(request, input),
+      guardMutation: (input) => guardMutation(request, input, resolved),
       planRun,
       runResearch: runResearchForRun,
       researchEnabled: researcher !== null,
@@ -682,6 +880,11 @@ export function createApp(deps: AppDeps): App {
       publishWorkspace: publishWorkspaceForRun,
       executionDaemon,
       adapterCatalog,
+      identity,
+      authService: auth?.service ?? null,
+      multiUser: auth != null,
+      sessionCookie: (value) => serializeSessionCookie(value, insecureCookies),
+      clientIp: deriveClientIp(request.headers, undefined, true),
       runPreflight: runPreflightForRun,
     };
   }
@@ -696,7 +899,33 @@ export function createApp(deps: AppDeps): App {
       return json(404, { error: 'not_found', message: path });
     }
     try {
-      return await match.handler(buildContext(request, match.params));
+      let resolved: ResolvedIdentity | undefined;
+      if (auth != null) {
+        resolved = await resolveIdentity(request, auth);
+        // Declared-access enforcement (multi-user only; single-tenant stays
+        // byte-identical). Strict precedence already applied in resolution:
+        // an invalid presented credential never falls through to a weaker one.
+        if (match.route.access !== 'public' && resolved.identity === null) {
+          if (resolved.source === 'legacy_token') {
+            return json(401, {
+              error: 'multi_user_enabled',
+              message:
+                'Multi-user mode is enabled on this factory: the shared operator token has been ' +
+                'retired. Sign in with your account, or use your personal API token ' +
+                '(mint one under Settings) in the same header.',
+            });
+          }
+          return json(401, {
+            error: 'unauthenticated',
+            message: 'Sign in (or present a personal API token) to access this factory.',
+            returnTo: `${request.path}`,
+          });
+        }
+        if (match.route.access === 'admin' && resolved.identity?.role !== 'admin') {
+          return json(403, { error: 'forbidden', message: 'This action requires the admin.' });
+        }
+      }
+      return await match.handler(buildContext(request, match.params, resolved));
     } catch (error) {
       // Keep failures observable rather than silently swallowing them.
       const message = error instanceof Error ? error.message : String(error);

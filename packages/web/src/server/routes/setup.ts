@@ -161,6 +161,16 @@ function queueSetup(): unknown {
   };
 }
 
+/**
+ * Static liveness endpoint (G6): Render's health check. ALWAYS public and
+ * byte-identical in every deployment state — no store reads, no mode /
+ * bootstrap / account-count / version / key-state reflection, so an anonymous
+ * caller can never fingerprint the deployment (or the bootstrap window).
+ */
+function getLiveness(): Promise<ApiResponse> {
+  return Promise.resolve({ status: 200, body: { status: 'ok' } });
+}
+
 async function getSetup(ctx: RouteContext): Promise<ApiResponse> {
   const session = await ctx.operatorToken.current();
   const runtime = ctx.config.runtime;
@@ -196,5 +206,8 @@ async function getSetup(ctx: RouteContext): Promise<ApiResponse> {
 }
 
 export function setupRoutes(): RouteDef[] {
-  return [{ method: 'GET', pattern: '/api/setup', handler: getSetup }];
+  return [
+    { method: 'GET', pattern: '/api/setup', access: 'authenticated', handler: getSetup },
+    { method: 'GET', pattern: '/api/healthz', access: 'public', handler: getLiveness },
+  ];
 }

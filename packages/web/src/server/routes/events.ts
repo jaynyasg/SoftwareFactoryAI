@@ -34,7 +34,7 @@ async function getRun(ctx: RouteContext): Promise<ApiResponse> {
 
 export function eventRoutes(): RouteDef[] {
   return [
-    { method: 'GET', pattern: '/api/runs/:id/events', handler: getRunEvents },
-    { method: 'GET', pattern: '/api/runs/:id', handler: getRun },
+    { method: 'GET', pattern: '/api/runs/:id/events', access: 'owner-scoped', handler: getRunEvents },
+    { method: 'GET', pattern: '/api/runs/:id', access: 'owner-scoped', handler: getRun },
   ];
 }
