@@ -40,7 +40,14 @@ import type {
 } from '@software-factory/core';
 import type { ApiResponse, RouteContext, RouteDef } from '../app';
 import { asRecord, num, str } from './parse';
-import { guardRunCommand, notFound, refreshBuildContract } from './shared';
+import {
+  canSeeRun,
+  guardRunCommand,
+  notFound,
+  operatorActor,
+  readOwnedRun,
+  refreshBuildContract,
+} from './shared';
 import {
   countJobFailures,
   enqueueJob,
@@ -54,6 +61,7 @@ import {
   filterInterventions,
   projectInterventions,
   resolveIntervention,
+  runOwners,
 } from '../execution/interventions';
 import type { InterventionView } from '../execution/interventions';
 import type { PreflightRunResult } from '../execution/preflight';
@@ -378,7 +386,7 @@ async function pauseRun(ctx: RouteContext): Promise<ApiResponse> {
   await ctx.writer.append({
     runId,
     type: 'execution.paused',
-    actor: { kind: 'operator', id: 'operator' },
+    actor: operatorActor(ctx),
     subject: { kind: 'run', id: runId, version: run.lastSequence },
     severity: 'warn',
     payload: { reason: str(asRecord(ctx.request.body).reason) },
@@ -413,7 +421,7 @@ async function resumeRun(ctx: RouteContext): Promise<ApiResponse> {
   await ctx.writer.append({
     runId,
     type: 'execution.resumed',
-    actor: { kind: 'operator', id: 'operator' },
+    actor: operatorActor(ctx),
     subject: { kind: 'run', id: runId, version: run.lastSequence },
     severity: 'info',
     payload: { reason: str(asRecord(ctx.request.body).reason) },
@@ -586,11 +594,11 @@ async function holdAllExecution(ctx: RouteContext): Promise<ApiResponse> {
 
 async function getExecution(ctx: RouteContext): Promise<ApiResponse> {
   const runId = ctx.params.id;
-  const events = await ctx.reader.readRun(runId);
-  if (events.length === 0) {
-    return notFound(runId);
+  const owned = await readOwnedRun(ctx, runId);
+  if (owned.response !== null) {
+    return owned.response;
   }
-  const run = projectRun(events, runId);
+  const { events, run } = owned;
   const queue = projectExecutionQueue(events, runId);
   return {
     status: 200,
@@ -622,7 +630,14 @@ function isEventSeverity(value: unknown): value is EventSeverity {
 
 async function listInterventions(ctx: RouteContext): Promise<ApiResponse> {
   const query = ctx.request.query;
-  const projection = projectInterventions(await ctx.reader.readAll());
+  const all = await ctx.reader.readAll();
+  const projection = projectInterventions(all);
+  // Owner scoping (U5): users see interventions on THEIR runs only; admins
+  // see the whole factory queue. One ownership map serves the whole filter —
+  // same readAll, no extra store round-trip.
+  const owners = runOwners(all);
+  const visible = (item: InterventionView): boolean =>
+    canSeeRun(ctx, { ownerId: owners.get(item.runId) });
   const interventions = filterInterventions(projection, {
     runId: str(query.runId),
     kind: isInterventionKind(query.kind) ? query.kind : undefined,
@@ -630,10 +645,10 @@ async function listInterventions(ctx: RouteContext): Promise<ApiResponse> {
     blockingStage: str(query.blockingStage) ?? str(query.stage),
     requiredActionText: str(query.action),
     openOnly: query.open === '1' || query.open === 'true',
-  });
+  }).filter(visible);
   return {
     status: 200,
-    body: { interventions, openCount: projection.open.length },
+    body: { interventions, openCount: projection.open.filter(visible).length },
   };
 }
 
@@ -671,6 +686,45 @@ async function resolveInterventionRoute(ctx: RouteContext): Promise<ApiResponse>
     return {
       status: 404,
       body: { error: 'not_found', message: `Intervention ${interventionId} does not exist.` },
+    };
+  }
+  // Owner scoping (U5): resolving is owner-or-admin, audited like every other
+  // run mutation. Credential interventions are OWNER-actionable only — the
+  // unblock needs the owner's own credentials, which nobody else (admin
+  // included) can supply on their behalf.
+  const ownerId = runForVersion?.ownerId;
+  if (!canSeeRun(ctx, { ownerId })) {
+    await ctx.writer.append({
+      runId: target.runId,
+      type: 'security.command_rejected',
+      actor: operatorActor(ctx),
+      subject: { kind: 'intervention', id: interventionId },
+      severity: 'warn',
+      payload: { reason: 'not_owner', command: 'intervention.resolve' },
+    });
+    return {
+      status: 403,
+      body: {
+        error: 'not_owner',
+        message: `Intervention ${interventionId} belongs to another account's run; only its owner or the admin can resolve it.`,
+      },
+    };
+  }
+  if (
+    ctx.multiUser &&
+    target.kind === 'missing_credentials' &&
+    ownerId !== undefined &&
+    ctx.identity !== null &&
+    ctx.identity.userId !== ownerId
+  ) {
+    return {
+      status: 403,
+      body: {
+        error: 'owner_action_required',
+        message:
+          'This intervention needs the run owner to add or fix THEIR credentials ' +
+          '(Settings → Credentials); it cannot be resolved on their behalf.',
+      },
     };
   }
   if (target.status === 'resolved') {

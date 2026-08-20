@@ -66,7 +66,9 @@ const TOOLS: readonly McpTool[] = [
   },
   {
     name: 'software_factory_list_runs',
-    description: 'List projected A$APWAIRE runs, most recent first.',
+    description:
+      'List projected A$APWAIRE runs visible to your credentials, most recent first. ' +
+      'On a multi-user factory you see the runs your account owns (the admin sees all).',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   },
   {
@@ -306,7 +308,9 @@ const TOOLS: readonly McpTool[] = [
   {
     name: 'software_factory_list_interventions',
     description:
-      'List the operator intervention queue across runs, filterable by run, kind, severity, blocking stage, and open-only.',
+      'List the operator intervention queue, filterable by run, kind, severity, blocking ' +
+      'stage, and open-only. On a multi-user factory the queue covers the runs your ' +
+      'account owns (the admin sees every run).',
     inputSchema: {
       type: 'object',
       properties: {

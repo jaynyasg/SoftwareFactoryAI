@@ -18,7 +18,8 @@ import { projectKnowledgeIndex, projectResearch, queryKnowledge } from '@softwar
 import type { KnowledgeEntryKind, KnowledgeQuery } from '@software-factory/core';
 import type { ApiResponse, RouteContext, RouteDef } from '../app';
 import { asRecord, num, str } from '../routes/parse';
-import { guardRunCommand, notFound } from '../routes/shared';
+import { canSeeRun, guardRunCommand, readOwnedRun } from '../routes/shared';
+import { runOwners } from '../execution/interventions';
 
 const KNOWLEDGE_KINDS: readonly KnowledgeEntryKind[] = [
   'source',
@@ -97,20 +98,27 @@ async function triggerResearch(ctx: RouteContext): Promise<ApiResponse> {
 
 async function getResearch(ctx: RouteContext): Promise<ApiResponse> {
   const runId = ctx.params.id;
-  const events = await ctx.reader.readRun(runId);
-  if (events.length === 0) {
-    return notFound(runId);
+  const owned = await readOwnedRun(ctx, runId);
+  if (owned.response !== null) {
+    return owned.response;
   }
-  return { status: 200, body: { runId, research: projectResearch(events, runId) } };
+  return { status: 200, body: { runId, research: projectResearch(owned.events, runId) } };
 }
 
 async function queryKnowledgeIndex(ctx: RouteContext): Promise<ApiResponse> {
   const query = ctx.request.query;
   const runId = query.runId;
-  const events =
+  let events =
     runId !== undefined && runId.length > 0
       ? await ctx.reader.readRun(runId)
       : await ctx.reader.readAll();
+  // Owner scoping (U5/R16): knowledge folds run-derived research, so users
+  // query only their own runs' entries (admins keep the cross-run index). A
+  // runId the caller cannot see yields the same empty index as an unknown id.
+  if (ctx.multiUser && ctx.identity?.role !== 'admin') {
+    const owners = runOwners(events);
+    events = events.filter((event) => canSeeRun(ctx, { ownerId: owners.get(event.runId) }));
+  }
   const index = projectKnowledgeIndex(
     events,
     runId !== undefined && runId.length > 0 ? { runId } : {},

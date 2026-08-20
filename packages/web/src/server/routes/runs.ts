@@ -81,7 +81,13 @@ import {
   projectInterventions,
   resolveIntervention,
 } from '../execution/interventions';
-import { guardRunCommand, notFound, refreshBuildContract } from './shared';
+import {
+  canSeeRun,
+  guardRunCommand,
+  operatorActor,
+  readOwnedRun,
+  refreshBuildContract,
+} from './shared';
 
 function callerFamily(value: unknown): CallerFamily | undefined {
   return value === 'claude' || value === 'codex' || value === 'api' ? value : undefined;
@@ -187,7 +193,7 @@ async function failRunForResearch(
   await ctx.writer.append({
     runId,
     type: 'run.failed',
-    actor: { kind: 'operator', id: 'operator' },
+    actor: operatorActor(ctx),
     subject: { kind: 'run', id: runId },
     severity: 'error',
     idempotencyKey: `${runId}:run.failed:research`,
@@ -251,11 +257,15 @@ async function createRun(ctx: RouteContext): Promise<ApiResponse> {
     // The normalized mode is recorded durably — this is the U5 seam: a
     // `research-plan-and-start` run carries its start request in run state.
     mode,
+    // Multi-user (U5): the run durably belongs to the account that created it
+    // (admins own their own runs too). Single-tenant ledgers stay byte-
+    // identical — no ownerId field is ever written there.
+    ...(ctx.multiUser && ctx.identity !== null ? { ownerId: ctx.identity.userId } : {}),
   };
   const created: AppendableEvent = {
     runId: candidateRunId,
     type: 'run.created',
-    actor: { kind: 'operator', id: 'operator' },
+    actor: operatorActor(ctx),
     subject: { kind: 'run', id: candidateRunId, version: 0 },
     severity: 'info',
     idempotencyKey: str(body.idempotencyKey),
@@ -370,8 +380,10 @@ async function listRunsHandler(ctx: RouteContext): Promise<ApiResponse> {
   for (const id of ids) {
     const run = projectRun(await ctx.reader.readRun(id), id);
     // Drop phantom runs: a runId minted only by a guard denial (a lone security
-    // event) or with an empty ledger never reached `run.created`.
-    if (isRealRun(run)) {
+    // event) or with an empty ledger never reached `run.created`. Multi-user
+    // (U5/AE4): users see only their own runs; admins see every run (each
+    // projection carries its ownerId so the UI can label owners).
+    if (isRealRun(run) && canSeeRun(ctx, run)) {
       runs.push(run);
     }
   }
@@ -431,7 +443,7 @@ async function cancelRun(ctx: RouteContext): Promise<ApiResponse> {
   await ctx.writer.append({
     runId,
     type: 'run.cancelled',
-    actor: { kind: 'operator', id: 'operator' },
+    actor: operatorActor(ctx),
     subject: { kind: 'run', id: runId, version: current.lastSequence },
     severity: 'warn',
     idempotencyKey: `${runId}:run.cancelled`,
@@ -516,7 +528,7 @@ async function cancelEveryCancellableRun(
       await ctx.writer.append({
         runId,
         type: 'run.cancelled',
-        actor: { kind: 'operator', id: 'operator' },
+        actor: operatorActor(ctx),
         subject: { kind: 'run', id: runId, version: run.lastSequence },
         severity: 'warn',
         idempotencyKey: `${runId}:run.cancelled`,
@@ -735,7 +747,7 @@ async function overrideRunSettings(ctx: RouteContext): Promise<ApiResponse> {
   await ctx.writer.append({
     runId,
     type: 'run.settings_overridden',
-    actor: { kind: 'operator', id: 'operator' },
+    actor: operatorActor(ctx),
     subject: { kind: 'run', id: runId, version: current.lastSequence },
     severity: 'info',
     payload: { selectedAdapter, modelProfile, reasoningEffort, reason: str(body.reason) },
@@ -793,11 +805,11 @@ async function materializeWorkspaceRoute(ctx: RouteContext): Promise<ApiResponse
 
 async function getWorkspace(ctx: RouteContext): Promise<ApiResponse> {
   const runId = ctx.params.id;
-  const events = await ctx.reader.readRun(runId);
-  if (events.length === 0) {
-    return notFound(runId);
+  const owned = await readOwnedRun(ctx, runId);
+  if (owned.response !== null) {
+    return owned.response;
   }
-  return { status: 200, body: { runId, workspace: projectWorkspace(events, runId) } };
+  return { status: 200, body: { runId, workspace: projectWorkspace(owned.events, runId) } };
 }
 
 /**
@@ -809,13 +821,13 @@ async function getWorkspace(ctx: RouteContext): Promise<ApiResponse> {
  */
 async function getRunOutputs(ctx: RouteContext): Promise<ApiResponse> {
   const runId = ctx.params.id;
-  const events = await ctx.reader.readRun(runId);
-  if (events.length === 0) {
-    return notFound(runId);
+  const owned = await readOwnedRun(ctx, runId);
+  if (owned.response !== null) {
+    return owned.response;
   }
   const base = ctx.config.runtime?.publicBaseUrl?.replace(/\/+$/, '') ?? '';
   const eventsUrl = `${base}/api/runs/${encodeURIComponent(runId)}/events`;
-  return { status: 200, body: { runId, outputs: buildRunOutputs(runId, events, eventsUrl) } };
+  return { status: 200, body: { runId, outputs: buildRunOutputs(runId, owned.events, eventsUrl) } };
 }
 
 export function runRoutes(): RouteDef[] {

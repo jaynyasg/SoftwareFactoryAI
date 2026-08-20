@@ -6,30 +6,31 @@
  *
  * These let an operator reload current state after a stale-command rejection.
  * Streaming (SSE) is deferred to U8; simple JSON is sufficient here.
+ *
+ * Multi-user (U5): both reads are owner-scoped — a run the caller cannot see
+ * answers the same 404 as a run that does not exist (never confirming another
+ * user's run ids). Admins see every run.
  */
 import { projectRun } from '@software-factory/core';
 import type { ApiResponse, RouteContext, RouteDef } from '../app';
-
-function notFound(runId: string): ApiResponse {
-  return { status: 404, body: { error: 'not_found', message: `Run ${runId} does not exist.` } };
-}
+import { readOwnedRun } from './shared';
 
 async function getRunEvents(ctx: RouteContext): Promise<ApiResponse> {
   const runId = ctx.params.id;
-  const events = await ctx.reader.readRun(runId);
-  if (events.length === 0) {
-    return notFound(runId);
+  const owned = await readOwnedRun(ctx, runId);
+  if (owned.response !== null) {
+    return owned.response;
   }
-  return { status: 200, body: { runId, events } };
+  return { status: 200, body: { runId, events: owned.events } };
 }
 
 async function getRun(ctx: RouteContext): Promise<ApiResponse> {
   const runId = ctx.params.id;
-  const events = await ctx.reader.readRun(runId);
-  if (events.length === 0) {
-    return notFound(runId);
+  const owned = await readOwnedRun(ctx, runId);
+  if (owned.response !== null) {
+    return owned.response;
   }
-  return { status: 200, body: { run: projectRun(events, runId) } };
+  return { status: 200, body: { run: projectRun(owned.events, runId) } };
 }
 
 export function eventRoutes(): RouteDef[] {

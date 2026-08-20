@@ -54,12 +54,20 @@ function bodyOf(res: ApiResponse): Record<string, unknown> {
   return (res.body ?? {}) as Record<string, unknown>;
 }
 
-async function readRunEvents(runId: string): Promise<FactoryEvent[] | null> {
+/**
+ * Caller credentials forwarded into `handle()` (U5). Single-tenant pages pass
+ * nothing and behave exactly as before; multi-user pages (U9) forward the
+ * incoming request's cookie/authorization headers so every loader sees the
+ * SAME owner-scoped view the API answers over the wire.
+ */
+export type LoaderAuth = Readonly<Record<string, string | undefined>>;
+
+async function readRunEvents(runId: string, auth: LoaderAuth = {}): Promise<FactoryEvent[] | null> {
   const res = await getApp().handle({
     method: 'GET',
     path: `/api/runs/${encodeURIComponent(runId)}/events`,
     query: {},
-    headers: {},
+    headers: { ...auth },
   });
   if (res.status !== 200) {
     return null;
@@ -71,8 +79,9 @@ async function readRunEvents(runId: string): Promise<FactoryEvent[] | null> {
 export async function loadRunAggregate(
   runId: string,
   afterSequence = 0,
+  auth: LoaderAuth = {},
 ): Promise<RunAggregate | null> {
-  const events = await readRunEvents(runId);
+  const events = await readRunEvents(runId, auth);
   if (events === null) {
     return null;
   }
@@ -156,7 +165,28 @@ function toInterventionItem(view: InterventionView): InterventionItem {
  * without a JSON round-trip through `handle()` (and its untyped body cast) or
  * a duplicate `readAll` on the SSR path.
  */
-export async function loadInterventionQueue(): Promise<InterventionQueueSnapshot> {
+export async function loadInterventionQueue(
+  auth: LoaderAuth = {},
+): Promise<InterventionQueueSnapshot> {
+  // Multi-user (U5): route through /api/interventions so the SSR view is
+  // owner-scoped exactly like every poll. Single-tenant (no credentials to
+  // forward) keeps the direct-store fold — no JSON round-trip on the SSR path.
+  if (Object.values(auth).some((value) => value !== undefined)) {
+    const res = await getApp().handle({
+      method: 'GET',
+      path: '/api/interventions',
+      query: {},
+      headers: { ...auth },
+    });
+    if (res.status !== 200) {
+      return { interventions: [], openCount: 0 };
+    }
+    const body = bodyOf(res);
+    return {
+      interventions: ((body.interventions as InterventionView[]) ?? []).map(toInterventionItem),
+      openCount: typeof body.openCount === 'number' ? body.openCount : 0,
+    };
+  }
   const projection = projectInterventions(await getStore().readAll());
   return {
     interventions: projection.interventions.map(toInterventionItem),
@@ -171,16 +201,19 @@ export async function loadInterventionQueue(): Promise<InterventionQueueSnapshot
  * there is no such run. The dashboard is scoped to a run id so it stays
  * deterministic and parallel-safe (it never silently follows a newer run).
  */
-export async function loadOperatorAggregate(runId?: string): Promise<OperatorAggregate | null> {
+export async function loadOperatorAggregate(
+  runId?: string,
+  auth: LoaderAuth = {},
+): Promise<OperatorAggregate | null> {
   let targetRunId = runId;
   if (targetRunId === undefined) {
-    const runs = await loadRunList();
+    const runs = await loadRunList(auth);
     targetRunId = runs[0]?.runId ?? undefined;
   }
   if (targetRunId === undefined) {
     return null;
   }
-  const events = await readRunEvents(targetRunId);
+  const events = await readRunEvents(targetRunId, auth);
   if (events === null) {
     return null;
   }
@@ -196,9 +229,14 @@ export async function loadOperatorAggregate(runId?: string): Promise<OperatorAgg
   return { runId: run.runId, run, operator, metrics, diagnostics, tickets };
 }
 
-/** List every projected run (most-recent first). */
-export async function loadRunList(): Promise<RunProjection[]> {
-  const res = await getApp().handle({ method: 'GET', path: '/api/runs', query: {}, headers: {} });
+/** List every projected run visible to the caller (most-recent first). */
+export async function loadRunList(auth: LoaderAuth = {}): Promise<RunProjection[]> {
+  const res = await getApp().handle({
+    method: 'GET',
+    path: '/api/runs',
+    query: {},
+    headers: { ...auth },
+  });
   if (res.status !== 200) {
     return [];
   }
@@ -214,12 +252,12 @@ export async function loadRunList(): Promise<RunProjection[]> {
  * through the same GET /api/execution route the client polls, so the initial
  * render and every poll see identical state.
  */
-export async function loadExecutionOverview(): Promise<ExecutionOverview> {
+export async function loadExecutionOverview(auth: LoaderAuth = {}): Promise<ExecutionOverview> {
   const res = await getApp().handle({
     method: 'GET',
     path: '/api/execution',
     query: {},
-    headers: {},
+    headers: { ...auth },
   });
   return parseExecutionOverview(bodyOf(res));
 }
@@ -260,8 +298,13 @@ function parseAdapterSetup(raw: unknown): SetupStatus['adapters'] {
 }
 
 /** Read the setup status that drives the blocking/actionable checklist. */
-export async function loadSetup(): Promise<SetupStatus> {
-  const res = await getApp().handle({ method: 'GET', path: '/api/setup', query: {}, headers: {} });
+export async function loadSetup(auth: LoaderAuth = {}): Promise<SetupStatus> {
+  const res = await getApp().handle({
+    method: 'GET',
+    path: '/api/setup',
+    query: {},
+    headers: { ...auth },
+  });
   const body = bodyOf(res);
   return {
     operatorToken: { present: Boolean((body.operatorToken as { present?: boolean })?.present) },

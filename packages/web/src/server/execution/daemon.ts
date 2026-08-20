@@ -317,9 +317,14 @@ export function createExecutionDaemon(options: ExecutionDaemonOptions): Executio
       kind: 'retry_choice',
       blockingStage: 'execution',
       severity: 'warn',
-      reason: `Execution attempt ${job.attempt} was abandoned mid-flight (stale queue lease after a crash or restart). The work may be partially applied.`,
+      // Owner-comprehensible copy (U5): a non-admin run owner sees this in
+      // THEIR queue — say what happened in plain terms, not lease mechanics.
+      reason:
+        `The server restarted (or crashed) while execution attempt ${job.attempt} of this run ` +
+        'was in flight, so the attempt stopped early. Some of its work may already be applied.',
       requiredAction:
-        'Inspect the run, then retry execution (POST /api/runs/:id/retry) or cancel the run. Retrying resolves this entry.',
+        'Review the run, then press Retry to continue from where it stopped ' +
+        '(POST /api/runs/:id/retry) — or cancel the run. Retrying resolves this entry.',
       ticketId: job.ticketId,
     });
   }

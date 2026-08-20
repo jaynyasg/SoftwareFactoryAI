@@ -55,6 +55,22 @@ export interface InterventionFilter {
   readonly openOnly?: boolean;
 }
 
+/**
+ * runId → recorded owner account (U5). Absent/undefined = admin-owned legacy
+ * run. Pure; pairs with `projectInterventions` over the same readAll so
+ * owner-scoped queue views need no extra store round-trip.
+ */
+export function runOwners(raw: readonly unknown[]): ReadonlyMap<string, string | undefined> {
+  const { events } = validateAndSortEvents(raw);
+  const owners = new Map<string, string | undefined>();
+  for (const event of events) {
+    if (event.type === 'run.created' && !owners.has(event.runId)) {
+      owners.set(event.runId, event.payload.ownerId);
+    }
+  }
+  return owners;
+}
+
 /** Project the cross-run intervention queue from ledger events. Pure. */
 export function projectInterventions(raw: readonly unknown[]): InterventionQueueProjection {
   const { events } = validateAndSortEvents(raw);

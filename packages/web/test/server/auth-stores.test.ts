@@ -262,7 +262,10 @@ for (const backend of BACKENDS) {
       expect(await service.verifyApiToken(token.token)).toBeNull();
     });
 
-    it('repeated login failures trip lockout; lockout expires', async () => {
+    // 10 sequential logins × full-cost scrypt (every failure runs the dummy-
+    // hash timing equalizer too) can exceed the 5s default under full-suite
+    // CPU contention — the clock is injected, so only wall time needs room.
+    it('repeated login failures trip lockout; lockout expires', { timeout: 120_000 }, async () => {
       const { stores } = backend.make();
       const { service, advance } = await withAdmin(stores);
       for (let i = 0; i < 8; i++) {

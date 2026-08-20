@@ -45,6 +45,7 @@ import {
   resolveIntervention,
 } from '../execution/interventions';
 import { requestExecutionStart } from './execution';
+import { operatorActor, rejectIfNotOwner } from './shared';
 
 function isRiskTier(value: unknown): value is RiskTier {
   return value === 'low' || value === 'medium' || value === 'high';
@@ -197,6 +198,13 @@ async function decideReview(ctx: RouteContext): Promise<ApiResponse> {
     return { status: 404, body: { error: 'not_found', message: `Run ${runId} does not exist.` } };
   }
 
+  // Owner scoping (U5): review decisions are owner-or-admin like every other
+  // run mutation; a foreign caller's attempt is audited on the run's ledger.
+  const notOwner = await rejectIfNotOwner(ctx, runId, 'review.decide', current);
+  if (notOwner !== null) {
+    return notOwner;
+  }
+
   // A cancelled run takes NO review decisions (mirrors the cancel route's
   // terminal-state check): approving one would record `review.decided` and —
   // on the gates path — enqueue a gate re-run that instantly releases as
@@ -245,7 +253,7 @@ async function decideReview(ctx: RouteContext): Promise<ApiResponse> {
   await ctx.writer.append({
     runId,
     type: 'review.decided',
-    actor: { kind: 'operator', id: 'operator' },
+    actor: operatorActor(ctx),
     subject: { kind: 'run', id: runId, version: current.lastSequence },
     severity: decision === 'approved' ? 'success' : 'warn',
     idempotencyKey: `${runId}:review.decided:${decision}:${idempotencyAnchor}`,
