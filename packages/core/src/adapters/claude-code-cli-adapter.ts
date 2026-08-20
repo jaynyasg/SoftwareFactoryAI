@@ -8,6 +8,7 @@
  * runner is only the default.
  */
 import { createCliAdapter } from './cli-adapter-base';
+import type { SpawnEnvBundle } from './session-env';
 import { createNodeCommandRunner } from './node-command-runner';
 import type {
   AdapterTask,
@@ -20,6 +21,12 @@ import type {
 export interface ClaudeCodeCliAdapterOptions {
   /** Injected process runner. Defaults to the Node `child_process` runner. */
   readonly runner?: CommandRunner;
+  /**
+   * Per-user spawn-env bundle (multi-user U6): children spawn with an
+   * EXCLUSIVE allowlisted env instead of inheriting the server's
+   * `process.env`. See `createSpawnEnvBundle` / `CliAdapterDeps.spawnEnv`.
+   */
+  readonly spawnEnv?: SpawnEnvBundle;
   /** Override the adapter id (defaults to `claude-code-cli`). */
   readonly id?: string;
   /** Override the executable name (defaults to `claude`). */
@@ -288,6 +295,6 @@ export function createClaudeCodeCliAdapter(
       installActions: INSTALL_ACTIONS,
       loginActions: LOGIN_ACTIONS,
     },
-    { runner },
+    { runner, spawnEnv: options.spawnEnv },
   );
 }

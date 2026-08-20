@@ -18,6 +18,7 @@
  * setup state carrying the failure detail.
  */
 import { createApiAdapter } from './api-adapter';
+import type { SpawnEnvBundle } from './session-env';
 import { createClaudeCodeCliAdapter } from './claude-code-cli-adapter';
 import { createCodexCliAdapter } from './codex-cli-adapter';
 import type {
@@ -58,6 +59,12 @@ export interface DefaultAdapterCatalogOptions {
   /** Injected process runner for the CLI adapters (tests inject fakes). */
   readonly runner?: CommandRunner;
   /**
+   * Per-user spawn-env bundle (multi-user U6), bound to BOTH CLI adapters at
+   * catalog construction. Adapter selection probes THROUGH the catalog, so a
+   * per-job bound catalog must exist before selection — never after it.
+   */
+  readonly spawnEnv?: SpawnEnvBundle;
+  /**
    * Claude Code skills workers may invoke (opt-in; default NONE — fail
    * closed). `['*']` = any locally installed skill; names restrict guidance.
    */
@@ -82,11 +89,13 @@ export function createDefaultAdapterCatalog(
     createCodexCliAdapter({
       runner: options.runner,
       preferredSkills: options.preferredSkills,
+      spawnEnv: options.spawnEnv,
     }),
     createClaudeCodeCliAdapter({
       runner: options.runner,
       allowedSkills: options.claudeAllowedSkills,
       preferredSkills: options.preferredSkills,
+      spawnEnv: options.spawnEnv,
     }),
     createApiAdapter(),
   ]);

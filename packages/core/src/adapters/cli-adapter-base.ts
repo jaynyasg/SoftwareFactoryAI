@@ -12,7 +12,8 @@
  * exercisable without the real CLI being installed.
  */
 import { AdapterError, isAdapterError, normalizeAdapterError } from './adapter-errors';
-import { scrubNestedSessionEnv } from './session-env';
+import { bundleEnvForFamily, composeSpawnEnv, scrubNestedSessionEnv } from './session-env';
+import type { SpawnEnvBundle } from './session-env';
 import type {
   AdapterArtifact,
   AdapterExecuteOptions,
@@ -87,6 +88,14 @@ export interface CliAdapterConfig {
 /** Dependencies injected into a CLI adapter (the runner is the key seam). */
 export interface CliAdapterDeps {
   readonly runner: CommandRunner;
+  /**
+   * Per-user spawn-env bundle (multi-user U6): when present, EVERY child this
+   * adapter spawns — setup probes and execution alike — runs with an
+   * EXCLUSIVE environment (essentials + scrub + family-narrowed bundle,
+   * `replaceEnv: true`) so server secrets never reach a worker CLI. Absent =
+   * today's inherit+scrub behavior, byte-identical.
+   */
+  readonly spawnEnv?: SpawnEnvBundle;
 }
 
 const NOT_LOGGED_IN =
@@ -150,18 +159,35 @@ function failureFromExit(result: CommandResult, command: string): AdapterError {
 /** Build an `ExecutionAdapter` from a CLI configuration and injected runner. */
 export function createCliAdapter(config: CliAdapterConfig, deps: CliAdapterDeps): ExecutionAdapter {
   const { runner } = deps;
+  // Family-narrow the bundle ONCE at construction: a Claude spawn never sees
+  // codex credentials and vice versa (see bundleEnvForFamily).
+  const spawnBundle =
+    deps.spawnEnv !== undefined ? bundleEnvForFamily(deps.spawnEnv, config.family) : undefined;
+
+  /**
+   * The ONE env seam for probes and execution (U6). Bundle present →
+   * exclusive allowlisted env; absent → historical inherit+scrub.
+   */
+  function childEnvOptions(): {
+    readonly env: Readonly<Record<string, string>>;
+    readonly replaceEnv?: true;
+  } {
+    return spawnBundle !== undefined
+      ? { env: composeSpawnEnv(spawnBundle), replaceEnv: true }
+      : { env: scrubNestedSessionEnv() };
+  }
 
   async function detectSetup(options: DetectSetupOptions = {}): Promise<AdapterSetupState> {
     // Every CLI spawn clears inherited Claude-session plumbing: a server
     // started from inside a Claude Code session would otherwise hand the
     // worker CLI a host proxy URL it cannot authenticate to (observed hang).
-    const env = scrubNestedSessionEnv();
+    const envOptions = childEnvOptions();
     let versionResult: CommandResult;
     try {
       versionResult = await runner.run(config.command, config.versionArgs, {
         signal: options.signal,
         timeoutMs: PROBE_TIMEOUT_MS,
-        env,
+        ...envOptions,
       });
     } catch (error) {
       // A missing executable (ENOENT) or abort surfaces here.
@@ -191,7 +217,7 @@ export function createCliAdapter(config: CliAdapterConfig, deps: CliAdapterDeps)
       authResult = await runner.run(config.command, config.authArgs, {
         signal: options.signal,
         timeoutMs: PROBE_TIMEOUT_MS,
-        env,
+        ...envOptions,
       });
     } catch (error) {
       const normalized = normalizeAdapterError(error);
@@ -241,8 +267,8 @@ export function createCliAdapter(config: CliAdapterConfig, deps: CliAdapterDeps)
         signal: opts.signal,
         timeoutMs: opts.timeoutMs,
         input: config.buildExecInput?.(task),
-        // Same nested-session guard as the probes (see detectSetup).
-        env: scrubNestedSessionEnv(),
+        // Same env seam as the probes: exclusive bundle env or inherit+scrub.
+        ...childEnvOptions(),
         onOutput: (stream, chunk) => {
           opts.onEvent({ kind: 'log', stream, chunk });
           if (parseProgress !== undefined) {
