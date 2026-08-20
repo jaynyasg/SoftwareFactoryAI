@@ -132,6 +132,11 @@ export interface TicketExecutionResult {
    * so review approvals resume the CORRECT stage.
    */
   readonly blockingStage?: string;
+  /**
+   * Resume hint for a usage-wait yield (U8; epoch ms): the requeued job is
+   * not claimable before this moment (the drain loop skips it).
+   */
+  readonly notBefore?: number;
 }
 
 /** The interface U6 implements: run the tickets for one claimed queue job. */
@@ -567,6 +572,8 @@ export function createExecutionDaemon(options: ExecutionDaemonOptions): Executio
           attempt: job.attempt + 1,
           reason: result.reason ?? 'Requeued after a safe yield.',
           ticketId: job.ticketId,
+          // U8: a usage-wait yield is not claimable before the window resets.
+          notBefore: result.notBefore,
         });
         await releaseJob(store, leasedJob, 'requeued', result.reason ?? 'Execution yielded.');
         counters.requeued += 1;
@@ -619,8 +626,16 @@ export function createExecutionDaemon(options: ExecutionDaemonOptions): Executio
         }
         const state = snapshotRunState(job.runId);
         if (state === 'cancelled') {
+          // Cancellation cleanup runs even for not-yet-due usage-wait
+          // requeues (U8): a cancelled run's yielded job is released, never
+          // left queued behind its notBefore.
           await releaseJob(store, job, 'cancelled', 'Run was cancelled before execution.');
           counters.cancelled += 1;
+          continue;
+        }
+        // U8: a usage-wait requeue is not due yet — idle past it (the next
+        // interval tick re-checks) instead of re-hitting the usage limit.
+        if (job.notBefore !== undefined && job.notBefore > clock()) {
           continue;
         }
         if (state === 'paused' || (held && !allowedWhileHeld.has(job.runId))) {

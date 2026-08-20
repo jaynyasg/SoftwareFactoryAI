@@ -294,7 +294,7 @@ describe('createRunCredentialResolver', () => {
     mkdirSync(unrelated);
 
     const removed = await sweepOrphanCodexHomes(tempRoot);
-    expect(removed.sort()).toEqual([orphanA, orphanB].sort());
+    expect([...removed].sort()).toEqual([orphanA, orphanB].sort());
     expect(existsSync(orphanA)).toBe(false);
     expect(existsSync(orphanB)).toBe(false);
     expect(existsSync(unrelated)).toBe(true);
@@ -471,7 +471,6 @@ describe('executor end-to-end with owner credential binding (U7)', () => {
       idGenerator: () => `lease-${(leaseSeq += 1)}`,
       ownerId: 'daemon-u7',
       timers: noopTimers(),
-      autoStart: true,
       executor: createSchedulerTicketExecutor({
         adapters: createAdapterCatalog([]),
         credentials: resolver,
@@ -540,7 +539,6 @@ describe('executor end-to-end with owner credential binding (U7)', () => {
       idGenerator: () => `lease-${(leaseSeq += 1)}`,
       ownerId: 'daemon-u7b',
       timers: noopTimers(),
-      autoStart: true,
       executor: createSchedulerTicketExecutor({
         adapters: createAdapterCatalog([]),
         credentials: resolver,
@@ -609,5 +607,162 @@ describe('revocation cascade completion (U7)', () => {
     // Vault wiped: no credential can ever bind for this account again.
     const presence = await vault.getPresence(fixture.userB.userId);
     expect(presence.every((row) => !row.present)).toBe(true);
+  }, 120_000);
+});
+
+/* ----------------------------------------------------------------------------
+ * U8 — usage-wait yielding for cross-user fairness
+ * ------------------------------------------------------------------------- */
+
+describe('usage-wait yielding for cross-user fairness (U8)', () => {
+  const FAST_USAGE_WAIT = {
+    minDelayMs: 1,
+    defaultDelayMs: 50,
+    maxDelayMs: 50,
+    maxTotalWaitMs: 5_000,
+    yieldCheckIntervalMs: 2,
+  };
+
+  function fairnessHarness(vault: CredentialVault, store: EventStore) {
+    let bLimitedRemaining = 1;
+    const executions: string[] = [];
+    const factory = (spawnEnv: SpawnEnvBundle): AdapterCatalog => {
+      const isB = spawnEnv.env.CLAUDE_CODE_OAUTH_TOKEN === B_CLAUDE_TOKEN;
+      const adapter: ExecutionAdapter = {
+        id: 'bound-fake',
+        family: 'claude',
+        detectSetup: () =>
+          Promise.resolve({ available: true, authenticated: true, capacity: 10 }),
+        execute: async (task) => {
+          if (isB && bLimitedRemaining > 0) {
+            bLimitedRemaining -= 1;
+            const { AdapterError } = await import('@software-factory/core');
+            return {
+              ok: false as const,
+              error: AdapterError.usageLimited('usage limit reached', { retryAfterMs: 50 }),
+            };
+          }
+          executions.push(`${spawnEnv.env.CLAUDE_CODE_OAUTH_TOKEN}:${task.ticketId}`);
+          return { ok: true as const, output: `done:${task.ticketId}`, artifacts: [] };
+        },
+        reportCapacity: () => 10,
+      };
+      return createAdapterCatalog([adapter]);
+    };
+    const resolver = createRunCredentialResolver({ vault, catalog: factory });
+    const det = deterministic();
+    let leaseSeq = 0;
+    const daemon = createExecutionDaemon({
+      store,
+      clock: det.clock,
+      idGenerator: () => `lease-${(leaseSeq += 1)}`,
+      ownerId: 'daemon-u8',
+      timers: noopTimers(),
+      executor: createSchedulerTicketExecutor({
+        adapters: createAdapterCatalog([]),
+        credentials: resolver,
+        freshWorkspaceRoot: '/virtual/workspaces',
+        ensureWorkspaceDir: () => Promise.resolve(),
+        clock: det.clock,
+        ticketUsageWait: FAST_USAGE_WAIT,
+      }),
+    });
+    return { daemon, executions };
+  }
+
+  async function enqueue(store: EventStore, runId: string, notBefore?: number): Promise<void> {
+    await store.append({
+      runId,
+      type: 'queue.enqueued',
+      actor: { kind: 'system', id: 'test' },
+      subject: { kind: 'queue-job', id: `${runId}:execution` },
+      severity: 'info',
+      payload: {
+        jobId: `${runId}:execution`,
+        jobKind: 'run-execution',
+        attempt: 1,
+        ...(notBefore !== undefined ? { notBefore } : {}),
+      },
+    });
+  }
+
+  it("AE5: B's usage-waiting run yields, C's run executes, B resumes after notBefore", async () => {
+    const vault = makeVault();
+    const fixture = await makeMultiUserFixture(vault);
+    await vault.setCredential(fixture.userB.userId, 'claude_oauth_token', B_CLAUDE_TOKEN);
+    await vault.setCredential(fixture.userA.userId, 'claude_oauth_token', A_CLAUDE_TOKEN);
+    const { daemon, executions } = fairnessHarness(vault, fixture.store);
+
+    const runB = await fixture.createRunAs('b');
+    const runC = await fixture.createRunAs('a');
+    await enqueue(fixture.store, runB);
+    await enqueue(fixture.store, runC);
+
+    // Tick 1: B claims first, hits the usage limit, sees C's owner waiting,
+    // and YIELDS within a hop; C then executes in the SAME pass.
+    const tick1 = await daemon.tick();
+    expect(tick1.requeued).toBe(1);
+    expect(tick1.completed).toBe(1);
+
+    const eventsB = await fixture.store.readRun(runB);
+    expect(projectRun(eventsB, runB).status).not.toBe('completed');
+    expect(projectRun(await fixture.store.readRun(runC), runC).status).toBe('completed');
+    // C executed before ANY of B's tickets completed.
+    expect(executions[0]?.startsWith(A_CLAUDE_TOKEN)).toBe(true);
+
+    // The requeue carries the resume hint, and the owner's view is honest.
+    const requeued = eventsB.filter((event) => event.type === 'queue.enqueued');
+    const withHint = requeued.find(
+      (event) => (event.payload as { notBefore?: number }).notBefore !== undefined,
+    );
+    expect(withHint).toBeDefined();
+    const raw = JSON.stringify(eventsB);
+    expect(raw).toContain('yielded the executor');
+
+    // Tick 2: the deterministic clock has advanced past notBefore — B resumes
+    // and completes (the usage window "reset").
+    const tick2 = await daemon.tick();
+    expect(tick2.completed).toBe(1);
+    expect(projectRun(await fixture.store.readRun(runB), runB).status).toBe('completed');
+  }, 120_000);
+
+  it('a not-yet-due requeue idles (no claim, no busy loop); a far-future hint folds cleanly', async () => {
+    const vault = makeVault();
+    const fixture = await makeMultiUserFixture(vault);
+    await vault.setCredential(fixture.userB.userId, 'claude_oauth_token', B_CLAUDE_TOKEN);
+    const { daemon } = fairnessHarness(vault, fixture.store);
+
+    const runB = await fixture.createRunAs('b');
+    await enqueue(fixture.store, runB, Date.now() + 10 ** 12);
+
+    const tick = await daemon.tick();
+    expect(tick.claimed).toBe(0);
+    expect(tick.completed).toBe(0);
+  }, 120_000);
+
+  it('a yield-requeued run cancelled while waiting is released cancelled, never re-claimed', async () => {
+    const vault = makeVault();
+    const fixture = await makeMultiUserFixture(vault);
+    await vault.setCredential(fixture.userB.userId, 'claude_oauth_token', B_CLAUDE_TOKEN);
+    const { daemon } = fairnessHarness(vault, fixture.store);
+
+    const runB = await fixture.createRunAs('b');
+    await enqueue(fixture.store, runB, Date.now() + 10 ** 12);
+    await fixture.store.append({
+      runId: runB,
+      type: 'run.cancelled',
+      actor: { kind: 'operator', id: fixture.userB.userId },
+      subject: { kind: 'run', id: runB },
+      severity: 'warn',
+      payload: { reason: 'owner cancelled while usage-waiting' },
+    });
+
+    const tick = await daemon.tick();
+    expect(tick.cancelled).toBe(1);
+    expect(tick.claimed).toBe(0);
+
+    // Nothing left queued: a later tick never re-claims the dead job.
+    const again = await daemon.tick();
+    expect(again.claimed).toBe(0);
   }, 120_000);
 });

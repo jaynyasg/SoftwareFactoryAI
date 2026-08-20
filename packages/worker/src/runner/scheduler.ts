@@ -153,6 +153,12 @@ export interface SchedulerResult {
   readonly stalled: boolean;
   /** `true` when the run yielded on pause (`shouldContinue` false) with work left. */
   readonly yielded: boolean;
+  /**
+   * Set when a ticket YIELDED mid-usage-wait for cross-user fairness (U8):
+   * the earliest moment re-attempting makes sense (epoch ms). `yielded` is
+   * `true` whenever this is set.
+   */
+  readonly usageNotBefore?: number;
   readonly capacityReductions: readonly CapacityReduction[];
 }
 
@@ -241,6 +247,8 @@ export async function runScheduler<TNode extends ScheduleNode = ScheduleNode>(
   let lastEmittedCapacity: number | undefined;
   let stalled = false;
   let yielded = false;
+  let usageYielded = false;
+  let usageNotBefore: number | undefined;
   let infraError: unknown;
 
   const isSettled = (id: string): boolean =>
@@ -307,6 +315,15 @@ export async function runScheduler<TNode extends ScheduleNode = ScheduleNode>(
             completed.add(node.id);
           } else if (result.outcome === 'cancelled') {
             cancelled.add(node.id);
+          } else if (result.outcome === 'yielded') {
+            // U8 cross-user fairness: the ticket gave the executor back
+            // mid-usage-wait. It stays UNSETTLED (nothing failed) — the run
+            // yields once in-flight work drains, carrying the resume hint.
+            usageYielded = true;
+            const hint = result.notBefore;
+            if (hint !== undefined && (usageNotBefore === undefined || hint < usageNotBefore)) {
+              usageNotBefore = hint;
+            }
           } else {
             failed.add(node.id);
           }
@@ -381,7 +398,9 @@ export async function runScheduler<TNode extends ScheduleNode = ScheduleNode>(
     }
     // Pause hook (U6): when the caller reports the run may not continue, start
     // no new tickets; in-flight work settles safely, then the run yields.
-    const paused = input.shouldContinue !== undefined && !(await input.shouldContinue());
+    // A usage-wait yield (U8) behaves exactly like a pause here.
+    const paused =
+      (input.shouldContinue !== undefined && !(await input.shouldContinue())) || usageYielded;
     if (!paused) {
       await fillSlots();
     }
@@ -428,6 +447,7 @@ export async function runScheduler<TNode extends ScheduleNode = ScheduleNode>(
     cancelledRun: runToken.aborted,
     stalled,
     yielded,
+    usageNotBefore,
     capacityReductions: reductions,
   };
 }

@@ -52,6 +52,8 @@ export interface QueueJobView {
   readonly enqueuedAt: number;
   /** Ticket focus recorded on a retry-ticket enqueue (consumed by U6). */
   readonly ticketId?: string;
+  /** Earliest claim time for a usage-wait yield requeue (U8; epoch ms). */
+  readonly notBefore?: number;
   readonly reason?: string;
   readonly lastSequence: number;
 }
@@ -74,6 +76,7 @@ interface MutableJob {
   enqueuedAt: number;
   ticketId?: string;
   reason?: string;
+  notBefore?: number;
   firstSequence: number;
   lastSequence: number;
 }
@@ -117,6 +120,7 @@ export function projectExecutionQueue(
             enqueuedAt: event.timestamp,
             ticketId: event.payload.ticketId,
             reason: event.payload.reason,
+            notBefore: event.payload.notBefore,
             firstSequence: event.sequence,
             lastSequence: event.sequence,
           });
@@ -126,6 +130,7 @@ export function projectExecutionQueue(
           existing.leaseId = undefined;
           existing.ownerId = undefined;
           existing.leaseExpiresAt = undefined;
+          existing.notBefore = event.payload.notBefore;
           existing.enqueuedAt = event.timestamp;
           existing.ticketId = event.payload.ticketId ?? existing.ticketId;
           existing.reason = event.payload.reason;
@@ -241,6 +246,8 @@ export interface EnqueueJobInput {
   readonly attempt: number;
   readonly reason?: string;
   readonly ticketId?: string;
+  /** Earliest claim time for a usage-wait yield requeue (U8; epoch ms). */
+  readonly notBefore?: number;
 }
 
 /** Append `queue.enqueued`, idempotent per (jobId, attempt). */
@@ -258,6 +265,7 @@ export function enqueueJob(store: EventStore, input: EnqueueJobInput): Promise<A
       attempt: input.attempt,
       reason: input.reason,
       ticketId: input.ticketId,
+      notBefore: input.notBefore,
     },
   });
 }

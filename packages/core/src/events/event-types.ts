@@ -529,6 +529,12 @@ export interface QueueEnqueuedPayload {
   readonly reason?: string;
   /** Optional ticket focus for retry-ticket commands (consumed by U6). */
   readonly ticketId?: string;
+  /**
+   * Earliest claim time (epoch ms) for a usage-wait yield requeue (multi-user
+   * U8): the drain loop skips this job until then. Absent on every other
+   * enqueue — pre-U8 ledgers fold cleanly.
+   */
+  readonly notBefore?: number;
 }
 export interface QueueClaimedPayload {
   readonly jobId: string;

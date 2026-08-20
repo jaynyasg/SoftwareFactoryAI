@@ -83,13 +83,20 @@ import type {
   GateFailureContext,
   SchedulerResult,
   TicketRunner,
+  UsageWaitPolicy,
   WorkspaceProjection,
 } from '@software-factory/worker';
 import type { ExecutorGateStages } from './gate-stages';
 import type { ExecutorCompletionStage } from './completion-stage';
 import type { TicketExecutionContext, TicketExecutionResult, TicketExecutor } from './daemon';
 import type { RunCredentialResolver } from './credential-bundles';
-import { filterInterventions, projectInterventions, resolveIntervention } from './interventions';
+import { projectExecutionQueue } from './queue';
+import {
+  filterInterventions,
+  projectInterventions,
+  resolveIntervention,
+  runOwners,
+} from './interventions';
 import { highestTicketRisk } from '../../lib/run-view';
 import { resolveGenomeDir } from '../planner';
 import { DEFAULT_EXECUTION_RUNTIME_CONFIG, resolveWorkspaceRuntimeConfig } from '../runtime';
@@ -120,6 +127,12 @@ export interface SchedulerTicketExecutorOptions {
   readonly ticketMaxAttempts?: number;
   /** Soft per-ticket timeout (ms) forwarded to the adapter. */
   readonly ticketTimeoutMs?: number;
+  /**
+   * Usage-window wait tuning forwarded to the worker runner (U8). In
+   * multi-user mode the executor adds its own cross-user `shouldYield` on
+   * top of this tuning.
+   */
+  readonly ticketUsageWait?: UsageWaitPolicy;
   /** Queue-lease heartbeat throttle (ms). Defaults to the runtime cadence. */
   readonly heartbeatIntervalMs?: number;
   /**
@@ -617,6 +630,31 @@ export function createSchedulerTicketExecutor(
             clock,
           });
 
+    // Cross-user fairness (U8): while THIS run sleeps on a usage-window
+    // reset, yield the sequential executor whenever ANOTHER owner has a
+    // claimable job waiting. Same-owner runs never preempt (their order is
+    // the owner's own queue); single-tenant instances (no credential
+    // resolver) keep today's in-place sleeps — no callback, byte-identical.
+    const otherOwnersWaiting =
+      options.credentials === undefined
+        ? undefined
+        : async (): Promise<boolean> => {
+            const all = await ctx.store.readAll();
+            const queue = projectExecutionQueue(
+              all.filter((event) => event.type.startsWith('queue.')),
+            );
+            const owners = runOwners(all);
+            const myOwner = owners.get(ctx.runId);
+            const now = clock?.() ?? Date.now();
+            return queue.jobs.some(
+              (job) =>
+                job.status === 'queued' &&
+                job.runId !== ctx.runId &&
+                owners.get(job.runId) !== myOwner &&
+                (job.notBefore === undefined || job.notBefore <= now),
+            );
+          };
+
     let result: SchedulerResult;
     try {
       result = await runScheduler({
@@ -636,6 +674,17 @@ export function createSchedulerTicketExecutor(
           clock,
           // U7: scrub owner credential values from worker-derived ledger text.
           redact,
+          // U8: usage-wait sleeps yield to other owners' queued work.
+          ...(otherOwnersWaiting !== undefined || options.ticketUsageWait !== undefined
+            ? {
+                usageWait: {
+                  ...options.ticketUsageWait,
+                  ...(otherOwnersWaiting !== undefined
+                    ? { shouldYield: otherOwnersWaiting }
+                    : {}),
+                },
+              }
+            : {}),
         },
         completed: plan.completed,
         cancellation: ctx.signal,
@@ -673,6 +722,18 @@ export function createSchedulerTicketExecutor(
       };
     }
     if (result.yielded) {
+      if (result.usageNotBefore !== undefined) {
+        // U8: honest owner-facing reason + the resume hint the daemon records
+        // on the requeue (the drain loop skips the job until then).
+        return {
+          status: 'yielded',
+          reason:
+            `Usage window exhausted — yielded the executor to other queued work with ` +
+            `${result.completed.length}/${plan.nodes.length} ticket(s) completed; ` +
+            `resumes automatically no earlier than ~${new Date(result.usageNotBefore).toISOString()}.`,
+          notBefore: result.usageNotBefore,
+        };
+      }
       return {
         status: 'yielded',
         reason: `Execution paused with ${result.completed.length}/${plan.nodes.length} ticket(s) completed; the remaining work resumes on resume/restart.`,

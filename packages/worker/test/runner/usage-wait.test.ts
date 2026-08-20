@@ -140,3 +140,83 @@ describe('runner: usage-window wait-and-retry', () => {
     expect(events.some((event) => event.type === 'worker.cancelled')).toBe(true);
   });
 });
+
+/* ----------------------------------------------------------------------------
+ * Cross-user fairness yielding (multi-user U8)
+ * ------------------------------------------------------------------------- */
+
+describe('runner: usage-wait yielding (shouldYield)', () => {
+  it('yields immediately when other owners already wait — outcome carries notBefore', async () => {
+    const store = createInMemoryEventStore();
+    const now = 1_000_000;
+    const result = await runTicket(
+      {
+        runId: 'run-yield-now',
+        compileInput: makeCompileInput('t1'),
+        workspaceDir: '/tmp/ws',
+        signal: new AbortController().signal,
+        usageWait: { ...FAST_WAIT, defaultDelayMs: 500, maxDelayMs: 500, shouldYield: () => true },
+      },
+      { store, adapter: usageLimitedAdapter(99), clock: () => now },
+    );
+
+    expect(result.outcome).toBe('yielded');
+    expect(result.notBefore).toBe(now + 500);
+
+    // The owner-facing trail is honest: the ticket went back to queued with
+    // the yield note, and no worker.failed was recorded.
+    const events = await store.readRun('run-yield-now');
+    const states = events.filter((event) => event.type === 'ticket.state_changed');
+    const last = states[states.length - 1] as { payload: { state: string; reason?: string } };
+    expect(last.payload.state).toBe('queued');
+    expect(last.payload.reason).toContain('yielded the executor');
+    expect(events.some((event) => event.type === 'worker.failed')).toBe(false);
+  });
+
+  it('converts to a yield WITHIN ONE HOP when another owner arrives mid-sleep', async () => {
+    const store = createInMemoryEventStore();
+    let checks = 0;
+    const result = await runTicket(
+      {
+        runId: 'run-yield-mid',
+        compileInput: makeCompileInput('t1'),
+        workspaceDir: '/tmp/ws',
+        signal: new AbortController().signal,
+        usageWait: {
+          ...FAST_WAIT,
+          defaultDelayMs: 200,
+          maxDelayMs: 200,
+          yieldCheckIntervalMs: 5,
+          // Nothing waiting at first; another owner's job arrives after two hops.
+          shouldYield: () => {
+            checks += 1;
+            return checks > 2;
+          },
+        },
+      },
+      { store, adapter: usageLimitedAdapter(99) },
+    );
+
+    expect(result.outcome).toBe('yielded');
+    // Yielded after a few 5ms hops — never the full 200ms sleep.
+    expect(checks).toBeLessThan(10);
+  });
+
+  it('with a callback that never yields, chunked hops still wait out the window and complete', async () => {
+    const store = createInMemoryEventStore();
+    const result = await runTicket(
+      {
+        runId: 'run-yield-never',
+        compileInput: makeCompileInput('t1'),
+        workspaceDir: '/tmp/ws',
+        signal: new AbortController().signal,
+        maxAttempts: 1,
+        usageWait: { ...FAST_WAIT, yieldCheckIntervalMs: 2, shouldYield: () => false },
+      },
+      { store, adapter: usageLimitedAdapter(2) },
+    );
+
+    expect(result.outcome).toBe('completed');
+    expect(result.attempts).toBe(3);
+  });
+});

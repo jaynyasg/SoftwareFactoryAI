@@ -64,18 +64,44 @@ export interface UsageWaitPolicy {
   readonly maxDelayMs?: number;
   /** Total sleep budget before the ticket fails as usage_limited anyway. */
   readonly maxTotalWaitMs?: number;
+  /**
+   * Cross-user fairness (multi-user U8): consulted while a usage wait is in
+   * progress — return `true` to YIELD the executor (outcome `yielded` with a
+   * `notBefore` resume hint) instead of continuing to sleep in place. When
+   * present, each sleep is CHUNKED into hops of at most `yieldCheckIntervalMs`
+   * and the callback is re-evaluated per hop, so another owner's queued run
+   * starts within roughly one hop of arriving. ABSENT (lone user / local) =
+   * today's long in-place sleeps, byte-identical.
+   */
+  readonly shouldYield?: () => boolean | Promise<boolean>;
+  /** Max hop length between yield checks (ms). Defaults to 60s. */
+  readonly yieldCheckIntervalMs?: number;
 }
 
+/** Default hop length between `shouldYield` checks. */
+export const DEFAULT_YIELD_CHECK_INTERVAL_MS = 60_000;
+
+/** The numeric wait tuning with defaults applied (yield fields stay optional). */
+type ResolvedUsageWait = Required<
+  Pick<UsageWaitPolicy, 'defaultDelayMs' | 'minDelayMs' | 'maxDelayMs' | 'maxTotalWaitMs'>
+> &
+  Pick<UsageWaitPolicy, 'shouldYield' | 'yieldCheckIntervalMs'>;
+
 /** Defaults sized for Claude/Codex plan windows (5h rolling resets). */
-export const DEFAULT_USAGE_WAIT: Required<UsageWaitPolicy> = {
+export const DEFAULT_USAGE_WAIT: ResolvedUsageWait = {
   defaultDelayMs: 15 * 60_000,
   minDelayMs: 30_000,
   maxDelayMs: 60 * 60_000,
   maxTotalWaitMs: 12 * 60 * 60_000,
 };
 
-/** The terminal outcome of running a ticket. */
-export type RunTicketOutcome = 'completed' | 'failed' | 'cancelled';
+/**
+ * The outcome of running a ticket. `yielded` (U8) means the ticket gave the
+ * executor back mid-usage-wait for cross-user fairness: nothing failed, the
+ * ticket simply did not run to completion and should be re-attempted no
+ * earlier than the result's `notBefore` hint.
+ */
+export type RunTicketOutcome = 'completed' | 'failed' | 'cancelled' | 'yielded';
 
 /** Inputs for a single ticket run. */
 export interface RunTicketParams {
@@ -128,6 +154,12 @@ export interface RunTicketResult {
   readonly error?: AdapterError;
   /** `true` when this was recorded as a nested-agent execution. */
   readonly nested: boolean;
+  /**
+   * Resume hint for a `yielded` outcome (epoch ms): the moment the usage
+   * window is expected to have reset. Re-attempting earlier just re-hits the
+   * limit.
+   */
+  readonly notBefore?: number;
 }
 
 function nestedEvidence(callerFamily: AdapterFamily, adapter: ExecutionAdapter): EventEvidence[] {
@@ -235,7 +267,7 @@ export async function runTicket(
   });
   await emitTicketState('running');
 
-  const usageWait: Required<UsageWaitPolicy> = { ...DEFAULT_USAGE_WAIT, ...params.usageWait };
+  const usageWait: ResolvedUsageWait = { ...DEFAULT_USAGE_WAIT, ...params.usageWait };
   let usageWaitedMs = 0;
   let attempts = 0;
   let lastError: AdapterError | undefined;
@@ -335,7 +367,8 @@ export async function runTicket(
         usageWait.maxDelayMs,
         remaining,
       );
-      const resumeAt = new Date((deps.clock?.() ?? Date.now()) + delay);
+      const notBefore = (deps.clock?.() ?? Date.now()) + delay;
+      const resumeAt = new Date(notBefore);
       const waitNote =
         `usage limit reached — waiting ${formatDelay(delay)} (until ~${resumeAt.toISOString()}) ` +
         `for the usage window to reset, then retrying automatically`;
@@ -347,8 +380,48 @@ export async function runTicket(
         payload: { attempt: attempt + 1, reason: scrub(`${result.error.kind}: ${waitNote}`) },
       });
       await emitTicketState('retrying', waitNote);
-      await sleepAbortable(delay, params.signal);
-      usageWaitedMs += delay;
+
+      if (usageWait.shouldYield === undefined) {
+        // Lone user / local: today's long in-place sleep, byte-identical.
+        await sleepAbortable(delay, params.signal);
+        usageWaitedMs += delay;
+        continue;
+      }
+
+      // Cross-user fairness (U8): CHUNK the sleep into short hops and consult
+      // the yield callback per hop, so another owner's queued run starts
+      // within roughly one hop — never the full (up to 60-minute) delay.
+      const hopMs = Math.max(1, usageWait.yieldCheckIntervalMs ?? DEFAULT_YIELD_CHECK_INTERVAL_MS);
+      let slept = 0;
+      let yielded = await usageWait.shouldYield();
+      while (!yielded && slept < delay && !params.signal.aborted) {
+        const hop = Math.min(hopMs, delay - slept);
+        await sleepAbortable(hop, params.signal);
+        slept += hop;
+        if (slept < delay) {
+          yielded = await usageWait.shouldYield();
+        }
+      }
+      usageWaitedMs += slept;
+      if (params.signal.aborted) {
+        lastError = makeCancelled(params.signal);
+        break;
+      }
+      if (yielded) {
+        const yieldNote =
+          `usage limit reached — yielded the executor to other queued work; ` +
+          `resumes no earlier than ~${resumeAt.toISOString()}`;
+        await emitTicketState('queued', yieldNote);
+        return {
+          ticketId,
+          outcome: 'yielded',
+          attempts,
+          result,
+          error: result.error,
+          nested,
+          notBefore,
+        };
+      }
       continue;
     }
 
