@@ -224,6 +224,41 @@ export async function loadExecutionOverview(): Promise<ExecutionOverview> {
   return parseExecutionOverview(bodyOf(res));
 }
 
+/** Defensive parse of the adapters section (rows of probed adapter state). */
+function parseAdapterSetup(raw: unknown): SetupStatus['adapters'] {
+  const record = (raw ?? {}) as {
+    status?: string;
+    detected?: readonly unknown[];
+    ready?: readonly unknown[];
+  };
+  const detected = (record.detected ?? []).flatMap((item) => {
+    const row = item as {
+      id?: unknown;
+      family?: unknown;
+      available?: unknown;
+      authenticated?: unknown;
+      detail?: unknown;
+    };
+    if (typeof row?.id !== 'string') {
+      return [];
+    }
+    return [
+      {
+        id: row.id,
+        family: typeof row.family === 'string' ? row.family : 'unknown',
+        available: Boolean(row.available),
+        authenticated: Boolean(row.authenticated),
+        detail: typeof row.detail === 'string' ? row.detail : undefined,
+      },
+    ];
+  });
+  return {
+    status: String(record.status ?? 'unknown'),
+    detected,
+    ready: (record.ready ?? []).filter((id): id is string => typeof id === 'string'),
+  };
+}
+
 /** Read the setup status that drives the blocking/actionable checklist. */
 export async function loadSetup(): Promise<SetupStatus> {
   const res = await getApp().handle({ method: 'GET', path: '/api/setup', query: {}, headers: {} });
@@ -231,11 +266,7 @@ export async function loadSetup(): Promise<SetupStatus> {
   return {
     operatorToken: { present: Boolean((body.operatorToken as { present?: boolean })?.present) },
     sandbox: { status: String((body.sandbox as { status?: string })?.status ?? 'unknown') },
-    adapters: {
-      status: String((body.adapters as { status?: string })?.status ?? 'unknown'),
-      detected: ((body.adapters as { detected?: readonly string[] })?.detected ??
-        []) as readonly string[],
-    },
+    adapters: parseAdapterSetup(body.adapters),
     deploy: { status: String((body.deploy as { status?: string })?.status ?? 'required') },
     workspace: {
       root: String((body.workspace as { root?: string })?.root ?? process.cwd()),

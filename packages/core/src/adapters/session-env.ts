@@ -12,9 +12,14 @@
  * overrides), so the scrub sets each marker to the empty string — falsy for
  * the CLI's presence checks and treated as unset by its URL fallback.
  *
- * `ANTHROPIC_API_KEY` (and other explicit credentials) are deliberately NOT
- * touched: operators who authenticate the CLI via an API key keep working.
+ * `ANTHROPIC_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` (and other explicit
+ * credentials) are deliberately NOT touched: operators who authenticate the
+ * CLI via an API key — or a long-lived `claude setup-token` OAuth token on a
+ * headless/cloud machine — keep working.
  */
+
+/** Explicit credentials that survive the scrub (see module doc). */
+const CREDENTIAL_KEYS = new Set(['CLAUDE_CODE_OAUTH_TOKEN']);
 
 /** Env-override map that neutralizes inherited Claude-session plumbing. */
 export function scrubNestedSessionEnv(
@@ -22,6 +27,9 @@ export function scrubNestedSessionEnv(
 ): Readonly<Record<string, string>> {
   const overrides: Record<string, string> = {};
   for (const key of Object.keys(base)) {
+    if (CREDENTIAL_KEYS.has(key)) {
+      continue;
+    }
     if (
       key === 'CLAUDECODE' ||
       key.startsWith('CLAUDE_') ||

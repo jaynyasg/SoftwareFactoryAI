@@ -35,7 +35,11 @@ function buildItems(setup: SetupStatus): ChecklistItem[] {
     ['available', 'docker', 'wsl2', 'ok'],
     ['unknown'],
   );
-  const adapterMark = classify(setup.adapters.status, ['ready', 'authenticated'], ['unknown']);
+  const adapterMark = classify(
+    setup.adapters.status,
+    ['ready', 'authenticated'],
+    ['unknown', 'pending'],
+  );
   const deployMark = classify(setup.deploy.status, ['configured', 'ready'], ['unknown']);
 
   return [
@@ -70,10 +74,19 @@ function buildItems(setup: SetupStatus): ChecklistItem[] {
       mark: adapterMark,
       detail:
         adapterMark === 'ok'
-          ? `Detected: ${setup.adapters.detected.join(', ') || 'adapter ready'}.`
+          ? `Ready: ${setup.adapters.ready.join(', ') || 'adapter ready'}.`
           : adapterMark === 'pending'
-            ? 'Adapter detection has not run yet.'
-            : 'Authenticate a local Codex or Claude Code CLI adapter (or configure the API adapter).',
+            ? setup.adapters.status === 'pending'
+              ? 'Adapter detection is running — refresh in a few seconds.'
+              : 'Adapter detection has not run yet.'
+            : setup.adapters.detected.length > 0
+              ? `No adapter ready — ${setup.adapters.detected
+                  .map(
+                    (adapter) =>
+                      `${adapter.id}: ${!adapter.available ? 'not installed' : 'not authenticated'}`,
+                  )
+                  .join('; ')}. Install + authenticate a Codex or Claude Code CLI (API key env vars work headless).`
+              : 'Authenticate a local Codex or Claude Code CLI adapter (or configure the API adapter).',
     },
     {
       key: 'checkout-credentials',

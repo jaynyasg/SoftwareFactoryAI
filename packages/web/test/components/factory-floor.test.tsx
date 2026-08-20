@@ -241,7 +241,7 @@ describe('SetupChecklist', () => {
     const setup: SetupStatus = {
       operatorToken: { present: false },
       sandbox: { status: 'unknown' },
-      adapters: { status: 'unknown', detected: [] },
+      adapters: { status: 'unknown', detected: [], ready: [] },
       deploy: { status: 'required' },
       workspace: { root: 'C:\\repo\\software-factory' },
     };
@@ -273,6 +273,47 @@ describe('RunControl', () => {
     expect(screen.getByLabelText('PRD (optional)')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Browse PRD' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Browse' })).toBeInTheDocument();
+  });
+
+  it('blocks Start when the local folder is outside the workspace boundary', async () => {
+    // Regression (GauntLearning run, 2026-08-19): an out-of-boundary folder
+    // must fail AT START with the fix spelled out — not create a run that
+    // silently builds in a fresh generated workspace.
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () =>
+        Promise.resolve({
+          path: 'C:\\Users\\op\\Documents\\GitLab\\Gaunt',
+          parent: 'C:\\Users\\op\\Documents\\GitLab',
+          withinBoundary: false,
+          boundaryRoot: 'C:\\repo\\software-factory',
+          approvedFolders: [],
+          dirs: [],
+          roots: ['C:\\'],
+        }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      render(withSession(<RunControl />));
+      fireEvent.change(screen.getByLabelText('Prompt (optional)'), {
+        target: { value: 'build the study app' },
+      });
+      fireEvent.change(screen.getByLabelText('Local folder'), {
+        target: { value: 'C:\\Users\\op\\Documents\\GitLab\\Gaunt' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: 'Start run' }));
+
+      expect(
+        await screen.findByText(/outside the approved workspace boundary/i),
+      ).toBeInTheDocument();
+      expect(screen.getByText(/SF_WORKSPACE_BOUNDARY/)).toBeInTheDocument();
+      const urls = fetchMock.mock.calls.map((call) => String(call[0]));
+      expect(urls).toContain('/api/fs/browse');
+      expect(urls.some((url) => url.includes('/api/runs'))).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 
@@ -423,7 +464,7 @@ describe('FactoryFloor empty state', () => {
     const setup: SetupStatus = {
       operatorToken: { present: true },
       sandbox: { status: 'unknown' },
-      adapters: { status: 'unknown', detected: [] },
+      adapters: { status: 'unknown', detected: [], ready: [] },
       deploy: { status: 'required' },
       workspace: { root: 'C:\\repo\\software-factory' },
     };
@@ -1228,7 +1269,11 @@ describe('FactoryFloor blueprint-first hierarchy (U9/KTD7)', () => {
   const setup: SetupStatus = {
     operatorToken: { present: true },
     sandbox: { status: 'available' },
-    adapters: { status: 'ready', detected: ['codex-cli'] },
+    adapters: {
+      status: 'ready',
+      detected: [{ id: 'codex-cli', family: 'codex', available: true, authenticated: true }],
+      ready: ['codex-cli'],
+    },
     deploy: { status: 'required' },
     workspace: { root: 'C:\\repo\\software-factory' },
   };

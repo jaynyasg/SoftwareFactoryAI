@@ -1,34 +1,60 @@
 services:
   - type: web
     name: software-factory
-    runtime: node
-    plan: starter
+    # Docker runtime (not plain node): the image bakes in the `claude` +
+    # `codex` worker CLIs and the vendored worker skills, so this instance can
+    # EXECUTE tickets, not just plan them. See Dockerfile +
+    # docs/runbooks/render-deployment.md "Cloud execution".
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    # Worker CLIs are memory-hungry (each claude/codex process can take
+    # hundreds of MB); the 512MB starter plan OOMs under real execution.
+    plan: standard
     # SINGLE-INSTANCE ONLY (U11): the JSONL event ledger and the ledger-backed
     # execution queue do not support horizontal scaling. Do not raise this or
     # enable autoscaling until the database-backed event store + durable queue
     # land (see ARCHITECTURE.md "Hosted Scale Migration Seam" and
     # docs/runbooks/cloud-deployment.md "Scaling Limits And The Migration Seam").
     numInstances: 1
-    buildCommand: corepack enable && corepack pnpm@10.27.0 install --frozen-lockfile && corepack pnpm@10.27.0 --filter @software-factory/web build
-    startCommand: corepack pnpm@10.27.0 --filter @software-factory/web start -- -H 0.0.0.0 -p $PORT
     healthCheckPath: /api/setup
     envVars:
-      - key: NODE_VERSION
-        value: 22.12.0
       - key: SF_RUNTIME
         value: cloud
       - key: SF_FACTORY_DIR
         value: /var/data/.factory
+      - key: SF_WORKSPACE_CHECKOUT_ROOT
+        value: /var/data/checkouts
       - key: SF_OPERATOR_TOKEN
         generateValue: true
       - key: SF_PUBLIC_BASE_URL
         sync: false
-      # Execution boots HELD by default: after every deploy/restart an operator
-      # must open the Factory Floor and click "Resume execution" before queued
-      # work runs. Uncomment to opt into unattended drain-on-start instead.
+      # ── Worker CLI credentials (set values in the Render dashboard) ──────
+      # Claude Code: an Anthropic API key, OR a long-lived OAuth token minted
+      # with `claude setup-token` on any machine (plan-billed usage).
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: CLAUDE_CODE_OAUTH_TOKEN
+        sync: false
+      # Codex: the entrypoint turns this into a `codex login` on boot.
+      - key: OPENAI_API_KEY
+        sync: false
+      # ── Source checkout (GitHub-source runs; fine-grained PAT) ───────────
+      - key: SF_GIT_CHECKOUT_TOKEN
+        sync: false
+      # ── Worker skills (vendored in skills/worker/, installed by the image;
+      #    Claude access is fail-closed until granted here) ──────────────────
+      - key: SF_CLAUDE_ALLOWED_SKILLS
+        value: software-factory-conventions
+      - key: SF_PREFERRED_SKILLS
+        value: software-factory-conventions
+      # Execution boots HELD by default: LEFTOVER work queued before a deploy/
+      # restart waits for an operator to click "Resume execution" on the
+      # Factory Floor. Runs an operator explicitly starts (Start run / Start /
+      # Retry) bypass the gate and execute immediately. Uncomment to opt into
+      # unattended drain-on-start for leftovers too.
       # - key: SF_EXEC_AUTOSTART
       #   value: "1"
     disk:
       name: software-factory-ledger
       mountPath: /var/data
-      sizeGB: 1
+      sizeGB: 10

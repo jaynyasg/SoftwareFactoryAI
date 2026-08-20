@@ -155,11 +155,25 @@ export interface ExecutionOverview {
   readonly queue: { readonly queued: number; readonly leased: number };
 }
 
+/** One probed execution adapter, as reported by GET /api/setup. */
+export interface AdapterSetupItem {
+  readonly id: string;
+  readonly family: string;
+  readonly available: boolean;
+  readonly authenticated: boolean;
+  readonly detail?: string;
+}
+
 /** The read-only setup status feeding the checklist (shape of GET /api/setup). */
 export interface SetupStatus {
   readonly operatorToken: { readonly present: boolean };
   readonly sandbox: { readonly status: string };
-  readonly adapters: { readonly status: string; readonly detected: readonly string[] };
+  readonly adapters: {
+    readonly status: string;
+    readonly detected: readonly AdapterSetupItem[];
+    /** Ids of adapters whose probe reported available + authenticated. */
+    readonly ready: readonly string[];
+  };
   readonly deploy: { readonly status: string };
   readonly workspace: {
     readonly root: string;

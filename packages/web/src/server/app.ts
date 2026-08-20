@@ -25,6 +25,7 @@ import {
   createEventWriter,
   verifyOperatorToken,
 } from '@software-factory/core';
+import { resolveAdapterCatalogOptions } from './adapter-env';
 import type {
   AdapterCatalog,
   AppendableEvent,
@@ -260,6 +261,12 @@ export interface RouteContext {
    * mutations and to propagate cancellation — never to run work in-request.
    */
   readonly executionDaemon: ExecutionDaemon | null;
+  /**
+   * The configured adapter catalog (U6), or `null` when this instance runs
+   * without one. Routes use it ONLY for read-only setup detection — selection
+   * and execution keep going through preflight/executor.
+   */
+  readonly adapterCatalog: AdapterCatalog | null;
   /**
    * Run one preflight rehearsal pass (X2) for a run, appending `preflight.*`
    * events and interventions for failures. Resolves `null` when preflight is
@@ -547,10 +554,13 @@ export function createApp(deps: AppDeps): App {
   // stays with the server entry points. Omitted/null -> execution disabled.
   const executionDaemon: ExecutionDaemon | null = deps.execution ?? null;
 
-  // Adapter catalog (U6): `undefined` -> the real default catalog; `null` ->
-  // no catalog (readiness enforced fail-closed at execution time instead).
+  // Adapter catalog (U6): `undefined` -> the real default catalog (with the
+  // shared env-derived skill options); `null` -> no catalog (readiness
+  // enforced fail-closed at execution time instead).
   const adapterCatalog: AdapterCatalog | null =
-    deps.adapterCatalog === undefined ? createDefaultAdapterCatalog() : deps.adapterCatalog;
+    deps.adapterCatalog === undefined
+      ? createDefaultAdapterCatalog(resolveAdapterCatalogOptions())
+      : deps.adapterCatalog;
 
   // `undefined` -> default runtime preflight; `null` -> preflight disabled
   // (start fails closed rather than skipping the rehearsal).
@@ -671,6 +681,7 @@ export function createApp(deps: AppDeps): App {
       workspaceEnabled: materializer !== null,
       publishWorkspace: publishWorkspaceForRun,
       executionDaemon,
+      adapterCatalog,
       runPreflight: runPreflightForRun,
     };
   }

@@ -3,9 +3,10 @@
  *
  *   GET /api/setup — feeds the UI setup checklist.
  *
- * Reports whether a local operator token exists, conservative placeholders
- * for sandbox/adapter readiness (real detection is exercised at start/exec
- * time), and REAL deploy readiness (full-factory U8): the deploy runtime
+ * Reports whether a local operator token exists, REAL adapter detection (via
+ * the non-blocking cached snapshot — this route doubles as the hosted health
+ * check, so it never waits on CLI probes), a conservative placeholder for
+ * sandbox readiness, and REAL deploy readiness (full-factory U8): the deploy runtime
  * config (Render key presence, service id, hosted URL, git destination) is
  * inspected and the missing pieces are named. Missing deploy setup never
  * blocks local execution — the deploy stage pauses with setup-required (R30).
@@ -43,6 +44,7 @@ import type {
   WorkspaceRuntimeConfig,
 } from '../runtime';
 import type { ApiResponse, RouteContext, RouteDef } from '../app';
+import { getAdapterSetupSnapshot } from '../adapter-setup-snapshot';
 
 /**
  * Real deploy readiness from the deploy runtime config (U8). Reports only
@@ -169,7 +171,10 @@ async function getSetup(ctx: RouteContext): Promise<ApiResponse> {
     body: {
       operatorToken: { present: session !== null },
       sandbox: { status: 'unknown' },
-      adapters: { status: 'unknown', detected: [] as readonly string[] },
+      adapters:
+        ctx.adapterCatalog === null
+          ? { status: 'unknown' as const, detected: [] }
+          : getAdapterSetupSnapshot(ctx.adapterCatalog),
       deploy: deploySetup(runtime?.deploy ?? resolveDeployRuntimeConfig()),
       research: researchSetup(runtime?.research ?? resolveResearchRuntimeConfig()),
       storage: storageSetup(mode, runtime),

@@ -32,6 +32,7 @@ import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createDefaultAdapterCatalog, createFileSystemEventStore } from '@software-factory/core';
 import type { AdapterCatalog, EventStore, OperatorTokenProvider } from '@software-factory/core';
+import { resolveAdapterCatalogOptions } from './adapter-env';
 import { createAiRunPlanner } from './ai-planner';
 import { createApp } from './app';
 import type { App } from './app';
@@ -102,51 +103,12 @@ export function getStore(): EventStore {
  * deliberate trade-off for the Next mount, not an oversight.
  */
 /**
- * Parse `SF_CLAUDE_ALLOWED_SKILLS` — the opt-in list of Claude Code skills
- * factory workers may invoke (comma-separated names, or `*` for any). Unset =
- * NO skills (fail closed): the operator's machine can carry hundreds of
- * installed skills, including outward-facing deploy/publish ones, so worker
- * access to them is never implicit.
+ * The process-wide adapter catalog shared by preflight and the executor.
+ * Env knobs (`SF_CLAUDE_ALLOWED_SKILLS`, `SF_PREFERRED_SKILLS`) are resolved
+ * by the shared `adapter-env` module so every entry point agrees.
  */
-function resolveClaudeAllowedSkills(): readonly string[] {
-  const raw = process.env.SF_CLAUDE_ALLOWED_SKILLS?.trim();
-  if (raw === undefined || raw.length === 0) {
-    return [];
-  }
-  if (raw === '*') {
-    return ['*'];
-  }
-  return raw
-    .split(',')
-    .map((name) => name.trim())
-    .filter((name) => name.length > 0);
-}
-
-/**
- * Preferred skill families to steer workers toward — adapter-agnostic
- * guidance (`SF_PREFERRED_SKILLS`; the older `SF_CLAUDE_PREFERRED_SKILLS`
- * name still works). Codex loads its skill catalog natively; Claude also
- * needs `SF_CLAUDE_ALLOWED_SKILLS` before the guidance has any effect.
- */
-function resolvePreferredSkills(): readonly string[] {
-  const raw = (
-    process.env.SF_PREFERRED_SKILLS ?? process.env.SF_CLAUDE_PREFERRED_SKILLS
-  )?.trim();
-  if (raw === undefined || raw.length === 0) {
-    return [];
-  }
-  return raw
-    .split(',')
-    .map((name) => name.trim())
-    .filter((name) => name.length > 0);
-}
-
-/** The process-wide adapter catalog shared by preflight and the executor. */
 function getAdapterCatalog(): AdapterCatalog {
-  singletons.adapterCatalog ??= createDefaultAdapterCatalog({
-    claudeAllowedSkills: resolveClaudeAllowedSkills(),
-    preferredSkills: resolvePreferredSkills(),
-  });
+  singletons.adapterCatalog ??= createDefaultAdapterCatalog(resolveAdapterCatalogOptions());
   return singletons.adapterCatalog;
 }
 

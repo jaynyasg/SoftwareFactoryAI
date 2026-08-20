@@ -184,6 +184,17 @@ To reinstall both global skills after edits:
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\skills\install-software-factory-skills.ps1
 ```
 
+Separate from these inbound wrappers, `skills/worker/` vendors skills for the
+factory's WORKER CLIs (installed by the Docker image in cloud; on any machine
+via the cross-platform installer):
+
+```bash
+node scripts/install-worker-skills.mjs
+```
+
+See `skills/worker/README.md` for the convention and the
+`SF_CLAUDE_ALLOWED_SKILLS` / `SF_PREFERRED_SKILLS` grants.
+
 ### 5. HTTP API
 
 The Next route handler mounts the framework-agnostic API under `/api`.

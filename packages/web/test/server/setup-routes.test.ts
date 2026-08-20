@@ -8,11 +8,14 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  createAdapterCatalog,
   createInMemoryEventStore,
   createInMemoryOperatorTokenStore,
   createOperatorTokenProvider,
 } from '@software-factory/core';
+import type { AdapterCatalog, AdapterSetupState, ExecutionAdapter } from '@software-factory/core';
 import { createApp, type ApiResponse, type App } from '../../src/server/app';
+import { refreshAdapterSetupSnapshot } from '../../src/server/adapter-setup-snapshot';
 import { resolveRuntimeConfig } from '../../src/server/runtime';
 import type { RuntimeConfig } from '../../src/server/runtime';
 import { testRuntimeConfig } from '../_helpers/runtime';
@@ -35,7 +38,7 @@ function runtimeConfig(
   });
 }
 
-function makeApp(runtime?: RuntimeConfig): App {
+function makeApp(runtime?: RuntimeConfig, adapterCatalog: AdapterCatalog | null = null): App {
   const provider = createOperatorTokenProvider({
     store: createInMemoryOperatorTokenStore({ token: TOKEN, createdAt: 0 }),
   });
@@ -46,6 +49,9 @@ function makeApp(runtime?: RuntimeConfig): App {
     planner: null,
     researcher: null,
     materializer: null,
+    // Hermetic by default: the REAL catalog would background-probe the
+    // machine's claude/codex CLIs from the setup route. Tests inject fakes.
+    adapterCatalog,
   });
 }
 
@@ -263,5 +269,82 @@ describe('resolveRuntimeConfig — workspace section', () => {
     expect(config.workspace.approvedFolders).toEqual(['D:\\a', 'E:\\b']);
     expect(config.workspace.checkoutRoot).toBe('D:\\checkouts');
     expect(config.workspace.dirtyStatePolicy).toBe('reject_dirty');
+  });
+});
+
+/* ----------------------------------------------------------------------------
+ * Adapter detection (real, non-blocking, cached)
+ * ------------------------------------------------------------------------- */
+
+function fakeAdapter(id: string, setup: Partial<AdapterSetupState>): ExecutionAdapter {
+  return {
+    id,
+    family: 'codex',
+    detectSetup: () =>
+      Promise.resolve({ available: false, authenticated: false, capacity: 0, ...setup }),
+    execute: () => Promise.reject(new Error('not under test')),
+    reportCapacity: () => 1,
+  };
+}
+
+describe('GET /api/setup — adapter detection', () => {
+  it('reports unknown when this instance runs without a catalog', async () => {
+    const body = await getSetup(makeApp(undefined, null));
+    expect(body.adapters).toEqual({ status: 'unknown', detected: [] });
+  });
+
+  it('first read is pending (never blocks on probes); the completed detection is served after', async () => {
+    const catalog: AdapterCatalog = createAdapterCatalog([
+      fakeAdapter('codex-cli', { available: true, authenticated: true, capacity: 2 }),
+      fakeAdapter('api', { available: false, detail: 'not configured' }),
+    ]);
+    const app = makeApp(undefined, catalog);
+
+    const first = (await getSetup(app)).adapters as { status: string };
+    expect(first.status).toBe('pending');
+
+    // Deterministic completion of the detection pass, then re-read.
+    await refreshAdapterSetupSnapshot(catalog);
+    const second = (await getSetup(app)).adapters as {
+      status: string;
+      ready: readonly string[];
+      detected: readonly { id: string; available: boolean; authenticated: boolean }[];
+    };
+    expect(second.status).toBe('ready');
+    expect(second.ready).toEqual(['codex-cli']);
+    expect(second.detected.map((row) => row.id)).toEqual(['codex-cli', 'api']);
+  });
+
+  it('reports attention (with per-adapter reasons) when nothing is ready', async () => {
+    const catalog: AdapterCatalog = createAdapterCatalog([
+      fakeAdapter('codex-cli', { available: true, authenticated: false, detail: 'not logged in' }),
+    ]);
+    const app = makeApp(undefined, catalog);
+    await refreshAdapterSetupSnapshot(catalog);
+
+    const adapters = (await getSetup(app)).adapters as {
+      status: string;
+      ready: readonly string[];
+      detected: readonly { detail?: string }[];
+    };
+    expect(adapters.status).toBe('attention');
+    expect(adapters.ready).toEqual([]);
+    expect(adapters.detected[0].detail).toBe('not logged in');
+  });
+
+  it('folds a throwing probe into the adapter row instead of failing the route', async () => {
+    const exploding: ExecutionAdapter = {
+      ...fakeAdapter('codex-cli', {}),
+      detectSetup: () => Promise.reject(new Error('probe exploded')),
+    };
+    const catalog = createAdapterCatalog([exploding]);
+    await refreshAdapterSetupSnapshot(catalog);
+
+    const adapters = (await getSetup(makeApp(undefined, catalog))).adapters as {
+      status: string;
+      detected: readonly { detail?: string }[];
+    };
+    expect(adapters.status).toBe('attention');
+    expect(adapters.detected[0].detail).toContain('probe exploded');
   });
 });

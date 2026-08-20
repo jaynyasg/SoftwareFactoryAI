@@ -18,26 +18,72 @@ See "Scaling Limits And The Migration Seam" below.
 
 ## Render Deployment
 
-The root `render.yaml` deploys the factory itself:
+The root `render.yaml` deploys the factory itself as a **Docker** service
+(`runtime: docker`, root `Dockerfile`). The image is what makes cloud
+EXECUTION possible: a plain Node build serves the UI and plans runs, but no
+worker CLI exists on the host, so every ticket would fail preflight with
+`adapter.setup_required`. The Dockerfile therefore:
 
-```yaml
-buildCommand: corepack enable && corepack pnpm@10.27.0 install --frozen-lockfile && corepack pnpm@10.27.0 --filter @software-factory/web build
-startCommand: corepack pnpm@10.27.0 --filter @software-factory/web start -- -H 0.0.0.0 -p $PORT
-healthCheckPath: /api/setup
-```
+- installs the `claude` (Claude Code) and `codex` worker CLIs globally,
+- installs the vendored worker skills (`skills/worker/*`) into the runtime
+  user's `~/.claude/skills` + `~/.codex/skills` via
+  `node scripts/install-worker-skills.mjs`,
+- runs as a non-root `factory` user whose HOME carries CLI credentials/skills,
+- boots through `scripts/docker-entrypoint.sh`, which logs adapter auth state
+  and performs the one-time `codex login` from `OPENAI_API_KEY`.
+
+Health checks hit `/api/setup`, which now includes REAL adapter detection
+(cached + non-blocking), so the Factory Floor setup checklist on a hosted
+instance honestly reports whether `claude`/`codex` are installed and
+authenticated.
+
+## Worker CLI Auth (Cloud Execution)
+
+Workers execute through the CLIs' own auth. Headless options:
+
+| CLI      | Env var                  | Notes                                                                                                     |
+| -------- | ------------------------ | --------------------------------------------------------------------------------------------------------- |
+| `claude` | `ANTHROPIC_API_KEY`      | API-billed. Passed through the nested-session scrub by design.                                            |
+| `claude` | `CLAUDE_CODE_OAUTH_TOKEN` | Plan-billed. Mint once with `claude setup-token` on any machine; the scrub explicitly preserves this key. |
+| `codex`  | `OPENAI_API_KEY`         | The entrypoint converts it to a stored `codex login` at boot (tries `--api-key`, then `--with-api-key`).  |
+
+Set whichever you use as Render env vars (the blueprint declares them with
+`sync: false`). The entrypoint logs a clear line per CLI at boot; the setup
+checklist shows the probed result. First-deploy validation worth doing once:
+confirm the boot log shows the ledger dir writable (`/var/data/.factory`) by
+the non-root user, and that `claude auth status` reports the env credential —
+if it does not on the installed CLI version, prefer the
+`CLAUDE_CODE_OAUTH_TOKEN` path.
+
+## Worker Skills In The Cloud
+
+Skills are a machine-level convention (`~/.claude/skills`, `~/.codex/skills`),
+so the image vendors them from `skills/worker/` (see its README). Claude skill
+access stays fail-closed: the blueprint grants exactly
+`SF_CLAUDE_ALLOWED_SKILLS=software-factory-conventions`. Add names (never `*`
+in cloud) as you vendor more skills. All entry points — the Next mount AND the
+standalone/hosted server — resolve these env knobs through the shared
+`adapter-env` module.
 
 It also mounts a persistent disk at `/var/data` and stores the factory ledger in
 `/var/data/.factory`.
 
 ## Execution Drain Gate
 
-Every server process boots with execution HELD: queued work does not run until
-an operator clicks **Resume execution** on the Factory Floor (or calls
+Every server process boots with execution HELD: LEFTOVER queued work (enqueued
+before the process started) does not run until an operator clicks
+**Resume execution** on the Factory Floor (or calls
 `POST /api/execution/resume`). The gate is process-local BY DESIGN — every
 deploy or restart re-holds. The DECIDED hosted policy is held-by-default: after
 every deploy/restart an operator must open the web UI and resume. This is
 intentional safety-first behavior, so a fresh (or crashed-and-restarted) cloud
 instance never drains queued runs unattended.
+
+The gate does NOT apply to runs the operator explicitly starts after boot:
+"Start run" (mode `plan-and-start`), `POST /api/runs/:id/start`, and
+`POST /api/runs/:id/retry` each grant that one run a gate bypass, so a single
+attended action carries a run straight to executing workers. An explicit
+`POST /api/execution/hold` revokes all grants issued so far.
 
 - `GET /api/execution` reports
   `{execution: {enabled, held, running}, queue: {queued, leased}}`.
@@ -56,6 +102,11 @@ Required env:
 | `SF_OPERATOR_TOKEN`                 | Stable secret for CLI and skill mutations. The blueprint generates one.            |
 | `SF_PUBLIC_BASE_URL`                | Optional but recommended hosted URL, e.g. `https://software-factory.onrender.com`. |
 | `SF_EXEC_AUTOSTART`                 | Optional. Unset (default) boots execution HELD; `1`/`true`/`yes` opts into drain-on-start. |
+| `ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN` | Claude worker CLI auth (see "Worker CLI Auth").                        |
+| `OPENAI_API_KEY`                    | Codex worker CLI auth — logged in by the entrypoint at boot.                       |
+| `SF_WORKSPACE_CHECKOUT_ROOT`        | Where GitHub-source checkouts materialize (`/var/data/checkouts` on the disk).     |
+| `SF_CLAUDE_ALLOWED_SKILLS`          | Fail-closed grant of installed skills to Claude workers (names, never `*` in cloud). |
+| `SF_PREFERRED_SKILLS`               | Skill names workers are steered toward (both CLI families).                        |
 
 ## Cloud Setup Diagnostics
 
@@ -72,6 +123,12 @@ the response or in ledger evidence:
 | `research.searchCredentials`                    | Research web-search provider                           | `SF_RESEARCH_SEARCH_PROVIDER`, `SF_RESEARCH_SEARCH_API_KEY`                                        |
 | `storage`                                       | Persistent JSONL ledger (single-instance)              | `SF_FACTORY_DIR` on a mounted persistent disk                                                      |
 | `queue`                                         | Execution queue mode + single-instance scaling warning | none — informational (see scaling section below)                                                   |
+| `adapters`                                      | REAL worker-CLI detection (installed + authenticated)  | image + `ANTHROPIC_API_KEY`/`CLAUDE_CODE_OAUTH_TOKEN`/`OPENAI_API_KEY` (see "Worker CLI Auth")     |
+
+`adapters.status` is `pending` on the first poll after boot (detection runs in
+the background so the health check never blocks on CLI probes), then `ready`
+with the authenticated adapter ids, or `attention` with a per-adapter reason
+(`not installed` vs `not authenticated`).
 
 `storage.status` is `attention` on a cloud instance that has not set
 `SF_FACTORY_DIR` explicitly: without a persistent disk the ledger (and a

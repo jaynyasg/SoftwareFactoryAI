@@ -340,4 +340,13 @@ describe('scrubNestedSessionEnv', () => {
     expect(scrubbed).not.toHaveProperty('ANTHROPIC_API_KEY');
     expect(scrubbed).not.toHaveProperty('PATH');
   });
+
+  it('preserves CLAUDE_CODE_OAUTH_TOKEN (headless setup-token auth) despite the CLAUDE_ prefix', () => {
+    const scrubbed = scrubNestedSessionEnv({
+      CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat-keep-me',
+      CLAUDE_CODE_ENTRYPOINT: 'cli',
+    });
+    expect(scrubbed).toEqual({ CLAUDE_CODE_ENTRYPOINT: '' });
+    expect(scrubbed).not.toHaveProperty('CLAUDE_CODE_OAUTH_TOKEN');
+  });
 });

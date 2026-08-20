@@ -22,6 +22,7 @@ import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createDefaultAdapterCatalog, createFileSystemEventStore } from '@software-factory/core';
+import { resolveAdapterCatalogOptions } from './adapter-env';
 import { createApp } from './app';
 import type { RunningServer } from './app';
 import { createExecutionDaemon } from './execution/daemon';
@@ -78,8 +79,10 @@ export async function startStandaloneServer(
   // One daemon per process: bootstrapped BEFORE the listener so the initial
   // reconcile pass (resume safe queued work, abandon stale leases) runs first.
   // The adapter catalog is shared by the executor and the preflight readiness
-  // check so both resolve the same adapter set (U6).
-  const adapterCatalog = createDefaultAdapterCatalog();
+  // check so both resolve the same adapter set (U6). Skill env knobs resolve
+  // through the SAME shared module as the Next mount — this entry point used
+  // to drop SF_CLAUDE_ALLOWED_SKILLS silently.
+  const adapterCatalog = createDefaultAdapterCatalog(resolveAdapterCatalogOptions());
   const daemon = createExecutionDaemon({
     store,
     config: runtime.execution,
