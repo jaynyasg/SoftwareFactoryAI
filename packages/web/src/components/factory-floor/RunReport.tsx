@@ -193,6 +193,49 @@ export function RunReport({
           </div>
         ) : null}
 
+        {tickets.length > 0 ? (
+          <div className="stack" style={{ gap: 'var(--space-4)' }} data-testid="run-report-tickets">
+            <span className="label">tickets</span>
+            <ul className="run-report__tickets">
+              {tickets.map((ticket) => {
+                const started = rows.find(
+                  (r) => r.type === 'worker.started' && r.ticketId === ticket.ticketId,
+                )?.timestamp;
+                const finished = [...rows]
+                  .reverse()
+                  .find(
+                    (r) => r.type === 'worker.completed' && r.ticketId === ticket.ticketId,
+                  )?.timestamp;
+                const took =
+                  started !== undefined && finished !== undefined && finished > started
+                    ? formatDuration(finished - started)
+                    : undefined;
+                return (
+                  <li key={ticket.ticketId} className="run-report__ticket">
+                    <SeverityBadge
+                      severity={
+                        ticket.state === 'completed'
+                          ? 'success'
+                          : ticket.state === 'failed' || ticket.state === 'blocked'
+                            ? 'error'
+                            : 'info'
+                      }
+                      label={ticket.state}
+                    />
+                    <span className="mono run-report__ticket-id">{ticket.ticketId}</span>
+                    <span className="run-report__ticket-title">{ticket.title ?? ''}</span>
+                    <span className="muted run-report__ticket-meta">
+                      {ticket.riskTier ? `${ticket.riskTier} risk` : ''}
+                      {ticket.attempts > 1 ? ` · ${ticket.attempts} attempts` : ''}
+                      {took !== undefined ? ` · ${took}` : ''}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        ) : null}
+
         {story.length > 0 ? (
           <details className="run-report__story" data-testid="run-report-story" open>
             <summary className="label">build story · {story.length} milestones</summary>

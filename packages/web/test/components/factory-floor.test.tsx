@@ -1746,3 +1746,26 @@ describe('RunCompletionToast + build story', () => {
     expect(story).toHaveTextContent(/Gate failed/);
   });
 });
+
+describe('RunReport per-ticket listing', () => {
+  it('lists every individual ticket with state, id, and title', () => {
+    const { aggregate } = buildFullAggregate('run-tickets');
+    render(
+      withSession(
+        <RunReport
+          run={{ ...aggregate.run, status: 'completed' } as typeof aggregate.run}
+          tickets={aggregate.tickets}
+          gates={aggregate.gates}
+          rows={aggregate.run.ledger}
+          deploy={aggregate.deploy}
+        />,
+      ),
+    );
+    const list = screen.getByTestId('run-report-tickets');
+    const items = within(list).getAllByRole('listitem');
+    expect(items).toHaveLength(aggregate.tickets.length);
+    for (const ticket of aggregate.tickets) {
+      expect(within(list).getByText(ticket.ticketId)).toBeInTheDocument();
+    }
+  });
+});
