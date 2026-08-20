@@ -960,7 +960,7 @@ describe('factory-wide execution controls', () => {
 
   it('resume requires the command guard, releases the gate, and is idempotent', async () => {
     let executed = 0;
-    const { app, daemon } = makeExecApp({
+    const { app, store, daemon } = makeExecApp({
       autoStart: false,
       executor: (): Promise<TicketExecutionResult> => {
         executed += 1;
@@ -968,9 +968,19 @@ describe('factory-wide execution controls', () => {
       },
     });
     const runId = await createPlannedRun(app);
-    await app.handle(req('POST', `/api/runs/${runId}/start`, authedHeaders(), {}));
+    // Leftover queued work from BEFORE this process booted: on the ledger, but
+    // no explicit operator start command was issued in THIS process, so the
+    // boot drain gate applies (explicit starts bypass it — see the next test).
+    await store.append({
+      runId,
+      type: 'queue.enqueued',
+      actor: { kind: 'system', id: 'test' },
+      subject: { kind: 'queue-job', id: `${runId}:execution` },
+      severity: 'info',
+      payload: { jobId: `${runId}:execution`, jobKind: 'run-execution', attempt: 1 },
+    });
 
-    // Explicit start enqueues honestly, but the held daemon runs NOTHING.
+    // The held daemon runs NOTHING it was not explicitly told to start.
     const heldTick = await daemon.tick();
     expect(heldTick.claimed).toBe(0);
     expect(executed).toBe(0);
@@ -999,6 +1009,84 @@ describe('factory-wide execution controls', () => {
     expect(again.status).toBe(200);
     expect(record(again).alreadyActive).toBe(true);
     expect(record(again).running).toBe(false);
+  });
+
+  it('mode plan-and-start enqueues execution at creation and runs it even while boot-held', async () => {
+    let executed = 0;
+    const { app, store, daemon } = makeExecApp({
+      autoStart: false,
+      executor: (): Promise<TicketExecutionResult> => {
+        executed += 1;
+        return Promise.resolve({ status: 'completed', summary: 'done' });
+      },
+    });
+    expect(daemon.held).toBe(true);
+
+    // ONE operator action: create with plan-and-start. Planning completes and
+    // the execution job is preflighted + enqueued in the same request.
+    const res = await app.handle(
+      req('POST', '/api/runs', authedHeaders(), {
+        prompt: MARKETPLACE_PROMPT,
+        mode: 'plan-and-start',
+      }),
+    );
+    expect(res.status).toBe(201);
+    const runId = record(res).runId as string;
+    expect(record(res).execution).toMatchObject({ state: 'queued' });
+
+    // The explicit create-with-start is attended intent: the boot drain gate
+    // does not demand a second confirmation for this run.
+    await daemon.tick();
+    expect(executed).toBe(1);
+    expect(projectRun(await store.readRun(runId), runId).executionState).toBe('completed');
+  });
+
+  it('an explicit operator start bypasses the boot drain gate for THAT run only', async () => {
+    let executed = 0;
+    const { app, store, daemon } = makeExecApp({
+      autoStart: false,
+      executor: (): Promise<TicketExecutionResult> => {
+        executed += 1;
+        return Promise.resolve({ status: 'completed', summary: 'done' });
+      },
+    });
+    expect(daemon.held).toBe(true);
+
+    // Leftover work from a previous process: queued on the ledger, never
+    // explicitly started in THIS process — must stay behind the gate.
+    const leftoverRunId = await createPlannedRun(app);
+    await store.append({
+      runId: leftoverRunId,
+      type: 'queue.enqueued',
+      actor: { kind: 'system', id: 'test' },
+      subject: { kind: 'queue-job', id: `${leftoverRunId}:execution` },
+      severity: 'info',
+      payload: { jobId: `${leftoverRunId}:execution`, jobKind: 'run-execution', attempt: 1 },
+    });
+
+    // An explicit authenticated Start is attended operator intent: the gate
+    // exists to stop unattended boot-time drain, not to demand a second
+    // confirmation, so THIS run executes immediately even while held.
+    const startedRunId = await createPlannedRun(app);
+    await app.handle(req('POST', `/api/runs/${startedRunId}/start`, authedHeaders(), {}));
+    const tick = await daemon.tick();
+    expect(tick.claimed).toBe(1);
+    expect(executed).toBe(1);
+    expect(daemon.held).toBe(true);
+
+    // The leftover job is untouched: still queued, still waiting for an
+    // operator resume (or its own explicit start).
+    const leftoverQueue = projectExecutionQueue(await store.readRun(leftoverRunId), leftoverRunId);
+    expect(leftoverQueue.jobs[0].status).toBe('queued');
+
+    // An explicit factory hold revokes earlier per-run grants: a run started
+    // BEFORE the hold no longer bypasses the gate afterwards.
+    const revokedRunId = await createPlannedRun(app);
+    await app.handle(req('POST', `/api/runs/${revokedRunId}/start`, authedHeaders(), {}));
+    await app.handle(req('POST', '/api/execution/hold', authedHeaders(), {}));
+    const gatedTick = await daemon.tick();
+    expect(gatedTick.claimed).toBe(0);
+    expect(executed).toBe(1);
   });
 
   it('hold re-engages the gate so no NEW work is claimed (and is idempotent)', async () => {
@@ -1052,12 +1140,20 @@ describe('factory-wide execution controls', () => {
       },
     });
     const runId = await createPlannedRun(app);
-    const started = await app.handle(req('POST', `/api/runs/${runId}/start`, authedHeaders(), {}));
-    expect(started.status).toBe(202);
-    expect(record(started).held).toBe(true);
+    // Leftover queued work from a previous process: no explicit start command
+    // was issued in THIS process, so the boot drain gate applies to it.
+    await store.append({
+      runId,
+      type: 'queue.enqueued',
+      actor: { kind: 'system', id: 'test' },
+      subject: { kind: 'queue-job', id: `${runId}:execution` },
+      severity: 'info',
+      payload: { jobId: `${runId}:execution`, jobKind: 'run-execution', attempt: 1 },
+    });
 
     // Pause then resume the RUN: the run-level gate reopens (and the route
-    // notifies the daemon), but the FACTORY gate is still engaged.
+    // notifies the daemon), but the FACTORY gate is still engaged — a
+    // run-level resume is NOT a start command and never grants a gate bypass.
     await app.handle(req('POST', `/api/runs/${runId}/pause`, authedHeaders(), {}));
     const resumed = await app.handle(req('POST', `/api/runs/${runId}/resume`, authedHeaders(), {}));
     expect(resumed.status).toBe(200);

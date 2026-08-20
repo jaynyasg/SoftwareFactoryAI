@@ -519,6 +519,39 @@ describe('POST /api/runs — run modes (full-factory U3)', () => {
     expect(run.buildContract?.operatorApprovals.join(' ')).toContain('start request recorded');
   });
 
+  it('plan-and-start needs NO research: plans, records the start request, and projects execution pending', async () => {
+    // Plain app: no researcher wired, no execution daemon — plan-and-start
+    // must still succeed (unlike research modes, which 503 without research).
+    const { app, store } = makeApp();
+    const res = await app.handle(
+      req('POST', '/api/runs', authedHeaders(), {
+        prompt: MARKETPLACE_PROMPT,
+        mode: 'plan-and-start',
+      }),
+    );
+    expect(res.status).toBe(201);
+
+    const run = record(res).run as RunProjection;
+    expect(run.status).toBe('planned');
+    expect(run.mode).toBe('plan-and-start');
+    expect(run.executionState).toBe('pending');
+    expect(record(res).execution).toMatchObject({ state: 'pending' });
+    // No research surface: not requested, not run, not in the response.
+    expect(record(res).research).toBeUndefined();
+
+    const events = await store.readRun('run-1');
+    expect(events.some((e) => e.type.startsWith('research.'))).toBe(false);
+    expect(events.some((e) => e.type === 'run.started')).toBe(false);
+    const defer = events.find(
+      (e) =>
+        e.type === 'supervisor.decision' &&
+        (e.payload as { decision?: string }).decision === 'defer-execution',
+    );
+    expect(defer).toBeDefined();
+    const created = events.find((e) => e.type === 'run.created');
+    expect((created?.payload as { mode?: string }).mode).toBe('plan-and-start');
+  });
+
   it('repeated creates with the same idempotency key duplicate NO research, plan, or contract events', async () => {
     const counters = { passes: 0 };
     const { app, store } = makeAppWith(undefined, stubResearcher(counters));

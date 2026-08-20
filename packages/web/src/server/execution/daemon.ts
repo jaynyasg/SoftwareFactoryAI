@@ -222,9 +222,20 @@ export interface ExecutionDaemon {
   resume(): void;
   /**
    * Re-engage the drain gate: stop claiming NEW queued work. Like a run pause,
-   * in-flight work is left to finish (or yield) safely — never aborted.
+   * in-flight work is left to finish (or yield) safely — never aborted. Also
+   * revokes every per-run `allowRunWhileHeld` grant: an explicit hold means
+   * "stop everything", including runs the operator started earlier.
    */
   hold(): void;
+  /**
+   * Let ONE run drain even while the gate is held. The gate exists to stop
+   * UNATTENDED drain of leftover queued work after a boot/deploy — not to
+   * demand a second confirmation of a start the operator just issued. Routes
+   * call this on every explicit start/retry command so that run executes
+   * immediately; work queued before this process booted stays held. Process-
+   * local like the gate itself: a restart clears all grants by design.
+   */
+  allowRunWhileHeld(runId: string): void;
   /** Propagate a run cancellation to queued and in-flight work. */
   cancelRun(runId: string): Promise<void>;
   /**
@@ -262,6 +273,10 @@ export function createExecutionDaemon(options: ExecutionDaemonOptions): Executio
   // local BY DESIGN (like inFlight): every fresh process starts held again
   // unless configured to auto-start, so opening the factory runs nothing.
   let held = !config.autoStart;
+  // Per-run bypass of the gate for runs the operator EXPLICITLY started or
+  // retried in this process's lifetime (see allowRunWhileHeld). Process-local
+  // like `held`: a restart forgets every grant, so leftover work stays held.
+  const allowedWhileHeld = new Set<string>();
   // Re-entrant stop guard: a second stop() joins the in-flight shutdown.
   let stopPromise: Promise<void> | null = null;
   // Skip-not-stack: interval ticks are skipped while one is still pending.
@@ -603,11 +618,13 @@ export function createExecutionDaemon(options: ExecutionDaemonOptions): Executio
           counters.cancelled += 1;
           continue;
         }
-        if (state === 'paused' || held) {
+        if (state === 'paused' || (held && !allowedWhileHeld.has(job.runId))) {
           // A run pause and the factory drain gate both stop NEW worker
           // starts; the job stays queued for the matching resume. Cancelled
           // cleanup above still runs while held — it releases work, never
-          // starts any.
+          // starts any. Runs the operator explicitly started in THIS process
+          // (allowRunWhileHeld) bypass the gate: the gate guards against
+          // unattended boot-time drain, not against attended start commands.
           continue;
         }
         await executeJob(job, counters);
@@ -695,6 +712,13 @@ export function createExecutionDaemon(options: ExecutionDaemonOptions): Executio
 
   function hold(): void {
     held = true;
+    // An explicit hold stops EVERYTHING: revoke earlier per-run grants so a
+    // previously-started run cannot re-claim new work behind the operator.
+    allowedWhileHeld.clear();
+  }
+
+  function allowRunWhileHeld(runId: string): void {
+    allowedWhileHeld.add(runId);
   }
 
   async function cancelRuns(runIds: readonly string[]): Promise<void> {
@@ -753,6 +777,7 @@ export function createExecutionDaemon(options: ExecutionDaemonOptions): Executio
     notify,
     resume,
     hold,
+    allowRunWhileHeld,
     cancelRun,
     cancelRuns,
   };

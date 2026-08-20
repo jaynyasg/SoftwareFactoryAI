@@ -79,7 +79,7 @@ export interface CreateRunInput {
   readonly requestedWorkerCap?: number;
   readonly reviewMode?: ReviewMode;
   /**
-   * Run mode: `plan-only` (default), `research-and-plan`, or
+   * Run mode: `plan-only` (default), `plan-and-start`, `research-and-plan`, or
    * `research-plan-and-start`. Omitted = the backend's plan-only default.
    */
   readonly mode?: RunMode;

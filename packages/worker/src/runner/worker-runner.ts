@@ -21,6 +21,7 @@ import {
   compileContext,
   isCancellation,
   isRetryableAdapterError,
+  isWaitableAdapterError,
   normalizeAdapterError,
 } from '@software-factory/core';
 import type {
@@ -47,6 +48,32 @@ export const NESTED_AGENT_EVIDENCE_LABEL = 'nested-agent';
 /** Default bounded-retry budget: 1 initial attempt + 2 retries. */
 export const DEFAULT_MAX_ATTEMPTS = 3;
 
+/**
+ * Tuning for waiting out a WAITABLE adapter failure (`usage_limited`): the
+ * plan/usage window is exhausted, so instead of failing the ticket the runner
+ * sleeps and retries once the window may have reset. Waits are budgeted by
+ * TIME (`maxTotalWaitMs`), never by the bounded retry count — a usage pause is
+ * not a fault, so it must not burn the operator's retry budget.
+ */
+export interface UsageWaitPolicy {
+  /** Sleep between probes when the CLI did not advertise a reset time. */
+  readonly defaultDelayMs?: number;
+  /** Floor for any single sleep (guards against mis-parsed tiny hints). */
+  readonly minDelayMs?: number;
+  /** Ceiling for any single sleep (a far-out reset is re-probed in hops). */
+  readonly maxDelayMs?: number;
+  /** Total sleep budget before the ticket fails as usage_limited anyway. */
+  readonly maxTotalWaitMs?: number;
+}
+
+/** Defaults sized for Claude/Codex plan windows (5h rolling resets). */
+export const DEFAULT_USAGE_WAIT: Required<UsageWaitPolicy> = {
+  defaultDelayMs: 15 * 60_000,
+  minDelayMs: 30_000,
+  maxDelayMs: 60 * 60_000,
+  maxTotalWaitMs: 12 * 60 * 60_000,
+};
+
 /** The terminal outcome of running a ticket. */
 export type RunTicketOutcome = 'completed' | 'failed' | 'cancelled';
 
@@ -67,6 +94,8 @@ export interface RunTicketParams {
   readonly maxAttempts?: number;
   /** Soft per-task timeout (ms), forwarded to the adapter. */
   readonly timeoutMs?: number;
+  /** Wait-out-the-usage-window tuning. Defaults to DEFAULT_USAGE_WAIT. */
+  readonly usageWait?: UsageWaitPolicy;
 }
 
 /** Dependencies for a ticket run (the seams that tests substitute). */
@@ -197,11 +226,16 @@ export async function runTicket(
   });
   await emitTicketState('running');
 
+  const usageWait: Required<UsageWaitPolicy> = { ...DEFAULT_USAGE_WAIT, ...params.usageWait };
+  let usageWaitedMs = 0;
   let attempts = 0;
   let lastError: AdapterError | undefined;
   let lastResult: AdapterResult | undefined;
 
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+  // Bounded in every branch: retryable failures by `maxAttempts`, waitable
+  // (usage-window) failures by `usageWait.maxTotalWaitMs` with each sleep
+  // >= minDelayMs, everything else exits the loop on its first occurrence.
+  for (let attempt = 1; ; attempt += 1) {
     attempts = attempt;
 
     if (params.signal.aborted) {
@@ -278,15 +312,47 @@ export async function runTicket(
       continue;
     }
 
-    // Terminal failure (non-retryable, or retry budget exhausted).
+    // WAITABLE failure (usage window exhausted): sleep until the window may
+    // have reset, then retry. Budgeted by total wait time — NOT by the bounded
+    // retry count, because a usage pause is expected behavior, not a fault.
+    if (isWaitableAdapterError(result.error) && usageWaitedMs < usageWait.maxTotalWaitMs) {
+      const hinted = result.error.retryAfterMs;
+      const remaining = usageWait.maxTotalWaitMs - usageWaitedMs;
+      const delay = Math.min(
+        Math.max(hinted ?? usageWait.defaultDelayMs, usageWait.minDelayMs),
+        usageWait.maxDelayMs,
+        remaining,
+      );
+      const resumeAt = new Date((deps.clock?.() ?? Date.now()) + delay);
+      const waitNote =
+        `usage limit reached — waiting ${formatDelay(delay)} (until ~${resumeAt.toISOString()}) ` +
+        `for the usage window to reset, then retrying automatically`;
+      await append({
+        type: 'worker.retry',
+        actor: workerActor,
+        subject: { kind: 'ticket', id: ticketId },
+        severity: 'warn',
+        payload: { attempt: attempt + 1, reason: `${result.error.kind}: ${waitNote}` },
+      });
+      await emitTicketState('retrying', waitNote);
+      await sleepAbortable(delay, params.signal);
+      usageWaitedMs += delay;
+      continue;
+    }
+
+    // Terminal failure (non-retryable, or retry/wait budget exhausted).
+    const budgetNote =
+      isWaitableAdapterError(result.error) && usageWaitedMs >= usageWait.maxTotalWaitMs
+        ? ` (waited ${formatDelay(usageWaitedMs)} for a usage-window reset without recovery)`
+        : '';
     await append({
       type: 'worker.failed',
       actor: workerActor,
       subject: { kind: 'ticket', id: ticketId },
       severity: 'error',
-      payload: { reason: `${result.error.kind}: ${result.error.message}` },
+      payload: { reason: `${result.error.kind}: ${result.error.message}${budgetNote}` },
     });
-    await emitTicketState('failed', result.error.message);
+    await emitTicketState('failed', `${result.error.message}${budgetNote}`);
     return { ticketId, outcome: 'failed', attempts, result, error: result.error, nested };
   }
 
@@ -309,6 +375,20 @@ function makeCancelled(signal: AbortSignal): AdapterError {
   return normalizeAdapterError(
     Object.assign(new Error(reason ?? 'Worker cancelled.'), { name: 'AbortError' }),
   );
+}
+
+/** Human-facing duration for wait notes: "45s", "15m", "1h30m". */
+function formatDelay(ms: number): string {
+  const totalMinutes = Math.round(ms / 60_000);
+  if (totalMinutes < 1) {
+    return `${Math.max(1, Math.round(ms / 1_000))}s`;
+  }
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours === 0) {
+    return `${minutes}m`;
+  }
+  return minutes === 0 ? `${hours}h` : `${hours}h${minutes}m`;
 }
 
 function truncate(text: string, max = 200): string | undefined {

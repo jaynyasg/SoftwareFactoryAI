@@ -39,7 +39,12 @@ export function RunDetail({
           <Link className="btn btn--sm" href={`/operator?runId=${encodeURIComponent(runId)}`}>
             Status view
           </Link>
-          {execution.enabled && execution.held ? (
+          {execution.enabled &&
+          execution.held &&
+          snapshot.run.executionState !== 'started' &&
+          snapshot.run.executionState !== 'completed' ? (
+            // Explicitly-started runs bypass the boot drain gate, so once THIS
+            // run is executing (or done) the factory-wide badge is noise here.
             <span className="badge sev-warn" data-testid="factory-held-badge">
               factory execution held
             </span>

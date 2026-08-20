@@ -36,6 +36,7 @@ import { computeEffectiveCapacity, type CapacityConstraintName, MAX_WORKER_CAP }
 import { conflicts, createWriteScopeTracker, type WriteScope } from './write-scope';
 import { createCancellation, type CancellationScope } from './cancellation';
 import { runTicket } from './worker-runner';
+import type { UsageWaitPolicy } from './worker-runner';
 import type { TicketRunner } from './gated-ticket-runner';
 
 /** A schedulable ticket: a DAG node carrying everything needed to run it. */
@@ -62,6 +63,8 @@ export interface SchedulerConfig {
   readonly maxAttempts?: number;
   /** Soft per-task timeout (ms), forwarded to the adapter. */
   readonly timeoutMs?: number;
+  /** Usage-window wait tuning (forwarded to `runTicket`). */
+  readonly usageWait?: UsageWaitPolicy;
   /** Explicit model override forwarded to every ticket (absent = adapter default). */
   readonly model?: string;
   /** Caller agent family, for nested-agent metadata. */
@@ -288,6 +291,7 @@ export async function runScheduler<TNode extends ScheduleNode = ScheduleNode>(
         callerFamily: node.callerFamily ?? config.callerFamily,
         maxAttempts: config.maxAttempts,
         timeoutMs: config.timeoutMs,
+        usageWait: config.usageWait,
       },
       { store, adapter: adapterForNode, clock },
     )

@@ -87,6 +87,11 @@ export interface StartRunInput {
   readonly reasoningEffort?: string;
   readonly requestedWorkerCap?: number;
   readonly reviewMode?: ReviewMode;
+  /**
+   * Run mode. The Factory Floor sends `plan-and-start` so one "Start run"
+   * click plans AND begins execution; omitted = the server's plan-only default.
+   */
+  readonly mode?: 'plan-only' | 'plan-and-start' | 'research-and-plan' | 'research-plan-and-start';
 }
 
 export interface StartRunResult {

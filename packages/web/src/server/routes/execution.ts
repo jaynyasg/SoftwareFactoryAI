@@ -205,6 +205,11 @@ export async function requestExecutionStart(
     }
   }
 
+  // Every path into this function is an explicit authenticated operator
+  // command (create-with-start-mode, per-run Start, or Retry), so the boot
+  // drain gate must not demand a second confirmation for THIS run. Leftover
+  // work queued before this process booted stays behind the gate.
+  daemon.allowRunWhileHeld(runId);
   daemon.notify();
 
   const finalJob = projectExecutionQueue(finalEvents, runId).byJobId[executionJobId(runId)];
@@ -569,6 +574,9 @@ async function holdAllExecution(ctx: RouteContext): Promise<ApiResponse> {
     return EXECUTION_DISABLED;
   }
   if (daemon.held) {
+    // Converge on "everything held": even an already-engaged gate re-holds so
+    // per-run start grants issued since boot are revoked (hold() clears them).
+    daemon.hold();
     return { status: 200, body: { alreadyHeld: true, held: true, running: daemon.running } };
   }
   daemon.hold();

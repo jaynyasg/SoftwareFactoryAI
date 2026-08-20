@@ -5,7 +5,7 @@
  * Surface:
  *   software-factory start    [--port <n>] [--no-spawn] [--base-url <url>] [--json]
  *   software-factory run      <prompt> | --prd <path> | --request <json> | --request-file <path>
- *                             [--mode plan-only|research-and-plan|research-plan-and-start]
+ *                             [--mode plan-only|plan-and-start|research-and-plan|research-plan-and-start]
  *                             [--review-mode human|autonomous] [--worker-cap <1-20>]
  *                             [--title <t>] [--caller-family claude|codex|api]
  *                             [--no-follow] [--json]
@@ -204,12 +204,14 @@ const HELP = `software-factory — local-first software factory CLI
 Usage:
   software-factory start     [--port <n>] [--no-spawn] [--base-url <url>] [--json]
   software-factory run       <prompt> | --prd <path> | --request <json> | --request-file <path>
-                             [--mode plan-only|research-and-plan|research-plan-and-start]
+                             [--mode plan-only|plan-and-start|research-and-plan|research-plan-and-start]
                              [--review-mode human|autonomous] [--worker-cap <1-20>]
                              [--title <t>] [--caller-family claude|codex|api] [--no-follow] [--json]
 
 Run modes:
   plan-only                (default) blueprint only — research/execution do not run
+  plan-and-start           plan (no research), then the start request is preflighted
+                           and enqueued immediately — one command to running workers
   research-and-plan        bounded research runs first; the enriched brief feeds
                            planning and a build contract is generated
   research-plan-and-start  as above, plus the start request is recorded and, when

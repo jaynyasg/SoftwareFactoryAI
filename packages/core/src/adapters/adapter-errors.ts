@@ -4,8 +4,11 @@
  * Every adapter (local CLI, hosted API, or a fake in tests) funnels its raw
  * spawn/exec/transport failures through `normalizeAdapterError` so the worker
  * runner and scheduler only ever see ONE closed set of failure kinds. The kinds
- * are split into a retryable class (transient — a bounded retry may succeed) and
- * a terminal class (a retry cannot help; surface to the operator or stop).
+ * are split into a retryable class (transient — a bounded retry may succeed),
+ * a waitable class (a plan/usage window is exhausted — retrying only helps
+ * AFTER the window resets, so the runner waits instead of burning its bounded
+ * retry budget), and a terminal class (no retry can help; surface to the
+ * operator or stop).
  *
  * `AdapterError` is a class (so it can be thrown / `instanceof`-checked) whose
  * `kind` field is the discriminant — `switch (error.kind)` narrows exhaustively.
@@ -29,16 +32,23 @@ export const RETRYABLE_ADAPTER_ERROR_KINDS: readonly AdapterErrorKind[] = [
   'malformed_output',
 ];
 
-/** Kinds that a retry cannot fix (setup, policy, quota, or intentional stop). */
+/**
+ * Kinds where an immediate retry cannot help but WAITING can: the plan/usage
+ * window is exhausted and retrying after it resets may succeed. The worker
+ * runner sleeps (`retryAfterMs` hint or a poll cadence) instead of failing.
+ */
+export const WAITABLE_ADAPTER_ERROR_KINDS: readonly AdapterErrorKind[] = ['usage_limited'];
+
+/** Kinds that no retry (immediate or delayed) can fix (setup, policy, or stop). */
 export const TERMINAL_ADAPTER_ERROR_KINDS: readonly AdapterErrorKind[] = [
   'unavailable',
   'unauthenticated',
-  'usage_limited',
   'tool_denied',
   'cancelled',
 ];
 
 const RETRYABLE = new Set<AdapterErrorKind>(RETRYABLE_ADAPTER_ERROR_KINDS);
+const WAITABLE = new Set<AdapterErrorKind>(WAITABLE_ADAPTER_ERROR_KINDS);
 
 /** Optional structured detail attached to a normalized error. */
 export interface AdapterErrorOptions {
@@ -116,9 +126,15 @@ export function isRetryableAdapterError(error: AdapterError | AdapterErrorKind):
   return RETRYABLE.has(kind);
 }
 
-/** Whether this error/kind is terminal (a retry cannot help). */
+/** Whether waiting for a usage/plan window to reset may recover this error/kind. */
+export function isWaitableAdapterError(error: AdapterError | AdapterErrorKind): boolean {
+  const kind = typeof error === 'string' ? error : error.kind;
+  return WAITABLE.has(kind);
+}
+
+/** Whether this error/kind is terminal (neither retrying nor waiting can help). */
 export function isTerminalAdapterError(error: AdapterError | AdapterErrorKind): boolean {
-  return !isRetryableAdapterError(error);
+  return !isRetryableAdapterError(error) && !isWaitableAdapterError(error);
 }
 
 /** Whether this error represents an intentional cancellation (not a fault). */
@@ -164,7 +180,8 @@ function messageOf(value: unknown): string {
 const TEXT_RULES: readonly { readonly pattern: RegExp; readonly kind: AdapterErrorKind }[] = [
   { pattern: /\b(rate[\s-]?limit|too many requests|429)\b/i, kind: 'rate_limited' },
   {
-    pattern: /\b(usage limit|quota|insufficient_quota|out of credits?|billing)\b/i,
+    pattern:
+      /\b(usage limit|quota|insufficient_quota|out of credits?|billing|(?:\d+[\s-]hour|hourly|daily|weekly|monthly) limit (?:reached|exceeded)|usage cap)\b/i,
     kind: 'usage_limited',
   },
   {
@@ -184,6 +201,88 @@ const TEXT_RULES: readonly { readonly pattern: RegExp; readonly kind: AdapterErr
     kind: 'malformed_output',
   },
 ];
+
+const MS_PER_UNIT: Readonly<Record<string, number>> = {
+  s: 1_000,
+  sec: 1_000,
+  second: 1_000,
+  seconds: 1_000,
+  m: 60_000,
+  min: 60_000,
+  minute: 60_000,
+  minutes: 60_000,
+  h: 3_600_000,
+  hr: 3_600_000,
+  hrs: 3_600_000,
+  hour: 3_600_000,
+  hours: 3_600_000,
+};
+
+/**
+ * Best-effort extraction of "when does the limit reset" from a CLI failure
+ * message, as a delay in ms from `now`. Recognized shapes (all real Claude
+ * Code / Codex CLI wordings):
+ *  - `usage limit reached|1735689600`      — trailing unix epoch (s or ms)
+ *  - `retry after 90` / `retry-after: 90`  — seconds
+ *  - `try again in 2 hours` / `resets in 45 minutes` / `available in 1h 30m`
+ *  - `resets at 3pm` / `will reset at 10:30am` — next local wall-clock match
+ * Returns undefined when nothing parses; callers clamp whatever comes back, so
+ * a weird hint can never produce a negative or unbounded sleep.
+ */
+export function parseRetryDelayMs(message: string, now: number = Date.now()): number | undefined {
+  const epoch = /(?:limit reached|resets?)[^0-9]{0,4}\|?\s*(\d{10,13})\b/i.exec(message);
+  if (epoch !== null) {
+    const raw = Number(epoch[1]);
+    const resetAt = epoch[1].length >= 13 ? raw : raw * 1_000;
+    const delay = resetAt - now;
+    return delay > 0 ? delay : undefined;
+  }
+
+  const retryAfter = /\bretry[-\s]?after[:=]?\s*(\d+)\b/i.exec(message);
+  if (retryAfter !== null) {
+    return Number(retryAfter[1]) * 1_000;
+  }
+
+  const duration =
+    /\b(?:try again|retry|resets?|available|back)\s+(?:in|after)\s+~?(\d+(?:\.\d+)?)\s*(seconds?|sec|s|minutes?|min|m|hours?|hrs?|h)\b(?:\s*(?:and\s+)?(\d+)\s*(minutes?|min|m)\b)?/i.exec(
+      message,
+    );
+  if (duration !== null) {
+    const primary = Number(duration[1]) * (MS_PER_UNIT[duration[2].toLowerCase()] ?? 0);
+    const secondary =
+      duration[3] !== undefined ? Number(duration[3]) * MS_PER_UNIT.m : 0;
+    const total = primary + secondary;
+    return total > 0 ? total : undefined;
+  }
+
+  const wallClock = /\b(?:resets?|reset)\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i.exec(
+    message,
+  );
+  if (wallClock !== null && (wallClock[2] !== undefined || wallClock[3] !== undefined)) {
+    let hour = Number(wallClock[1]);
+    const minute = wallClock[2] !== undefined ? Number(wallClock[2]) : 0;
+    const meridiem = wallClock[3]?.toLowerCase();
+    if (hour > 23 || minute > 59) {
+      return undefined;
+    }
+    if (meridiem === 'pm' && hour < 12) {
+      hour += 12;
+    } else if (meridiem === 'am' && hour === 12) {
+      hour = 0;
+    }
+    // Local server time is the only clock we have; the message's timezone (if
+    // any) is unknowable here, so this is a heuristic the caller's clamp bounds.
+    const candidate = new Date(now);
+    candidate.setHours(hour, minute, 0, 0);
+    let delay = candidate.getTime() - now;
+    if (delay <= 0) {
+      delay += 24 * 3_600_000;
+    }
+    return delay;
+  }
+
+  return undefined;
+}
 
 /**
  * Map any raw spawn/exec/transport failure to a normalized `AdapterError`.
@@ -225,6 +324,18 @@ export function normalizeAdapterError(
 
   for (const rule of TEXT_RULES) {
     if (rule.pattern.test(message)) {
+      // Rate/usage-limit messages often carry a reset hint ("resets at 3pm",
+      // a trailing epoch); surface it as `retryAfterMs` so the worker runner
+      // can wait exactly as long as the provider asked, not a blind backoff.
+      if (
+        merged.retryAfterMs === undefined &&
+        (rule.kind === 'rate_limited' || rule.kind === 'usage_limited')
+      ) {
+        const hint = parseRetryDelayMs(message);
+        if (hint !== undefined) {
+          return new AdapterError(rule.kind, message, { ...merged, retryAfterMs: hint });
+        }
+      }
       return new AdapterError(rule.kind, message, merged);
     }
   }

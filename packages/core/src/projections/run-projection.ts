@@ -9,7 +9,12 @@
  *  - surface explicit diagnostics for gaps / corrupt / unknown events rather
  *    than throwing.
  */
-import { compareEventsBySequence, isFactoryEvent, isKnownEventType } from '../events/event-types';
+import {
+  compareEventsBySequence,
+  isFactoryEvent,
+  isKnownEventType,
+  runModeRequestsStart,
+} from '../events/event-types';
 import type {
   CallerFamily,
   ContractGeneratedPayload,
@@ -511,7 +516,7 @@ export function projectRun(raw: readonly unknown[], runId?: string): RunProjecti
     executionState = executionFold;
   } else if (startedAt !== undefined) {
     executionState = 'started';
-  } else if (mode === 'research-plan-and-start') {
+  } else if (mode !== undefined && runModeRequestsStart(mode)) {
     executionState = status === 'failed' || status === 'cancelled' ? 'unavailable' : 'pending';
   }
 

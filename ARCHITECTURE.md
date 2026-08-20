@@ -288,11 +288,15 @@ from the route factories and fails when a route ships without an Action
 operation + MCP tool (or an explicit written exclusion).
 
 Factory-wide execution gate: the execution daemon boots HELD by default —
-opening the factory (any server entry point) never starts queued work
-automatically. `GET /api/execution` reports the gate plus cross-run job
-counts, `POST /api/execution/resume` releases it for the life of the process,
-and `POST /api/execution/hold` re-engages it. The gate is deliberately
-process-local (not a ledger event): every fresh process starts held again.
+opening the factory (any server entry point) never starts LEFTOVER queued work
+automatically. Runs an operator explicitly starts (the Factory Floor "Start
+run" with mode `plan-and-start`, `POST /api/runs/:id/start`, or `:id/retry`)
+bypass the gate for that run only: an attended start command IS the consent
+the gate exists to collect. `GET /api/execution` reports the gate plus
+cross-run job counts, `POST /api/execution/resume` releases it for the life of
+the process, and `POST /api/execution/hold` re-engages it (revoking earlier
+per-run grants). The gate and its grants are deliberately process-local (not
+ledger events): every fresh process starts held again with no grants.
 `SF_EXEC_AUTOSTART=1` opts a deployment back into drain-on-start (e.g. an
 unattended hosted worker). `POST /api/runs/cancel-all` is the matching
 "cancel all tasks" control: it cancels every cancellable run and propagates

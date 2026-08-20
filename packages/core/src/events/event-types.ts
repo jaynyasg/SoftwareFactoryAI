@@ -87,6 +87,10 @@ export type CallerFamily = 'claude' | 'codex' | 'api';
 /**
  * How far a run is allowed to progress at creation time (full-factory U3):
  *  - `plan-only`               — current V1 behavior: blueprint (ticket DAG) only.
+ *  - `plan-and-start`          — plan (no research pass), then a recorded
+ *                                request to start execution: one operator
+ *                                action carries the run from prompt to running
+ *                                workers. This is the web UI's "Start run".
  *  - `research-and-plan`       — bounded research runs BEFORE planning; the
  *                                enriched brief feeds the supervisor planner and
  *                                a build contract is generated after planning.
@@ -96,8 +100,24 @@ export type CallerFamily = 'claude' | 'codex' | 'api';
  *                                projects an explicit execution-pending state
  *                                rather than pretending to start.
  */
-export const RUN_MODES = ['plan-only', 'research-and-plan', 'research-plan-and-start'] as const;
+export const RUN_MODES = [
+  'plan-only',
+  'plan-and-start',
+  'research-and-plan',
+  'research-plan-and-start',
+] as const;
 export type RunMode = (typeof RUN_MODES)[number];
+
+/** Modes that carry a recorded request to start execution after planning. */
+export const START_REQUESTING_RUN_MODES: readonly RunMode[] = [
+  'plan-and-start',
+  'research-plan-and-start',
+];
+
+/** Whether this mode asks execution to start once planning succeeds. */
+export function runModeRequestsStart(mode: RunMode): boolean {
+  return START_REQUESTING_RUN_MODES.includes(mode);
+}
 
 /** The default run mode: planning-only stays the safe V1 default. */
 export const DEFAULT_RUN_MODE: RunMode = 'plan-only';

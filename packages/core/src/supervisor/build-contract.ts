@@ -18,6 +18,7 @@
 import type { RunProjection } from '../projections/run-projection';
 import type { TicketProjection, TicketView } from '../projections/ticket-projection';
 import type { ResearchProjection } from '../research/research-projection';
+import { runModeRequestsStart } from '../events/event-types';
 import type { ContractGeneratedPayload, RunMode } from '../events/event-types';
 import type { AppendResult } from '../events/event-store';
 import type { PlanEventSink } from './planner';
@@ -131,12 +132,12 @@ function operatorApprovalsFor(
       );
     }
   }
-  if (run.mode === 'research-plan-and-start') {
+  if (run.mode !== undefined && runModeRequestsStart(run.mode)) {
     // U5: the run mode IS the durable operator start request. Execution still
     // requires the dry-run preflight rehearsal (X2) to pass before the queue
     // accepts the work, so the contract records that condition explicitly.
     approvals.push(
-      'Operator start approval: start request recorded (mode research-plan-and-start); execution proceeds once the dry-run preflight passes.',
+      `Operator start approval: start request recorded (mode ${run.mode}); execution proceeds once the dry-run preflight passes.`,
     );
   }
   return approvals;

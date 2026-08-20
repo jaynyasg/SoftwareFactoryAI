@@ -98,6 +98,10 @@ export function RunControl({
   const modelOptions = MODELS_BY_ADAPTER[adapter] ?? MODELS_BY_ADAPTER[ADAPTERS[0].id];
   const [effort, setEffort] = useState<(typeof EFFORTS)[number]>('extra high');
   const [reviewMode, setReviewMode] = useState<ReviewMode>('human');
+  // Default is plan AND start: one "Start run" click carries the run to
+  // executing workers. Checking "Plan only" restores the review-first flow
+  // (blueprint now, execution via the run page's Start button later).
+  const [planOnly, setPlanOnly] = useState(false);
   const [workerCap, setWorkerCap] = useState(10);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -158,17 +162,40 @@ export function RunControl({
     setBusy(true);
     setError(null);
     try {
+      // Validate the folder at Start, with the SAME policy the materializer
+      // enforces: the picker's boundary warning lives inside a closed panel,
+      // and a run created past it only fails minutes later at preflight —
+      // with the build landing in a fresh generated workspace instead of the
+      // operator's folder (the GauntLearning run).
+      const folder = localFolder.trim();
+      if (folder.length > 0) {
+        const probe = await browseLocalFolders(session, folder);
+        if (!probe.ok) {
+          setError(probe.message ?? `Local folder "${folder}" is not readable (${probe.error}).`);
+          return;
+        }
+        if (!probe.data.withinBoundary) {
+          const boundary = probe.data.boundaryRoot !== null ? ` (${probe.data.boundaryRoot})` : '';
+          setError(
+            `Local folder "${folder}" is outside the approved workspace boundary${boundary}. ` +
+              'Set SF_WORKSPACE_BOUNDARY or SF_WORKSPACE_APPROVED_FOLDERS to admit it, ' +
+              'restart the server, then start the run.',
+          );
+          return;
+        }
+      }
       const result = await startRun(session, {
         prompt: prompt.trim() || undefined,
         prdRef: prdRef.trim() || undefined,
         prdText: prdText.trim() || undefined,
-        localFolder: localFolder.trim() || undefined,
+        localFolder: folder || undefined,
         githubRepo: githubRepo.trim() || undefined,
         selectedAdapter: adapter,
         modelProfile: model,
         reasoningEffort: effort,
         requestedWorkerCap: workerCap,
         reviewMode,
+        mode: planOnly ? 'plan-only' : 'plan-and-start',
       });
       if (result.ok) {
         setPrompt('');
@@ -480,10 +507,19 @@ export function RunControl({
           </div>
         ) : null}
 
-        <div className="row">
+        <div className="row" style={{ justifyContent: 'space-between' }}>
           <button type="submit" className="btn btn--primary" disabled={!canStart}>
-            {busy ? 'Working…' : 'Start run'}
+            {busy ? 'Working…' : planOnly ? 'Plan run' : 'Start run'}
           </button>
+          <label className="field__label" htmlFor={`${fieldId}-plan-only`}>
+            <input
+              id={`${fieldId}-plan-only`}
+              type="checkbox"
+              checked={planOnly}
+              onChange={(e) => setPlanOnly(e.target.checked)}
+            />{' '}
+            Plan only (review the blueprint before execution starts)
+          </label>
         </div>
       </form>
     </section>

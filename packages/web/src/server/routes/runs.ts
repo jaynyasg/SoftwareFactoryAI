@@ -31,6 +31,9 @@
  *
  * Run modes (full-factory U3):
  *   - `plan-only` (DEFAULT)        — identical to the V1 flow: create + plan.
+ *   - `plan-and-start`             — create + plan, then the start request is
+ *     consumed immediately (no research pass): one operator action carries the
+ *     run from prompt to execution. This is what the web UI's "Start run" sends.
  *   - `research-and-plan`          — bounded research runs BEFORE planning; the
  *     enriched brief feeds the planner and a build contract is generated.
  *   - `research-plan-and-start`    — as above, plus the start request is
@@ -53,6 +56,7 @@ import {
   projectResearch,
   projectRun,
   researchPlanContext,
+  runModeRequestsStart,
 } from '@software-factory/core';
 import type {
   AppendableEvent,
@@ -81,6 +85,47 @@ import { guardRunCommand, notFound, refreshBuildContract } from './shared';
 
 function callerFamily(value: unknown): CallerFamily | undefined {
   return value === 'claude' || value === 'codex' || value === 'api' ? value : undefined;
+}
+
+/** Modes that run the bounded research pass before planning. */
+function runModeWantsResearch(mode: RunMode): boolean {
+  return mode === 'research-and-plan' || mode === 'research-plan-and-start';
+}
+
+/**
+ * Consume a recorded start request (modes `plan-and-start` and
+ * `research-plan-and-start`): preflight + enqueue when THIS instance has an
+ * execution daemon, otherwise record an explicit, idempotent
+ * "execution deferred" decision — never a fake `run.started`.
+ */
+async function consumeStartRequest(ctx: RouteContext, runId: string, mode: RunMode): Promise<void> {
+  if (ctx.executionDaemon === null) {
+    await ctx.writer.append({
+      runId,
+      type: 'supervisor.decision',
+      actor: { kind: 'supervisor', id: 'supervisor' },
+      subject: { kind: 'run', id: runId },
+      severity: 'warn',
+      idempotencyKey: `${runId}:supervisor.decision:defer-execution`,
+      payload: {
+        decision: 'defer-execution',
+        rationale:
+          `Start was requested (mode ${mode}), but execution controls are ` +
+          'not available on this instance. The start request is recorded on the run; ' +
+          'execution stays pending until an execution daemon acts on it.',
+        confidence: 1,
+      },
+    });
+    return;
+  }
+  // U5: consume the recorded start request — preflight, then enqueue.
+  // Idempotent on re-create: an already-active job is returned, not
+  // re-enqueued; a failed preflight records blocked state plus
+  // interventions instead of partial worker execution.
+  await requestExecutionStart(ctx, runId, {
+    command: 'start',
+    reason: `run mode ${mode}`,
+  });
 }
 
 /** Explicit "start requested but not possible HERE" block for API responses. */
@@ -168,7 +213,7 @@ async function createRun(ctx: RouteContext): Promise<ApiResponse> {
     };
   }
   const mode: RunMode = isRunMode(rawMode) ? rawMode : DEFAULT_RUN_MODE;
-  const wantsResearch = mode !== 'plan-only';
+  const wantsResearch = runModeWantsResearch(mode);
 
   const candidateRunId = ctx.idGenerator();
   const denial = await ctx.guardMutation({
@@ -227,7 +272,8 @@ async function createRun(ctx: RouteContext): Promise<ApiResponse> {
     result.deduplicated && result.event.type === 'run.created'
       ? (result.event.payload.mode ?? DEFAULT_RUN_MODE)
       : mode;
-  const effectiveWantsResearch = effectiveMode !== 'plan-only';
+  const effectiveWantsResearch = runModeWantsResearch(effectiveMode);
+  const effectiveWantsStart = runModeRequestsStart(effectiveMode);
 
   // Research runs BEFORE planning for research-enabled modes, so research
   // events always precede supervisor/ticket events on the ledger. On a dedup
@@ -287,38 +333,14 @@ async function createRun(ctx: RouteContext): Promise<ApiResponse> {
   // Plan-only runs stay byte-identical to the V1 ledger shape (no contract).
   if (effectiveWantsResearch) {
     const planned = await refreshBuildContract(ctx, runId);
-    if (planned && effectiveMode === 'research-plan-and-start') {
-      if (ctx.executionDaemon === null) {
-        // Execution controls are disabled on THIS instance. Record an
-        // explicit, idempotent "execution deferred" decision so the pending
-        // state is on the ledger — never a fake `run.started`.
-        await ctx.writer.append({
-          runId,
-          type: 'supervisor.decision',
-          actor: { kind: 'supervisor', id: 'supervisor' },
-          subject: { kind: 'run', id: runId },
-          severity: 'warn',
-          idempotencyKey: `${runId}:supervisor.decision:defer-execution`,
-          payload: {
-            decision: 'defer-execution',
-            rationale:
-              'Start was requested (mode research-plan-and-start), but execution controls are ' +
-              'not available on this instance. The start request is recorded on the run; ' +
-              'execution stays pending until an execution daemon acts on it.',
-            confidence: 1,
-          },
-        });
-      } else {
-        // U5: consume the recorded start request — preflight, then enqueue.
-        // Idempotent on re-create: an already-active job is returned, not
-        // re-enqueued; a failed preflight records blocked state plus
-        // interventions instead of partial worker execution.
-        await requestExecutionStart(ctx, runId, {
-          command: 'start',
-          reason: 'run mode research-plan-and-start',
-        });
-      }
+    if (planned && effectiveWantsStart) {
+      await consumeStartRequest(ctx, runId, effectiveMode);
     }
+  } else if (effectiveWantsStart) {
+    // `plan-and-start`: no research pass, so no contract to refresh here —
+    // `requestExecutionStart` derives and records the build contract itself
+    // right before the preflight, exactly like a manual per-run Start.
+    await consumeStartRequest(ctx, runId, effectiveMode);
   }
 
   const finalEvents = await ctx.reader.readRun(runId);
@@ -330,7 +352,7 @@ async function createRun(ctx: RouteContext): Promise<ApiResponse> {
       deduplicated: result.deduplicated,
       run: finalRun,
       ...(effectiveWantsResearch ? { research: projectResearch(finalEvents, runId) } : {}),
-      ...(effectiveMode === 'research-plan-and-start'
+      ...(effectiveWantsStart
         ? {
             execution:
               ctx.executionDaemon === null

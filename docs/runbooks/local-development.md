@@ -54,10 +54,12 @@ skill wrappers can target a cloud backend with `SF_BASE_URL` and
 | `pnpm dev`                                  | Start the Factory Floor web/API locally            |
 | `pnpm --filter @software-factory/core test` | Run one package's tests                            |
 
-Note: the execution daemon boots with execution **held** locally too — queued
-runs wait until you click **Resume execution** in the Factory Floor banner, and
-every server restart re-holds. Set `SF_EXEC_AUTOSTART=1` in your local env to
-restore drain-on-start.
+Note: the execution daemon boots with execution **held** locally too — but the
+gate only applies to LEFTOVER work queued before this process started. Runs
+you explicitly start ("Start run" on the Factory Floor, or a run page Start /
+Retry) execute immediately; work left queued across a restart waits until you
+click **Resume execution** in the Factory Floor banner. Set
+`SF_EXEC_AUTOSTART=1` in your local env to restore full drain-on-start.
 
 ## Module resolution (how the monorepo wires together)
 

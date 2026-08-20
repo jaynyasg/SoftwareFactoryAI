@@ -48,9 +48,9 @@ const TOOLS: readonly McpTool[] = [
         title: { type: 'string' },
         mode: {
           type: 'string',
-          enum: ['plan-only', 'research-and-plan', 'research-plan-and-start'],
+          enum: ['plan-only', 'plan-and-start', 'research-and-plan', 'research-plan-and-start'],
           description:
-            'plan-only (default) creates the blueprint; research-and-plan runs bounded research first; research-plan-and-start also records a start request that is preflighted and enqueued for the execution daemon.',
+            'plan-only (default) creates the blueprint; plan-and-start plans then immediately preflights and enqueues execution (no research); research-and-plan runs bounded research first; research-plan-and-start also records a start request that is preflighted and enqueued for the execution daemon.',
         },
         reviewMode: { type: 'string', enum: ['human', 'autonomous'] },
         requestedWorkerCap: { type: 'integer', minimum: 1, maximum: 20, default: 10 },
