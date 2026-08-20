@@ -155,7 +155,7 @@ export function createRuntimeWorkspacePublisher(
       dest: workspace.checkoutPath,
       remoteUrl: gitHubRemoteUrl(owner, repo),
       branch: workspace.branch,
-      message: `Software Factory: publish run ${runId} deliverable`,
+      message: `A$APWAIRE: publish run ${runId} deliverable`,
     });
 
     await store.append({

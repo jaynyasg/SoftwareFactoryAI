@@ -1,6 +1,6 @@
-# Software Factory AI
+# A$APWAIRE
 
-Software Factory AI is a local-first, cloud-capable factory for turning a prompt
+A$APWAIRE (formerly Software Factory AI) is a local-first, cloud-capable factory for turning a prompt
 or PRD into a ledgered software build run. It plans a ticket DAG, records every
 supervisor/worker/gate/deploy event in an append-only ledger, exposes the run in
 the Factory Floor UI, and can be called from the browser, CLI, API, Claude skill,

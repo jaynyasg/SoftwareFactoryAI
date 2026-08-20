@@ -38,7 +38,7 @@ const TOOLS: readonly McpTool[] = [
   {
     name: 'software_factory_create_run',
     description:
-      'Create a Software Factory run from a prompt, PRD text, PRD reference, or any combination of them.',
+      'Create an A$APWAIRE run from a prompt, PRD text, PRD reference, or any combination of them.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -66,12 +66,12 @@ const TOOLS: readonly McpTool[] = [
   },
   {
     name: 'software_factory_list_runs',
-    description: 'List projected Software Factory runs, most recent first.',
+    description: 'List projected A$APWAIRE runs, most recent first.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   },
   {
     name: 'software_factory_get_run',
-    description: 'Read the projected state for one Software Factory run.',
+    description: 'Read the projected state for one A$APWAIRE run.',
     inputSchema: {
       type: 'object',
       required: ['runId'],

@@ -14,7 +14,7 @@ export function AppShell({ children }: { readonly children: ReactNode }) {
       <header className="app-header">
         <div className="app-header__brand">
           <Link href="/" className="app-header__home">
-            <h1>Software Factory</h1>
+            <h1>A$APWAIRE</h1>
           </Link>
           <span className="app-header__tag">Control Room Ledger</span>
         </div>

@@ -43,6 +43,6 @@ describe('AppShell view switcher', () => {
     );
     // The way BACK: the floor link and the brand home link both point to /.
     expect(screen.getByRole('link', { name: 'Factory floor' })).toHaveAttribute('href', '/');
-    expect(screen.getByRole('link', { name: /Software Factory/ })).toHaveAttribute('href', '/');
+    expect(screen.getByRole('link', { name: /A\$APWAIRE/ })).toHaveAttribute('href', '/');
   });
 });

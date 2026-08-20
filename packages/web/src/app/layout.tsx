@@ -4,7 +4,7 @@ import './globals.css';
 import '../styles/factory-floor.css';
 
 export const metadata = {
-  title: 'Software Factory — Control Room',
+  title: 'A$APWAIRE — Control Room',
   description: 'Local-first software factory control room (Control Room Ledger).',
 };
 
