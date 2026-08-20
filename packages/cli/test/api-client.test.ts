@@ -498,3 +498,37 @@ describe('intervention extraction', () => {
     });
   });
 });
+
+/* ----------------------------------------------------------------------------
+ * Multi-user token pass-through (U4): reads carry the SAME token slot as
+ * mutations, because multi-user factories authenticate read routes too.
+ * ------------------------------------------------------------------------- */
+
+describe('token headers on reads (multi-user U4)', () => {
+  it('GETs attach the configured token via x-operator-token (sfai_ personal tokens included)', async () => {
+    const { fetchImpl, calls } = mockFetch(() => ({
+      status: 200,
+      body: { run: { runId: 'run-1', status: 'planned' } },
+    }));
+    const client = createApiClient({
+      baseUrl: 'http://127.0.0.1:3000',
+      operatorToken: 'sfai_abc123_secret',
+      fetchImpl,
+    });
+    await client.getRun('run-1');
+    expect(calls[0].method).toBe('GET');
+    expect(calls[0].headers['x-operator-token']).toBe('sfai_abc123_secret');
+    // Reads never carry CSRF — header-token callers are CSRF-exempt anyway.
+    expect(calls[0].headers['x-csrf-token']).toBeUndefined();
+  });
+
+  it('GETs send no token header when none is configured (single-tenant read-only usage)', async () => {
+    const { fetchImpl, calls } = mockFetch(() => ({
+      status: 200,
+      body: { run: { runId: 'run-1', status: 'planned' } },
+    }));
+    const client = createApiClient({ baseUrl: 'http://127.0.0.1:3000', fetchImpl });
+    await client.getRun('run-1');
+    expect(calls[0].headers['x-operator-token']).toBeUndefined();
+  });
+});

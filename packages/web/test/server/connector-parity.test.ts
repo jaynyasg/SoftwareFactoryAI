@@ -244,7 +244,7 @@ async function listMcpToolNames(): Promise<readonly string[]> {
   };
   const response = await handleMcpRequest(
     { body: { jsonrpc: '2.0', id: 1, method: 'tools/list' }, headers: {} },
-    { app: rejectingApp, getSession: () => Promise.reject(new Error('no session needed')) },
+    { app: rejectingApp },
   );
   const body = response.body as { result: { tools: { name: string }[] } };
   return body.result.tools.map((tool) => tool.name);

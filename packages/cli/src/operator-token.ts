@@ -8,8 +8,14 @@
  * CLI picks it up with no extra setup.
  *
  * Resolution order for the token:
- *   1. `SF_OPERATOR_TOKEN` env (explicit override), else
- *   2. the shared `.factory/operator-token.json` file.
+ *   1. `SF_API_TOKEN` env — YOUR personal API token on a multi-user factory
+ *      (`sfai_…`, minted under Settings → API token; multi-user U4), else
+ *   2. `SF_OPERATOR_TOKEN` env (single-tenant explicit override), else
+ *   3. the shared `.factory/operator-token.json` file.
+ *
+ * Both env values travel through the SAME header slot (`x-operator-token` /
+ * `Authorization: Bearer`) — the server's route layer tells them apart, so
+ * existing single-tenant setups keep working with no changes.
  *
  * The `.factory` directory is resolved the same way the web server resolves it:
  *   1. `SF_FACTORY_DIR` env (explicit override), else
@@ -21,6 +27,8 @@ import { dirname, join } from 'node:path';
 import { createFileOperatorTokenStore } from '@software-factory/core';
 
 export interface OperatorTokenEnv {
+  /** Personal API token (`sfai_…`) for multi-user factories — wins over all. */
+  readonly SF_API_TOKEN?: string;
   readonly SF_OPERATOR_TOKEN?: string;
   readonly SF_FACTORY_DIR?: string;
 }
@@ -58,14 +66,19 @@ export interface LoadOperatorTokenOptions {
 }
 
 /**
- * Load the operator token: the `SF_OPERATOR_TOKEN` override wins, otherwise the
- * shared file store is read. Returns `null` when no token exists yet (the caller
- * decides whether that blocks the requested command).
+ * Load the caller's credential: `SF_API_TOKEN` (personal, multi-user) wins,
+ * then the `SF_OPERATOR_TOKEN` override, then the shared file store. Returns
+ * `null` when no token exists yet (the caller decides whether that blocks the
+ * requested command).
  */
 export async function loadOperatorToken(
   options: LoadOperatorTokenOptions = {},
 ): Promise<string | null> {
   const env = options.env ?? process.env;
+  const personal = env.SF_API_TOKEN;
+  if (personal !== undefined && personal.length > 0) {
+    return personal;
+  }
   const fromEnv = env.SF_OPERATOR_TOKEN;
   if (fromEnv !== undefined && fromEnv.length > 0) {
     return fromEnv;

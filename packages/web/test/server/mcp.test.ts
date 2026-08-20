@@ -1,10 +1,17 @@
 /**
- * Remote MCP bridge contract tests (full-factory U5 + U10).
+ * Remote MCP bridge contract tests (full-factory U5 + U10, multi-user U4).
  *
  * MCP tool shapes are a CONTRACT for hosted web-model callers (Claude.com,
  * ChatGPT.com). These tests pin:
  *   - the complete lifecycle tool list,
- *   - auth (operator bearer token) before any side effects,
+ *   - PURE PASS-THROUGH auth (U4): the bridge verifies nothing and injects no
+ *     server credentials — the caller's own token is forwarded verbatim and
+ *     route-layer 401/403 answers surface as JSON-RPC auth errors,
+ *   - single-tenant regression: legacy operator-token mutations still succeed
+ *     with NO bridge-injected CSRF (bearer callers are CSRF-exempt),
+ *   - multi-user: personal sfai_ tokens act as their user (owned runs,
+ *     owner-scoped visibility); revoked/legacy tokens fail with the
+ *     route-layer message,
  *   - command-guard/stale-version behavior surfacing through tools,
  *   - idempotent repeats (start/research/resolve return existing state),
  *   - concise run summaries (no full event dumps) plus links/ids for detail,
@@ -32,7 +39,7 @@ import { handleMcpRequest } from '../../src/server/mcp';
 import { resolveRuntimeConfig } from '../../src/server/runtime';
 import type { RuntimeConfig } from '../../src/server/runtime';
 import { testRuntimeConfig } from '../_helpers/runtime';
-import type { LocalSession } from '../../src/lib/session';
+import { createAuthService, createInMemoryAuthStores } from '../../src/server/auth/service';
 
 const TOKEN = 'mcp-operator-token';
 const CSRF = 'mcp-csrf-token';
@@ -131,7 +138,6 @@ function stubResearcher(): RunResearcher {
 interface McpTestContext {
   readonly app: App;
   readonly store: EventStore;
-  readonly session: LocalSession;
 }
 
 /**
@@ -236,19 +242,18 @@ function makeMcp(
     // real CLI setup probing (covered by execution-worker tests).
     adapterCatalog: createAdapterCatalog([readyFakeAdapter()]),
   });
-  return { app, store, session: { operatorToken: TOKEN, csrfToken: CSRF } };
+  return { app, store };
 }
 
-function mcpDeps(ctx: McpTestContext): {
-  app: App;
-  getSession: () => Promise<LocalSession>;
-} {
-  return { app: ctx.app, getSession: () => Promise.resolve(ctx.session) };
+function mcpDeps(ctx: McpTestContext): { app: App } {
+  return { app: ctx.app };
 }
 
 interface ToolCallResult {
   readonly isError?: boolean;
   readonly body: Record<string, unknown>;
+  /** Present when the route refused the caller's credentials (JSON-RPC error). */
+  readonly rpcError?: { code: number; message: string; data?: unknown };
 }
 
 async function callTool(
@@ -265,10 +270,22 @@ async function callTool(
     mcpDeps(ctx),
   );
   expect(res.status).toBe(200);
-  const rpc = res.body as { result: { isError?: boolean; content: { text: string }[] } };
+  const envelope = res.body as {
+    result?: { isError?: boolean; content: { text: string }[] };
+    error?: { code: number; message: string; data?: unknown };
+  };
+  if (envelope.error !== undefined) {
+    // Auth refusals surface as JSON-RPC errors, never tool results (U4).
+    return {
+      isError: true,
+      body: (envelope.error.data ?? {}) as Record<string, unknown>,
+      rpcError: envelope.error,
+    };
+  }
+  const result = envelope.result as { isError?: boolean; content: { text: string }[] };
   return {
-    isError: rpc.result.isError,
-    body: JSON.parse(rpc.result.content[0].text) as Record<string, unknown>,
+    isError: result.isError,
+    body: JSON.parse(result.content[0].text) as Record<string, unknown>,
   };
 }
 
@@ -326,13 +343,29 @@ describe('remote MCP bridge', () => {
     );
   });
 
-  it('rejects tools/call with an invalid token before creating a run', async () => {
+  it('rejects tools/call with an invalid token as a JSON-RPC auth error (route-layer verdict)', async () => {
     const ctx = makeMcp();
     const res = await callTool(ctx, 'software_factory_create_run', { prompt: 'x' }, 'wrong-token');
 
     expect(res.isError).toBe(true);
-    expect(JSON.stringify(res.body)).toContain('Operator token is invalid');
-    expect(await ctx.store.listRuns()).toEqual([]);
+    // U4: the bridge verified nothing — the route's 401 surfaced as -32001.
+    expect(res.rpcError?.code).toBe(-32001);
+    expect(res.body.error).toBe('invalid_token');
+    // The refusal is AUDITED on the candidate run's stream (security.block),
+    // and no run was created.
+    const events = await ctx.store.readRun('mcp-run-1');
+    expect(events.map((event) => event.type)).toEqual(['security.block']);
+  });
+
+  it('single-tenant regression pin: legacy-token mutations succeed with NO bridge-injected CSRF', async () => {
+    // The bridge used to attach the server's CSRF token; U3 made bearer
+    // callers CSRF-exempt, so the pass-through bridge needs no CSRF at all.
+    // makeMcp configures csrfToken on the app — this run would 403 if the
+    // exemption regressed.
+    const ctx = makeMcp();
+    const res = await callTool(ctx, 'software_factory_create_run', { prompt: MARKETPLACE_PROMPT });
+    expect(res.isError).toBe(false);
+    expect(res.body.runId).toBe('mcp-run-1');
   });
 });
 
@@ -397,10 +430,13 @@ describe('MCP lifecycle commands obey the command guard', () => {
     expect(started.isError).toBe(false);
     expect(started.body.queued).toBe(true);
 
-    const before = (await ctx.store.readRun(runId)).length;
     const denied = await callTool(ctx, 'software_factory_pause_run', { runId }, 'wrong-token');
     expect(denied.isError).toBe(true);
-    expect((await ctx.store.readRun(runId)).length).toBe(before);
+    expect(denied.rpcError?.code).toBe(-32001);
+    // The refusal is audited (security.block) but has NO side effects.
+    const afterDenial = (await ctx.store.readRun(runId)).map((event) => event.type);
+    expect(afterDenial).toContain('security.block');
+    expect(afterDenial).not.toContain('execution.paused');
 
     const paused = await callTool(ctx, 'software_factory_pause_run', { runId });
     expect(paused.isError).toBe(false);
@@ -532,7 +568,8 @@ describe('MCP factory-wide execution gate tools', () => {
     const ctx = makeMcp();
     const denied = await callTool(ctx, 'software_factory_hold_execution', {}, 'wrong-token');
     expect(denied.isError).toBe(true);
-    expect(JSON.stringify(denied.body)).toContain('Operator token is invalid');
+    expect(denied.rpcError?.code).toBe(-32001);
+    expect(denied.body.error).toBe('invalid_token');
 
     const overview = await callTool(ctx, 'software_factory_get_execution_overview', {});
     expect(record(overview.body.execution).held).toBe(false);
@@ -860,5 +897,134 @@ describe('MCP setup diagnostics', () => {
     expect(raw).not.toContain(checkoutSecret);
     expect(raw).not.toContain(researchSecret);
     expect(raw).not.toContain(deploySecret);
+  });
+});
+
+/* ----------------------------------------------------------------------------
+ * Multi-user pass-through (U4): personal sfai_ tokens act as their user; the
+ * bridge injects nothing and the route layer is the single verifier.
+ * ------------------------------------------------------------------------- */
+
+describe('MCP multi-user pass-through (U4)', () => {
+  const BOOTSTRAP = 'bootstrap-invite-0123456789abcdef';
+  const PASSWORD = 'correct-horse-battery';
+
+  async function makeMultiUserMcp(): Promise<{
+    ctx: McpTestContext;
+    tokenA: string;
+    tokenB: string;
+    userAId: string;
+    userBId: string;
+    revoke: (userId: string) => Promise<void>;
+  }> {
+    const store = createInMemoryEventStore();
+    const provider = createOperatorTokenProvider({
+      store: createInMemoryOperatorTokenStore({ token: TOKEN, createdAt: 0 }),
+    });
+    const service = createAuthService({
+      stores: createInMemoryAuthStores(),
+      bootstrapInvite: BOOTSTRAP,
+    });
+    let runSeq = 0;
+    const app = createApp({
+      store,
+      operatorToken: provider,
+      idGenerator: () => `mu-run-${(runSeq += 1)}`,
+      config: { allowedOrigins: [], csrfToken: CSRF },
+      planner: null,
+      auth: { service },
+    });
+    const admin = await service.redeemInvite({
+      token: BOOTSTRAP,
+      username: 'the-admin',
+      password: PASSWORD,
+      ip: 'test',
+    });
+    if (!admin.ok) {
+      throw new Error('bootstrap failed');
+    }
+    const inviteA = await service.issueInvite(admin.session.identity.userId);
+    const userA = await service.redeemInvite({
+      token: inviteA.token,
+      username: 'user-a',
+      password: PASSWORD,
+      ip: 'test',
+    });
+    const inviteB = await service.issueInvite(admin.session.identity.userId);
+    const userB = await service.redeemInvite({
+      token: inviteB.token,
+      username: 'user-b',
+      password: PASSWORD,
+      ip: 'test',
+    });
+    if (!userA.ok || !userB.ok) {
+      throw new Error('invite redemption failed');
+    }
+    const tokenA = (await service.mintApiToken(userA.session.identity.userId))?.token ?? '';
+    const tokenB = (await service.mintApiToken(userB.session.identity.userId))?.token ?? '';
+    return {
+      ctx: { app, store },
+      tokenA,
+      tokenB,
+      userAId: userA.session.identity.userId,
+      userBId: userB.session.identity.userId,
+      revoke: async (userId) => {
+        await service.revokeUser(userId);
+      },
+    };
+  }
+
+  it("B's token creates a run OWNED by B; B's tools cannot see A's runs", { timeout: 30_000 }, async () => {
+    const { ctx, tokenA, tokenB, userAId, userBId } = await makeMultiUserMcp();
+
+    const aRun = await callTool(ctx, 'software_factory_create_run', { prompt: 'A app' }, tokenA);
+    expect(aRun.isError).toBe(false);
+    const bRun = await callTool(ctx, 'software_factory_create_run', { prompt: 'B app' }, tokenB);
+    expect(bRun.isError).toBe(false);
+
+    const created = (await ctx.store.readRun(bRun.body.runId as string)).find(
+      (event) => event.type === 'run.created',
+    );
+    expect((created?.payload as { ownerId?: string }).ownerId).toBe(userBId);
+    expect(created?.actor.id).toBe(userBId);
+
+    // B's list excludes A's run; B's detail read of A's run is a 404 body.
+    const list = await callTool(ctx, 'software_factory_list_runs', {}, tokenB);
+    expect(list.isError).toBe(false);
+    const ids = (list.body.runs as { runId: string }[]).map((run) => run.runId);
+    expect(ids).toEqual([bRun.body.runId]);
+
+    const foreign = await callTool(
+      ctx,
+      'software_factory_get_run',
+      { runId: aRun.body.runId },
+      tokenB,
+    );
+    expect(foreign.isError).toBe(true);
+    expect(foreign.body.error).toBe('not_found');
+    expect(userAId).not.toBe(userBId);
+  });
+
+  it('a REVOKED token fails with a JSON-RPC auth error from the route layer', { timeout: 30_000 }, async () => {
+    const { ctx, tokenB, userBId, revoke } = await makeMultiUserMcp();
+
+    const before = await callTool(ctx, 'software_factory_list_runs', {}, tokenB);
+    expect(before.isError).toBe(false);
+
+    await revoke(userBId);
+
+    const after = await callTool(ctx, 'software_factory_list_runs', {}, tokenB);
+    expect(after.isError).toBe(true);
+    expect(after.rpcError?.code).toBe(-32001);
+    expect(after.body.error).toBe('unauthenticated');
+  });
+
+  it('the legacy operator token on a multi-user factory fails with the migration message', { timeout: 30_000 }, async () => {
+    const { ctx } = await makeMultiUserMcp();
+    const res = await callTool(ctx, 'software_factory_list_runs', {}, TOKEN);
+    expect(res.isError).toBe(true);
+    expect(res.rpcError?.code).toBe(-32001);
+    expect(res.body.error).toBe('multi_user_enabled');
+    expect(res.rpcError?.message).toContain('personal API token');
   });
 });

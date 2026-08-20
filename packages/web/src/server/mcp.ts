@@ -4,10 +4,18 @@
  * ChatGPT Apps and Claude custom connectors talk to internet-hosted tools from
  * their own cloud. This bridge exposes the factory's existing API as MCP tools
  * while keeping the ledger, planner, and command guard in one place.
+ *
+ * PURE PASS-THROUGH (multi-user U4): the bridge performs NO token
+ * verification and injects NO server credentials. The caller's own
+ * `Authorization` / `x-operator-token` header is forwarded verbatim into
+ * `app.handle()`, where U3's route-layer resolution is the single verifier —
+ * a personal `sfai_` token acts as its user, the legacy operator token keeps
+ * working single-tenant, and no bridge path can escalate privileges. Route
+ * 401/403 answers surface as JSON-RPC auth errors (never tool results).
+ * Bearer callers are CSRF-exempt (U3), so no CSRF token is needed here.
  */
-import { INTERVENTION_KINDS, verifyOperatorToken } from '@software-factory/core';
+import { INTERVENTION_KINDS } from '@software-factory/core';
 import type { ApiRequest, ApiResponse, App } from './app';
-import type { LocalSession } from '../lib/session';
 
 export interface McpHttpRequest {
   readonly body: unknown;
@@ -16,7 +24,6 @@ export interface McpHttpRequest {
 
 export interface McpHandlerDeps {
   readonly app: App;
-  readonly getSession: () => Promise<LocalSession>;
 }
 
 interface JsonRpcRequest {
@@ -431,18 +438,6 @@ function num(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
-function bearer(headers: McpHttpRequest['headers']): string | undefined {
-  const direct = headers['x-operator-token'];
-  if (direct !== undefined && direct.length > 0) {
-    return direct;
-  }
-  const auth = headers.authorization;
-  if (auth?.toLowerCase().startsWith('bearer ')) {
-    return auth.slice('bearer '.length).trim();
-  }
-  return undefined;
-}
-
 function json(status: number, body: unknown): ApiResponse {
   return { status, headers: { 'content-type': TEXT_JSON }, body };
 }
@@ -531,25 +526,25 @@ function conciseBody(name: string, args: Record<string, unknown>, body: unknown)
   return record;
 }
 
-async function requireSession(
-  request: McpHttpRequest,
-  deps: McpHandlerDeps,
-): Promise<LocalSession | ApiResponse> {
-  const token = bearer(request.headers);
-  if (token === undefined) {
-    return rpcError(null, -32001, 'Operator token is required.');
-  }
-  const session = await deps.getSession();
-  if (!verifyOperatorToken(session.operatorToken, token)) {
-    return rpcError(null, -32002, 'Operator token is invalid.');
-  }
-  return session;
+/**
+ * The route-layer refused the caller's credentials: surfaced to the client as
+ * a JSON-RPC auth error (protocol-level), never a tool result.
+ */
+interface AuthRejection {
+  readonly authStatus: 401 | 403;
+  readonly body: unknown;
 }
 
+/**
+ * Build the internal route request from the caller's OWN credential headers,
+ * forwarded verbatim (U4 pure pass-through). The bridge never reads, verifies,
+ * or substitutes a token, and never attaches a CSRF value — bearer/header
+ * callers are CSRF-exempt at the route layer.
+ */
 function internalRequest(
   method: string,
   path: string,
-  session: LocalSession,
+  caller: McpHttpRequest,
   body?: unknown,
 ): ApiRequest {
   return {
@@ -557,8 +552,8 @@ function internalRequest(
     path,
     query: {},
     headers: {
-      'x-operator-token': session.operatorToken,
-      'x-csrf-token': session.csrfToken,
+      'x-operator-token': caller.headers['x-operator-token'],
+      authorization: caller.headers.authorization,
     },
     body,
   };
@@ -588,299 +583,299 @@ async function callFactoryTool(
   args: Record<string, unknown>,
   request: McpHttpRequest,
   deps: McpHandlerDeps,
-): Promise<Record<string, unknown>> {
-  const sessionOrError = await requireSession(request, deps);
-  if ('operatorToken' in sessionOrError) {
-    const session = sessionOrError;
-    let response: ApiResponse;
-    switch (name) {
-      case 'software_factory_create_run':
-        response = await deps.app.handle(
-          internalRequest('POST', '/api/runs', session, { ...args, callerFamily: 'api' }),
-        );
-        break;
-      case 'software_factory_list_runs':
-        response = await deps.app.handle(internalRequest('GET', '/api/runs', session));
-        break;
-      case 'software_factory_get_run':
-      case 'software_factory_get_execution':
-      case 'software_factory_get_research':
-      case 'software_factory_get_outputs':
-      case 'software_factory_get_workspace': {
-        const runId = str(args.runId);
-        if (runId === undefined) {
-          return missingRunId();
-        }
-        response = await deps.app.handle(
-          internalRequest('GET', runPath(runId, RUN_READ_SUBPATH[name]), session),
-        );
-        break;
+): Promise<Record<string, unknown> | AuthRejection> {
+  let response: ApiResponse;
+  switch (name) {
+    case 'software_factory_create_run':
+      response = await deps.app.handle(
+        internalRequest('POST', '/api/runs', request, { ...args, callerFamily: 'api' }),
+      );
+      break;
+    case 'software_factory_list_runs':
+      response = await deps.app.handle(internalRequest('GET', '/api/runs', request));
+      break;
+    case 'software_factory_get_run':
+    case 'software_factory_get_execution':
+    case 'software_factory_get_research':
+    case 'software_factory_get_outputs':
+    case 'software_factory_get_workspace': {
+      const runId = str(args.runId);
+      if (runId === undefined) {
+        return missingRunId();
       }
-      case 'software_factory_get_events': {
-        const runId = str(args.runId);
-        if (runId === undefined) {
-          return missingRunId();
-        }
-        response = await deps.app.handle(internalRequest('GET', runPath(runId, 'events'), session));
-        const since = num(args.sinceSequence) ?? 0;
-        if (response.status === 200 && since > 0) {
-          const body = asRecord(response.body);
-          const events = Array.isArray(body.events)
-            ? body.events.filter(
-                (event) =>
-                  typeof event === 'object' &&
-                  event !== null &&
-                  Number((event as { sequence?: unknown }).sequence) > since,
-              )
-            : [];
-          response = { ...response, body: { ...body, events } };
-        }
-        break;
-      }
-      case 'software_factory_cancel_run': {
-        const runId = str(args.runId);
-        if (runId === undefined) {
-          return missingRunId();
-        }
-        response = await deps.app.handle(
-          internalRequest('POST', runPath(runId, 'cancel'), session, {
-            expectedVersion: num(args.expectedVersion),
-            reason: str(args.reason),
-          }),
-        );
-        break;
-      }
-      case 'software_factory_cancel_all_runs':
-        // Factory-scoped guarded command: one guard check covers the batch and
-        // the route converges per run (already-cancelled/terminal runs are
-        // reported, never re-cancelled) — no per-run expectedVersion applies.
-        response = await deps.app.handle(
-          internalRequest('POST', '/api/runs/cancel-all', session, { reason: str(args.reason) }),
-        );
-        break;
-      case 'software_factory_clear_all_runs':
-        // DESTRUCTIVE factory-scoped command: cancel-all semantics first, then
-        // terminal-run ledgers are permanently deleted (the operator purge).
-        response = await deps.app.handle(
-          internalRequest('POST', '/api/runs/clear-all', session, { reason: str(args.reason) }),
-        );
-        break;
-      /* Factory-wide drain gate (operator autostart surface): the daemon boots
-       * HELD by default, so these tools are how a remote agent releases or
-       * re-engages the gate. Resume/hold mutate the process daemon through the
-       * SAME guarded routes the web UI uses; the overview is a plain read. */
-      case 'software_factory_get_execution_overview':
-        response = await deps.app.handle(internalRequest('GET', '/api/execution', session));
-        break;
-      case 'software_factory_resume_execution':
-        response = await deps.app.handle(
-          internalRequest('POST', '/api/execution/resume', session, {}),
-        );
-        break;
-      case 'software_factory_hold_execution':
-        response = await deps.app.handle(
-          internalRequest('POST', '/api/execution/hold', session, {}),
-        );
-        break;
-      case 'software_factory_review_decide': {
-        const runId = str(args.runId);
-        if (runId === undefined) {
-          return missingRunId();
-        }
-        // Thin adapter over the guarded review route: the route derives the
-        // review authority (mode + highest ticket risk) server-side and reads
-        // exactly these body fields, so no authority is trusted from the client.
-        response = await deps.app.handle(
-          internalRequest('POST', runPath(runId, 'review'), session, {
-            decision: str(args.decision),
-            riskTier: str(args.riskTier),
-            rationale: str(args.rationale),
-            expectedVersion: num(args.expectedVersion),
-          }),
-        );
-        break;
-      }
-      case 'software_factory_materialize_workspace': {
-        const runId = str(args.runId);
-        if (runId === undefined) {
-          return missingRunId();
-        }
-        response = await deps.app.handle(
-          internalRequest('POST', runPath(runId, 'workspace'), session, {
-            branch: str(args.branch),
-            expectedVersion: num(args.expectedVersion),
-          }),
-        );
-        break;
-      }
-      case 'software_factory_override_settings': {
-        const runId = str(args.runId);
-        if (runId === undefined) {
-          return missingRunId();
-        }
-        response = await deps.app.handle(
-          internalRequest('POST', runPath(runId, 'settings'), session, {
-            selectedAdapter: str(args.selectedAdapter),
-            modelProfile: str(args.modelProfile),
-            reasoningEffort: str(args.reasoningEffort),
-            reason: str(args.reason),
-            expectedVersion: num(args.expectedVersion),
-          }),
-        );
-        break;
-      }
-      case 'software_factory_publish_workspace': {
-        const runId = str(args.runId);
-        if (runId === undefined) {
-          return missingRunId();
-        }
-        response = await deps.app.handle(
-          internalRequest('POST', runPath(runId, 'publish'), session, {
-            expectedVersion: num(args.expectedVersion),
-          }),
-        );
-        break;
-      }
-      case 'software_factory_start_run':
-      case 'software_factory_pause_run':
-      case 'software_factory_resume_run':
-      case 'software_factory_retry_run':
-      case 'software_factory_rerun_gates': {
-        const runId = str(args.runId);
-        if (runId === undefined) {
-          return missingRunId();
-        }
-        const subpath = {
-          software_factory_start_run: 'start',
-          software_factory_pause_run: 'pause',
-          software_factory_resume_run: 'resume',
-          software_factory_retry_run: 'retry',
-          software_factory_rerun_gates: 'gates/rerun',
-        }[name];
-        response = await deps.app.handle(
-          internalRequest('POST', runPath(runId, subpath), session, {
-            expectedVersion: num(args.expectedVersion),
-            reason: str(args.reason),
-            ...(name === 'software_factory_retry_run' ? { ticketId: str(args.ticketId) } : {}),
-          }),
-        );
-        break;
-      }
-      case 'software_factory_list_interventions': {
-        const request = internalRequest('GET', '/api/interventions', session);
-        const query: Record<string, string | undefined> = {
-          runId: str(args.runId),
-          kind: str(args.kind),
-          severity: str(args.severity),
-          blockingStage: str(args.blockingStage),
-          open: args.open === true ? '1' : undefined,
-        };
-        response = await deps.app.handle({ ...request, query });
-        break;
-      }
-      case 'software_factory_resolve_intervention': {
-        const interventionId = str(args.interventionId);
-        const resolution = str(args.resolution);
-        if (interventionId === undefined || resolution === undefined) {
-          return toolResult({ error: 'interventionId and resolution are required.' }, true);
-        }
-        response = await deps.app.handle(
-          internalRequest(
-            'POST',
-            `/api/interventions/${encodeURIComponent(interventionId)}/resolve`,
-            session,
-            {
-              resolution,
-              note: str(args.note),
-              expectedVersion: num(args.expectedVersion),
-            },
-          ),
-        );
-        break;
-      }
-      case 'software_factory_trigger_research': {
-        const runId = str(args.runId);
-        if (runId === undefined) {
-          return missingRunId();
-        }
-        const budget = asRecord(args.budget);
-        response = await deps.app.handle(
-          internalRequest('POST', runPath(runId, 'research'), session, {
-            objective: str(args.objective),
-            force: args.force === true,
-            budget: {
-              maxSources: num(budget.maxSources),
-              maxDurationMs: num(budget.maxDurationMs),
-            },
-            expectedVersion: num(args.expectedVersion),
-          }),
-        );
-        break;
-      }
-      case 'software_factory_get_contract': {
-        // Thin read over the run projection: the contract is replayed from
-        // `contract.generated` ledger events, never invented here.
-        const runId = str(args.runId);
-        if (runId === undefined) {
-          return missingRunId();
-        }
-        const runResponse = await deps.app.handle(internalRequest('GET', runPath(runId), session));
-        if (runResponse.status !== 200) {
-          response = runResponse;
-          break;
-        }
-        const run = asRecord(asRecord(runResponse.body).run);
-        const contract = run.buildContract ?? null;
-        response = {
-          status: 200,
-          body: {
-            runId,
-            contract,
-            ...(contract === null
-              ? {
-                  message:
-                    'No build contract has been generated for this run yet. Research-enabled ' +
-                    'run modes generate one after research and planning; starting execution ' +
-                    'refreshes it.',
-                }
-              : {}),
-          },
-        };
-        break;
-      }
-      case 'software_factory_get_preflight': {
-        // Thin read over the execution projection, narrowed to the dry-run
-        // rehearsal outcome plus the interventions blocking the start.
-        const runId = str(args.runId);
-        if (runId === undefined) {
-          return missingRunId();
-        }
-        const executionResponse = await deps.app.handle(
-          internalRequest('GET', runPath(runId, 'execution'), session),
-        );
-        if (executionResponse.status !== 200) {
-          response = executionResponse;
-          break;
-        }
-        const body = asRecord(executionResponse.body);
-        const interventions = Array.isArray(body.interventions)
-          ? body.interventions.filter((entry) => asRecord(entry).blockingStage === 'preflight')
-          : [];
-        response = {
-          status: 200,
-          body: { runId, preflight: body.preflight, execution: body.execution, interventions },
-        };
-        break;
-      }
-      case 'software_factory_get_setup':
-        response = await deps.app.handle(internalRequest('GET', '/api/setup', session));
-        break;
-      default:
-        return toolResult({ error: `Unknown tool: ${name}` }, true);
+      response = await deps.app.handle(
+        internalRequest('GET', runPath(runId, RUN_READ_SUBPATH[name]), request),
+      );
+      break;
     }
-    return toolResult(conciseBody(name, args, response.body ?? {}), response.status >= 400);
+    case 'software_factory_get_events': {
+      const runId = str(args.runId);
+      if (runId === undefined) {
+        return missingRunId();
+      }
+      response = await deps.app.handle(internalRequest('GET', runPath(runId, 'events'), request));
+      const since = num(args.sinceSequence) ?? 0;
+      if (response.status === 200 && since > 0) {
+        const body = asRecord(response.body);
+        const events = Array.isArray(body.events)
+          ? body.events.filter(
+              (event) =>
+                typeof event === 'object' &&
+                event !== null &&
+                Number((event as { sequence?: unknown }).sequence) > since,
+            )
+          : [];
+        response = { ...response, body: { ...body, events } };
+      }
+      break;
+    }
+    case 'software_factory_cancel_run': {
+      const runId = str(args.runId);
+      if (runId === undefined) {
+        return missingRunId();
+      }
+      response = await deps.app.handle(
+        internalRequest('POST', runPath(runId, 'cancel'), request, {
+          expectedVersion: num(args.expectedVersion),
+          reason: str(args.reason),
+        }),
+      );
+      break;
+    }
+    case 'software_factory_cancel_all_runs':
+      // Factory-scoped guarded command: one guard check covers the batch and
+      // the route converges per run (already-cancelled/terminal runs are
+      // reported, never re-cancelled) — no per-run expectedVersion applies.
+      response = await deps.app.handle(
+        internalRequest('POST', '/api/runs/cancel-all', request, { reason: str(args.reason) }),
+      );
+      break;
+    case 'software_factory_clear_all_runs':
+      // DESTRUCTIVE factory-scoped command: cancel-all semantics first, then
+      // terminal-run ledgers are permanently deleted (the operator purge).
+      response = await deps.app.handle(
+        internalRequest('POST', '/api/runs/clear-all', request, { reason: str(args.reason) }),
+      );
+      break;
+    /* Factory-wide drain gate (operator autostart surface): the daemon boots
+     * HELD by default, so these tools are how a remote agent releases or
+     * re-engages the gate. Resume/hold mutate the process daemon through the
+     * SAME guarded routes the web UI uses; the overview is a plain read. */
+    case 'software_factory_get_execution_overview':
+      response = await deps.app.handle(internalRequest('GET', '/api/execution', request));
+      break;
+    case 'software_factory_resume_execution':
+      response = await deps.app.handle(
+        internalRequest('POST', '/api/execution/resume', request, {}),
+      );
+      break;
+    case 'software_factory_hold_execution':
+      response = await deps.app.handle(
+        internalRequest('POST', '/api/execution/hold', request, {}),
+      );
+      break;
+    case 'software_factory_review_decide': {
+      const runId = str(args.runId);
+      if (runId === undefined) {
+        return missingRunId();
+      }
+      // Thin adapter over the guarded review route: the route derives the
+      // review authority (mode + highest ticket risk) server-side and reads
+      // exactly these body fields, so no authority is trusted from the client.
+      response = await deps.app.handle(
+        internalRequest('POST', runPath(runId, 'review'), request, {
+          decision: str(args.decision),
+          riskTier: str(args.riskTier),
+          rationale: str(args.rationale),
+          expectedVersion: num(args.expectedVersion),
+        }),
+      );
+      break;
+    }
+    case 'software_factory_materialize_workspace': {
+      const runId = str(args.runId);
+      if (runId === undefined) {
+        return missingRunId();
+      }
+      response = await deps.app.handle(
+        internalRequest('POST', runPath(runId, 'workspace'), request, {
+          branch: str(args.branch),
+          expectedVersion: num(args.expectedVersion),
+        }),
+      );
+      break;
+    }
+    case 'software_factory_override_settings': {
+      const runId = str(args.runId);
+      if (runId === undefined) {
+        return missingRunId();
+      }
+      response = await deps.app.handle(
+        internalRequest('POST', runPath(runId, 'settings'), request, {
+          selectedAdapter: str(args.selectedAdapter),
+          modelProfile: str(args.modelProfile),
+          reasoningEffort: str(args.reasoningEffort),
+          reason: str(args.reason),
+          expectedVersion: num(args.expectedVersion),
+        }),
+      );
+      break;
+    }
+    case 'software_factory_publish_workspace': {
+      const runId = str(args.runId);
+      if (runId === undefined) {
+        return missingRunId();
+      }
+      response = await deps.app.handle(
+        internalRequest('POST', runPath(runId, 'publish'), request, {
+          expectedVersion: num(args.expectedVersion),
+        }),
+      );
+      break;
+    }
+    case 'software_factory_start_run':
+    case 'software_factory_pause_run':
+    case 'software_factory_resume_run':
+    case 'software_factory_retry_run':
+    case 'software_factory_rerun_gates': {
+      const runId = str(args.runId);
+      if (runId === undefined) {
+        return missingRunId();
+      }
+      const subpath = {
+        software_factory_start_run: 'start',
+        software_factory_pause_run: 'pause',
+        software_factory_resume_run: 'resume',
+        software_factory_retry_run: 'retry',
+        software_factory_rerun_gates: 'gates/rerun',
+      }[name];
+      response = await deps.app.handle(
+        internalRequest('POST', runPath(runId, subpath), request, {
+          expectedVersion: num(args.expectedVersion),
+          reason: str(args.reason),
+          ...(name === 'software_factory_retry_run' ? { ticketId: str(args.ticketId) } : {}),
+        }),
+      );
+      break;
+    }
+    case 'software_factory_list_interventions': {
+      const base = internalRequest('GET', '/api/interventions', request);
+      const query: Record<string, string | undefined> = {
+        runId: str(args.runId),
+        kind: str(args.kind),
+        severity: str(args.severity),
+        blockingStage: str(args.blockingStage),
+        open: args.open === true ? '1' : undefined,
+      };
+      response = await deps.app.handle({ ...base, query });
+      break;
+    }
+    case 'software_factory_resolve_intervention': {
+      const interventionId = str(args.interventionId);
+      const resolution = str(args.resolution);
+      if (interventionId === undefined || resolution === undefined) {
+        return toolResult({ error: 'interventionId and resolution are required.' }, true);
+      }
+      response = await deps.app.handle(
+        internalRequest(
+          'POST',
+          `/api/interventions/${encodeURIComponent(interventionId)}/resolve`,
+          request,
+          {
+            resolution,
+            note: str(args.note),
+            expectedVersion: num(args.expectedVersion),
+          },
+        ),
+      );
+      break;
+    }
+    case 'software_factory_trigger_research': {
+      const runId = str(args.runId);
+      if (runId === undefined) {
+        return missingRunId();
+      }
+      const budget = asRecord(args.budget);
+      response = await deps.app.handle(
+        internalRequest('POST', runPath(runId, 'research'), request, {
+          objective: str(args.objective),
+          force: args.force === true,
+          budget: {
+            maxSources: num(budget.maxSources),
+            maxDurationMs: num(budget.maxDurationMs),
+          },
+          expectedVersion: num(args.expectedVersion),
+        }),
+      );
+      break;
+    }
+    case 'software_factory_get_contract': {
+      // Thin read over the run projection: the contract is replayed from
+      // `contract.generated` ledger events, never invented here.
+      const runId = str(args.runId);
+      if (runId === undefined) {
+        return missingRunId();
+      }
+      const runResponse = await deps.app.handle(internalRequest('GET', runPath(runId), request));
+      if (runResponse.status !== 200) {
+        response = runResponse;
+        break;
+      }
+      const run = asRecord(asRecord(runResponse.body).run);
+      const contract = run.buildContract ?? null;
+      response = {
+        status: 200,
+        body: {
+          runId,
+          contract,
+          ...(contract === null
+            ? {
+                message:
+                  'No build contract has been generated for this run yet. Research-enabled ' +
+                  'run modes generate one after research and planning; starting execution ' +
+                  'refreshes it.',
+              }
+            : {}),
+        },
+      };
+      break;
+    }
+    case 'software_factory_get_preflight': {
+      // Thin read over the execution projection, narrowed to the dry-run
+      // rehearsal outcome plus the interventions blocking the start.
+      const runId = str(args.runId);
+      if (runId === undefined) {
+        return missingRunId();
+      }
+      const executionResponse = await deps.app.handle(
+        internalRequest('GET', runPath(runId, 'execution'), request),
+      );
+      if (executionResponse.status !== 200) {
+        response = executionResponse;
+        break;
+      }
+      const body = asRecord(executionResponse.body);
+      const interventions = Array.isArray(body.interventions)
+        ? body.interventions.filter((entry) => asRecord(entry).blockingStage === 'preflight')
+        : [];
+      response = {
+        status: 200,
+        body: { runId, preflight: body.preflight, execution: body.execution, interventions },
+      };
+      break;
+    }
+    case 'software_factory_get_setup':
+      response = await deps.app.handle(internalRequest('GET', '/api/setup', request));
+      break;
+    default:
+      return toolResult({ error: `Unknown tool: ${name}` }, true);
   }
-  return toolResult(sessionOrError.body, true);
+  if (response.status === 401 || response.status === 403) {
+    // Route-layer auth refusal -> JSON-RPC error (the ONLY auth mapping; the
+    // bridge itself verified nothing).
+    return { authStatus: response.status, body: response.body };
+  }
+  return toolResult(conciseBody(name, args, response.body ?? {}), response.status >= 400);
 }
 
 export async function handleMcpRequest(
@@ -912,6 +907,15 @@ export async function handleMcpRequest(
         return rpcError(request.id, -32602, 'Tool name is required.');
       }
       const result = await callFactoryTool(name, asRecord(params.arguments), httpRequest, deps);
+      if ('authStatus' in result) {
+        const body = asRecord(result.body);
+        return rpcError(
+          request.id,
+          result.authStatus === 401 ? -32001 : -32003,
+          str(body.message) ?? 'Authentication failed.',
+          { status: result.authStatus, error: body.error },
+        );
+      }
       return rpc(request.id, result);
     }
     case 'ping':

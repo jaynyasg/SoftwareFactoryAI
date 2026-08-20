@@ -1,16 +1,20 @@
 /**
- * HTTP client for the local Software Factory backend.
+ * HTTP client for the Software Factory backend.
  *
- * Talks to the same loopback API the web UI uses (createApp in
- * @software-factory/web), over plain HTTP. Reads hit the read-only routes (no
- * auth). Mutations attach the operator token (`x-operator-token`) and, when
- * configured, the CSRF token (`x-csrf-token`); cancel/review also send an
- * `expectedVersion` so the command guard's optimistic-concurrency check applies.
+ * Talks to the same API the web UI uses (createApp in @software-factory/web),
+ * over plain HTTP. EVERY request attaches the configured token
+ * (`x-operator-token` header slot) — reads included, because multi-user
+ * factories (U3/U4) authenticate read routes too; single-tenant servers simply
+ * ignore the header on reads, so behavior there is unchanged. The token value
+ * may be the legacy operator token (single-tenant) or a personal `sfai_` API
+ * token (multi-user) — same slot, the server's route layer tells them apart.
+ * Mutations also attach the CSRF token when configured; cancel/review send an
+ * `expectedVersion` so the command guard's optimistic-concurrency check
+ * applies.
  *
  * The CLI is a NON-browser caller, so it deliberately sends NO `Origin` header —
- * the guard treats a no-Origin request with a valid token as the trusted local
- * operator (and the CLI's default standalone backend configures no CSRF token,
- * so the operator token alone authenticates).
+ * the guard treats a no-Origin request with a valid token as the trusted
+ * operator (and header-token callers are CSRF-exempt in every mode).
  *
  * All non-2xx responses raise a typed `ApiError` carrying the backend's stable
  * `error` code and message, so auth/stale failures surface clearly and never
@@ -57,7 +61,11 @@ export class ApiError extends Error {
 export interface ApiClientOptions {
   /** Base URL of the backend, e.g. `http://127.0.0.1:3000`. */
   readonly baseUrl: string;
-  /** Operator token for mutating routes (omit for read-only usage). */
+  /**
+   * Caller token, sent on EVERY request via `x-operator-token`: the legacy
+   * operator token (single-tenant) or a personal `sfai_` API token
+   * (multi-user). Omit only against single-tenant servers for read-only usage.
+   */
   readonly operatorToken?: string;
   /** CSRF token, when the target server configures one (browser-style servers). */
   readonly csrfToken?: string;
@@ -594,11 +602,20 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
     return `${baseUrl}${path}`;
   }
 
-  function mutationHeaders(): Record<string, string> {
-    const headers: Record<string, string> = { 'content-type': 'application/json' };
+  /** The token header shared by reads AND mutations (multi-user U4). */
+  function tokenHeaders(): Record<string, string> {
+    const headers: Record<string, string> = {};
     if (options.operatorToken !== undefined && options.operatorToken.length > 0) {
       headers['x-operator-token'] = options.operatorToken;
     }
+    return headers;
+  }
+
+  function mutationHeaders(): Record<string, string> {
+    const headers: Record<string, string> = {
+      'content-type': 'application/json',
+      ...tokenHeaders(),
+    };
     if (options.csrfToken !== undefined && options.csrfToken.length > 0) {
       headers['x-csrf-token'] = options.csrfToken;
     }
@@ -616,7 +633,7 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
   async function get(path: string): Promise<Record<string, unknown>> {
     const res = await fetchImpl(url(path), {
       method: 'GET',
-      headers: { accept: 'application/json' },
+      headers: { accept: 'application/json', ...tokenHeaders() },
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     const body = await parse(res);

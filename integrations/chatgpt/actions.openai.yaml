@@ -740,7 +740,12 @@ components:
       type: apiKey
       in: header
       name: x-operator-token
-      description: Value of the hosted factory's `SF_OPERATOR_TOKEN`.
+      description: >-
+        YOUR credential for this factory. Multi-user factories: your personal
+        API token (mint one under Settings -> API token; format sfai_...) —
+        it acts as your account, sees your own runs, and can be rotated or
+        revoked without affecting anyone else. Single-tenant factories: the
+        hosted `SF_OPERATOR_TOKEN` keeps working unchanged.
   parameters:
     RunId:
       name: runId

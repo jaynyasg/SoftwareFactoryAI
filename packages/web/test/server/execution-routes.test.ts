@@ -826,14 +826,10 @@ describe('GET /api/runs/:id/execution', () => {
  * ------------------------------------------------------------------------- */
 
 describe('MCP execution tools', () => {
-  function mcpDeps(app: App): {
-    app: App;
-    getSession: () => Promise<{ operatorToken: string; csrfToken: string }>;
-  } {
-    return {
-      app,
-      getSession: () => Promise.resolve({ operatorToken: TOKEN, csrfToken: CSRF }),
-    };
+  // U4 pure pass-through: the bridge takes only the app; the caller's own
+  // bearer header is forwarded verbatim and the route layer verifies it.
+  function mcpDeps(app: App): { app: App } {
+    return { app };
   }
 
   async function callTool(
@@ -854,10 +850,18 @@ describe('MCP execution tools', () => {
       },
       mcpDeps(app),
     );
-    const rpc = res.body as { result: { isError?: boolean; content: { text: string }[] } };
+    const envelope = res.body as {
+      result?: { isError?: boolean; content: { text: string }[] };
+      error?: { code: number; message: string; data?: unknown };
+    };
+    if (envelope.error !== undefined) {
+      // Route-layer auth refusals surface as JSON-RPC errors (U4).
+      return { isError: true, body: (envelope.error.data ?? {}) as Record<string, unknown> };
+    }
+    const rpc = envelope.result as { isError?: boolean; content: { text: string }[] };
     return {
-      isError: rpc.result.isError,
-      body: JSON.parse(rpc.result.content[0].text) as Record<string, unknown>,
+      isError: rpc.isError,
+      body: JSON.parse(rpc.content[0].text) as Record<string, unknown>,
     };
   }
 
@@ -907,12 +911,17 @@ describe('MCP execution tools', () => {
   it('rejects unauthorized execution commands before side effects', async () => {
     const { app, store } = makeExecApp();
     const runId = await createPlannedRun(app);
-    const before = (await store.readRun(runId)).length;
 
     const res = await callTool(app, 'software_factory_start_run', { runId }, 'wrong-token');
     expect(res.isError).toBe(true);
+    expect(res.body.error).toBe('invalid_token');
 
-    expect((await store.readRun(runId)).length).toBe(before);
+    // The refusal is audited on the ledger (security.block) — U4 forwards it
+    // to the route layer instead of rejecting at the bridge — but has NO side
+    // effects: nothing was enqueued.
+    const seen = (await store.readRun(runId)).map((event) => event.type);
+    expect(seen).toContain('security.block');
+    expect(seen).not.toContain('queue.enqueued');
   });
 });
 
