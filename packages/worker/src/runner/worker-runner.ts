@@ -106,6 +106,14 @@ export interface RunTicketDeps {
   readonly adapter: ExecutionAdapter;
   /** Optional clock for deterministic event timestamps. */
   readonly clock?: () => number;
+  /**
+   * Per-run credential redactor (multi-user U7): every worker-derived text
+   * this runner appends (progress messages, wait notes, retry/failure
+   * reasons, completion summaries) passes through it, so an echoed credential
+   * never persists on the ledger. Stateful across calls (rolling buffer) —
+   * one instance per run. Absent = identity (single-tenant unchanged).
+   */
+  readonly redact?: (text: string) => string;
 }
 
 /** The structured result of a ticket run. */
@@ -153,6 +161,7 @@ export async function runTicket(
   deps: RunTicketDeps,
 ): Promise<RunTicketResult> {
   const { store, adapter } = deps;
+  const scrub = deps.redact ?? ((text: string): string => text);
   const context: WorkerContext = compileContext(params.compileInput);
   const ticketId = context.ticketId;
   const maxAttempts = Math.max(1, Math.trunc(params.maxAttempts ?? DEFAULT_MAX_ATTEMPTS));
@@ -178,7 +187,7 @@ export async function runTicket(
       actor: workerActor,
       subject: { kind: 'ticket', id: ticketId },
       severity: STATE_SEVERITY[state],
-      payload: { state, reason },
+      payload: { state, reason: reason !== undefined ? scrub(reason) : undefined },
     });
 
   // Record which adapter will run this ticket before doing any work.
@@ -200,7 +209,7 @@ export async function runTicket(
       subject: { kind: 'ticket', id: ticketId },
       severity: 'warn',
       evidence,
-      payload: { reason: error.message },
+      payload: { reason: scrub(error.message) },
     });
     await emitTicketState('cancelled', error.message);
     return { ticketId, outcome: 'cancelled', attempts: 0, error, nested };
@@ -257,7 +266,7 @@ export async function runTicket(
               actor: workerActor,
               subject: { kind: 'ticket', id: ticketId },
               severity: 'info',
-              payload: { message: event.message, percent: event.percent },
+              payload: { message: scrub(event.message), percent: event.percent },
             }),
           );
         }
@@ -280,7 +289,7 @@ export async function runTicket(
         subject: { kind: 'ticket', id: ticketId },
         severity: 'success',
         evidence,
-        payload: { summary: result.summary ?? truncate(result.output) },
+        payload: { summary: scrubOptional(scrub, result.summary ?? truncate(result.output)) },
       });
       await emitTicketState('completed');
       return { ticketId, outcome: 'completed', attempts, result, nested };
@@ -300,7 +309,10 @@ export async function runTicket(
         actor: workerActor,
         subject: { kind: 'ticket', id: ticketId },
         severity: 'warn',
-        payload: { attempt: attempt + 1, reason: `${result.error.kind}: ${result.error.message}` },
+        payload: {
+          attempt: attempt + 1,
+          reason: scrub(`${result.error.kind}: ${result.error.message}`),
+        },
       });
       await emitTicketState('retrying', result.error.message);
       // Honor a server-suggested backoff (e.g. rate-limit `retryAfterMs`) before
@@ -332,7 +344,7 @@ export async function runTicket(
         actor: workerActor,
         subject: { kind: 'ticket', id: ticketId },
         severity: 'warn',
-        payload: { attempt: attempt + 1, reason: `${result.error.kind}: ${waitNote}` },
+        payload: { attempt: attempt + 1, reason: scrub(`${result.error.kind}: ${waitNote}`) },
       });
       await emitTicketState('retrying', waitNote);
       await sleepAbortable(delay, params.signal);
@@ -350,7 +362,7 @@ export async function runTicket(
       actor: workerActor,
       subject: { kind: 'ticket', id: ticketId },
       severity: 'error',
-      payload: { reason: `${result.error.kind}: ${result.error.message}${budgetNote}` },
+      payload: { reason: scrub(`${result.error.kind}: ${result.error.message}${budgetNote}`) },
     });
     await emitTicketState('failed', `${result.error.message}${budgetNote}`);
     return { ticketId, outcome: 'failed', attempts, result, error: result.error, nested };
@@ -368,6 +380,13 @@ export async function runTicket(
   });
   await emitTicketState('cancelled', error.message);
   return { ticketId, outcome: 'cancelled', attempts, result: lastResult, error, nested };
+}
+
+function scrubOptional(
+  scrub: (text: string) => string,
+  text: string | undefined,
+): string | undefined {
+  return text !== undefined ? scrub(text) : undefined;
 }
 
 function makeCancelled(signal: AbortSignal): AdapterError {

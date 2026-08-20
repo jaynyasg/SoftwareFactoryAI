@@ -20,6 +20,7 @@ export * from './runner/write-scope';
 export * from './runner/cancellation';
 // Single-ticket runner: context compile, streaming, bounded retry, ledger.
 export * from './runner/worker-runner';
+export * from './runner/redactor';
 // Gated ticket runner: post-ticket gates + bounded, ledger-derived repair loop (U7).
 export * from './runner/gated-ticket-runner';
 // Adaptive scheduler: ready tickets -> concurrent workers up to capacity.

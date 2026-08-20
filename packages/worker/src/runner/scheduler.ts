@@ -71,6 +71,12 @@ export interface SchedulerConfig {
   readonly callerFamily?: AdapterFamily;
   /** Injected clock for deterministic event timestamps. */
   readonly clock?: () => number;
+  /**
+   * Per-run credential redactor (U7), forwarded into every runTicket's deps
+   * so worker-derived ledger text is scrubbed at the append site. Stateful —
+   * one instance per run.
+   */
+  readonly redact?: (text: string) => string;
 }
 
 /**
@@ -293,7 +299,7 @@ export async function runScheduler<TNode extends ScheduleNode = ScheduleNode>(
         timeoutMs: config.timeoutMs,
         usageWait: config.usageWait,
       },
-      { store, adapter: adapterForNode, clock },
+      { store, adapter: adapterForNode, clock, redact: config.redact },
     )
       .then(
         (result) => {

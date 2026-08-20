@@ -16,6 +16,7 @@ import {
   createDefaultAdapterCatalog,
   createSpawnEnvBundle,
   scrubNestedSessionEnv,
+  type AdapterTask,
   type CommandRunOptions,
   type CommandRunner,
   type CommandResult,
@@ -40,7 +41,7 @@ function recordingRunner(): { runner: CommandRunner; calls: RecordedRun[] } {
   return { runner, calls };
 }
 
-const TASK = {
+const TASK: AdapterTask = {
   runId: 'run-1',
   ticketId: 'tkt-1',
   title: 'Env-injection ticket',

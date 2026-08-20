@@ -88,6 +88,7 @@ import type {
 import type { ExecutorGateStages } from './gate-stages';
 import type { ExecutorCompletionStage } from './completion-stage';
 import type { TicketExecutionContext, TicketExecutionResult, TicketExecutor } from './daemon';
+import type { RunCredentialResolver } from './credential-bundles';
 import { filterInterventions, projectInterventions, resolveIntervention } from './interventions';
 import { highestTicketRisk } from '../../lib/run-view';
 import { resolveGenomeDir } from '../planner';
@@ -137,6 +138,16 @@ export interface SchedulerTicketExecutorOptions {
    * pre-U8 behavior).
    */
   readonly completionStage?: ExecutorCompletionStage;
+  /**
+   * Per-run owner credential resolver (multi-user U7). When wired, the
+   * executor resolves the run OWNER's decrypted credentials just-in-time and
+   * binds a per-job adapter catalog (U6 spawn-env seam) BEFORE
+   * selectExecutionAdapter — so selection probes, the scheduler setup probe,
+   * and every worker spawn run owner-scoped. Worker-derived ledger text is
+   * scrubbed through the binding's redactor. Absent = single-tenant (shared
+   * catalog, byte-identical).
+   */
+  readonly credentials?: RunCredentialResolver;
 }
 
 function blocked(
@@ -511,8 +522,25 @@ export function createSchedulerTicketExecutor(
       };
     }
 
+    // Multi-user (U7): bind the run OWNER's credentials just-in-time. A
+    // failed resolution blocks with an owner-directed (missing credentials)
+    // or admin-directed (unreadable master key) intervention — R14/G7.
+    let boundCatalog = catalog;
+    let redact: ((text: string) => string) | undefined;
+    let releaseBinding: (() => Promise<void>) | undefined;
+    if (options.credentials !== undefined) {
+      const resolved = await options.credentials(run);
+      if (!resolved.ok) {
+        return blocked(resolved.reason, resolved.requiredAction, 'missing_credentials');
+      }
+      boundCatalog = resolved.binding.catalog;
+      redact = resolved.binding.redact;
+      releaseBinding = resolved.binding.release;
+    }
+
+    const executeSelected = async (): Promise<TicketExecutionResult> => {
     // Adapter selection from run settings + setup detection.
-    const selection = await selectExecutionAdapter(catalog, run.selectedAdapter, {
+    const selection = await selectExecutionAdapter(boundCatalog, run.selectedAdapter, {
       signal: ctx.signal,
     });
     if (selection.adapter === undefined) {
@@ -606,6 +634,8 @@ export function createSchedulerTicketExecutor(
           maxAttempts: options.ticketMaxAttempts,
           timeoutMs: options.ticketTimeoutMs,
           clock,
+          // U7: scrub owner credential values from worker-derived ledger text.
+          redact,
         },
         completed: plan.completed,
         cancellation: ctx.signal,
@@ -722,5 +752,16 @@ export function createSchedulerTicketExecutor(
     return finishRun(
       `${result.completed.length}/${plan.nodes.length} ticket(s) completed via adapter "${adapter.id}".`,
     );
+    };
+
+    if (releaseBinding === undefined) {
+      return executeSelected();
+    }
+    try {
+      return await executeSelected();
+    } finally {
+      // Ephemeral codex home cleanup + auth.json write-back — on every path.
+      await releaseBinding();
+    }
   };
 }

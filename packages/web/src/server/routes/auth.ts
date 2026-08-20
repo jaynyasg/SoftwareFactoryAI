@@ -34,6 +34,11 @@ import { isRealRun, projectRun } from '@software-factory/core';
 import type { ApiResponse, RouteContext, RouteDef } from '../app';
 import { readCookie } from '../app';
 import { deriveClientIp } from '../auth/throttle';
+import {
+  filterInterventions,
+  projectInterventions,
+  resolveIntervention,
+} from '../execution/interventions';
 import { asRecord, str } from './parse';
 
 const AUTH_DISABLED: ApiResponse = {
@@ -265,8 +270,9 @@ async function revokeUser(ctx: RouteContext): Promise<ApiResponse> {
     return { status: 404, body: { error: 'not_found', message: 'No active user with that id.' } };
   }
   // G4 cascade: cancel the revoked user's non-terminal runs so nothing keeps
-  // executing (and billing) on their behalf. Ownerless legacy runs are
-  // admin-owned and unaffected. Full credential cleanup composes in U7.
+  // executing (and billing) on their behalf, and close their now-dead open
+  // interventions (U7) so the factory queue never carries entries nobody can
+  // act on. Ownerless legacy runs are admin-owned and unaffected.
   const cancelled: string[] = [];
   const runIds = await ctx.reader.listRuns();
   for (const runId of runIds) {
@@ -274,6 +280,18 @@ async function revokeUser(ctx: RouteContext): Promise<ApiResponse> {
     const run = projectRun(events, runId);
     if (!isRealRun(run) || run.ownerId !== userId) {
       continue;
+    }
+    // Interventions on ANY of the user's runs (terminal or not) are closed:
+    // a revoked account can never resolve them.
+    const openInterventions = filterInterventions(projectInterventions(events), {
+      runId,
+      openOnly: true,
+    });
+    for (const intervention of openInterventions) {
+      await resolveIntervention(ctx.store, intervention, {
+        resolution: 'owner_revoked',
+        note: 'The owning account was revoked; the intervention no longer blocks any pending work.',
+      });
     }
     if (run.status === 'completed' || run.status === 'failed' || run.status === 'cancelled') {
       continue;
@@ -291,6 +309,11 @@ async function revokeUser(ctx: RouteContext): Promise<ApiResponse> {
   }
   if (cancelled.length > 0 && ctx.executionDaemon !== null) {
     await ctx.executionDaemon.cancelRuns(cancelled);
+  }
+  // U7: wipe the revoked user's encrypted credentials — no future spawn (or
+  // admin mistake) can ever bind them again.
+  if (ctx.credentialVault !== null) {
+    await ctx.credentialVault.removeAll(userId);
   }
   return {
     status: 200,

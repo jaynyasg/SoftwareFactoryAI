@@ -34,6 +34,7 @@ import type {
   AppendableEvent,
   CommandGuardRequest,
   CommandRejectionReason,
+  CredentialVault,
   EventReader,
   EventStore,
   EventWriter,
@@ -197,6 +198,12 @@ export interface AppDeps {
     /** SF_INSECURE_COOKIES=1: plain-HTTP LAN opt-out (drops __Host-/Secure). */
     readonly insecureCookies?: boolean;
   } | null;
+  /**
+   * Per-user credential vault (multi-user U7+): used by the revocation
+   * cascade (wipe the revoked user's credentials) and the wizard routes
+   * (U10). Absent/null = no vault on this instance.
+   */
+  readonly credentialVault?: CredentialVault | null;
 }
 
 /* ----------------------------------------------------------------------------
@@ -292,6 +299,8 @@ export interface RouteContext {
   readonly identity: Identity | null;
   /** The auth service in multi-user mode, `null` in single-tenant mode. */
   readonly authService: AuthService | null;
+  /** The credential vault when configured on this instance (U7/U10). */
+  readonly credentialVault: CredentialVault | null;
   /** Whether multi-user auth is active on this instance. */
   readonly multiUser: boolean;
   /** Session-cookie writer for auth routes (mode-aware naming/flags). */
@@ -712,6 +721,7 @@ export function createApp(deps: AppDeps): App {
 
   // Multi-user auth (U3): present = enforce identities + declared access.
   const auth = deps.auth ?? null;
+  const credentialVault = deps.credentialVault ?? null;
 
   // Adapter catalog (U6): `undefined` -> the real default catalog (with the
   // shared env-derived skill options); `null` -> no catalog (readiness
@@ -882,6 +892,7 @@ export function createApp(deps: AppDeps): App {
       adapterCatalog,
       identity,
       authService: auth?.service ?? null,
+      credentialVault,
       multiUser: auth != null,
       sessionCookie: (value) => serializeSessionCookie(value, insecureCookies),
       clientIp: deriveClientIp(request.headers, undefined, true),

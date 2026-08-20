@@ -54,6 +54,13 @@ export interface RuntimeMaterializerOptions {
   readonly clock?: () => number;
   /** Injectable checkout client (default: command-backed `git`). */
   readonly git?: GitCheckoutClient;
+  /**
+   * Multi-user (U7): resolve the run OWNER's GitHub token for repository
+   * checkouts. Runs that carry an ownerId use THEIR token exclusively — the
+   * server-level SF_GIT_CHECKOUT_TOKEN never applies to owned runs. Absent =
+   * single-tenant (env token, byte-identical).
+   */
+  readonly ownerGithubToken?: (ownerId: string) => Promise<string | undefined>;
 }
 
 /**
@@ -67,7 +74,7 @@ export function createRuntimeWorkspaceMaterializer(
   const workspace = options.runtime?.workspace ?? resolveWorkspaceRuntimeConfig();
   const mode = options.runtime?.mode ?? 'local';
   const clock = options.clock ?? Date.now;
-  const git =
+  const defaultGit =
     options.git ??
     createCommandGitCheckoutClient(createNodeCommandRunner(), {
       // E5: exec-time-only credential read; the value never leaves the client.
@@ -76,6 +83,19 @@ export function createRuntimeWorkspaceMaterializer(
 
   return async (store, runId, input) => {
     const payload: RunCreatedPayload = runCreatedPayload(await store.readRun(runId));
+
+    // Multi-user (U7): an OWNED run checks out with the owner's own GitHub
+    // token — resolved per call (exec-time only, E5) and never the server env.
+    let git = defaultGit;
+    if (options.git === undefined && options.ownerGithubToken !== undefined) {
+      const ownerId = payload.ownerId;
+      if (ownerId !== undefined) {
+        const token = await options.ownerGithubToken(ownerId);
+        git = createCommandGitCheckoutClient(createNodeCommandRunner(), {
+          credentials: () => token,
+        });
+      }
+    }
 
     return materializeWorkspace(
       {
@@ -116,6 +136,12 @@ export interface RuntimePublisherOptions {
   readonly clock?: () => number;
   /** Injectable publish client (default: command-backed `git`). */
   readonly git?: GitPublishClient;
+  /**
+   * Multi-user (U7): resolve the run OWNER's GitHub token for the publish
+   * push. Mirrors the materializer option — owned runs publish with THEIR
+   * token, never the server env token.
+   */
+  readonly ownerGithubToken?: (ownerId: string) => Promise<string | undefined>;
 }
 
 /**
@@ -129,7 +155,7 @@ export function createRuntimeWorkspacePublisher(
   options: RuntimePublisherOptions = {},
 ): RunWorkspacePublisher {
   const clock = options.clock ?? Date.now;
-  const git =
+  const defaultGit =
     options.git ??
     createCommandGitPublishClient(createNodeCommandRunner(), {
       // E5: exec-time-only credential read; the value never leaves the client.
@@ -138,6 +164,19 @@ export function createRuntimeWorkspacePublisher(
 
   return async (store, runId) => {
     const events = await store.readRun(runId);
+
+    // Multi-user (U7): owned runs publish with the OWNER's GitHub token.
+    let git = defaultGit;
+    if (options.git === undefined && options.ownerGithubToken !== undefined) {
+      const ownerId = runCreatedPayload(events).ownerId;
+      if (ownerId !== undefined) {
+        const token = await options.ownerGithubToken(ownerId);
+        git = createCommandGitPublishClient(createNodeCommandRunner(), {
+          credentials: () => token,
+        });
+      }
+    }
+
     const projection = projectWorkspace(events, runId);
     const workspace = projection.workspace;
     if (projection.status !== 'ready' || workspace?.kind !== 'repo_checkout') {

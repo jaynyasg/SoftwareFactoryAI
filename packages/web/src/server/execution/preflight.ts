@@ -29,6 +29,7 @@ import {
 } from '@software-factory/core';
 import type {
   AdapterCatalog,
+  CredentialVault,
   EventStore,
   InterventionKind,
   PreflightCheck,
@@ -233,6 +234,68 @@ function probeCredentials(ctx: PreflightProbeContext): PreflightCheckOutcome {
     );
   }
   return pass('credentials', 'No missing execution credentials detected.');
+}
+
+/**
+ * Multi-user credential check (U7 — R14/G7/G15): PRESENCE-ONLY reads over the
+ * run owner's vault, so a missing credential blocks at preflight with an
+ * owner-directed fix — never mid-checkout or mid-spawn. An unreadable master
+ * key blocks with an ADMIN-directed message (login and non-credential
+ * surfaces are unaffected; only execution blocks).
+ */
+function createOwnerCredentialsProbe(vault: CredentialVault): PreflightProbe {
+  return async (ctx: PreflightProbeContext): Promise<PreflightCheckOutcome> => {
+    const ownerId = ctx.run.ownerId;
+    if (ownerId === undefined) {
+      return fail(
+        'credentials',
+        'This run predates multi-user accounts, so no owner credentials exist to execute it with.',
+        'Re-create the run from an account with execution credentials (Settings → Credentials).',
+        'missing_credentials',
+      );
+    }
+    if (!vault.readable) {
+      return fail(
+        'credentials',
+        'The credential vault cannot be decrypted (SF_MASTER_KEY does not open the stored credentials).',
+        'ADMIN action: restore the correct SF_MASTER_KEY on the server environment and restart. User logins keep working; runs stay blocked until the key is fixed.',
+        'missing_credentials',
+      );
+    }
+    const presence = await vault.getPresence(ownerId);
+    const has = (kind: string): boolean =>
+      presence.some((row) => row.kind === kind && row.present);
+    const hasExecutionCredential =
+      has('claude_oauth_token') ||
+      has('anthropic_api_key') ||
+      has('openai_api_key') ||
+      has('codex_auth_json');
+    if (!hasExecutionCredential) {
+      return fail(
+        'credentials',
+        'No execution credential is stored for this account (Claude OAuth token, Anthropic API key, OpenAI API key, or Codex auth.json).',
+        'Add an execution credential under Settings → Credentials, then start again. Runs execute on YOUR accounts — the server has no shared fallback.',
+        'missing_credentials',
+      );
+    }
+    // G15: a repo-source run without the owner's GitHub token must fail HERE,
+    // never mid-checkout.
+    const wantsRepo = ctx.run.githubRepo !== undefined && ctx.run.githubRepo.length > 0;
+    if (wantsRepo && ctx.workspace.status !== 'ready' && !has('github_token')) {
+      return fail(
+        'credentials',
+        `Repository ${ctx.run.githubRepo} requires YOUR GitHub token for checkout, and none is stored for this account.`,
+        'Add a GitHub token under Settings → Credentials (a fine-grained PAT with contents read/write on the target repository), then start again.',
+        'missing_credentials',
+      );
+    }
+    return pass(
+      'credentials',
+      `Owner credentials present (presence-only check): execution credential available${
+        wantsRepo ? ', GitHub token available for the repository checkout' : ''
+      }.`,
+    );
+  };
 }
 
 /**
@@ -470,6 +533,12 @@ export interface RuntimePreflightOptions {
    * wire one; without it, readiness stays enforced at execution time.
    */
   readonly adapters?: AdapterCatalog;
+  /**
+   * Multi-user credential vault (U7). When provided, the `credentials` check
+   * runs per-OWNER presence checks (execution credential + GitHub token for
+   * repo sources) instead of the single-tenant SF_GIT_CHECKOUT_TOKEN check.
+   */
+  readonly vault?: CredentialVault;
 }
 
 const PREFLIGHT_ACTOR = { kind: 'system', id: 'preflight' } as const;
@@ -485,6 +554,9 @@ export function createRuntimePreflight(options: RuntimePreflightOptions = {}): P
     ...DEFAULT_PROBES,
     ...(options.adapters !== undefined
       ? { adapters: createAdapterReadinessProbe(options.adapters) }
+      : {}),
+    ...(options.vault !== undefined
+      ? { credentials: createOwnerCredentialsProbe(options.vault) }
       : {}),
     ...options.probes,
   };
