@@ -32,6 +32,7 @@ import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createDefaultAdapterCatalog, createFileSystemEventStore } from '@software-factory/core';
 import type { AdapterCatalog, EventStore, OperatorTokenProvider } from '@software-factory/core';
+import { createAiRunPlanner } from './ai-planner';
 import { createApp } from './app';
 import type { App } from './app';
 import { createExecutionDaemon } from './execution/daemon';
@@ -100,9 +101,52 @@ export function getStore(): EventStore {
  * (`standalone.ts`), which already bootstraps eagerly. So this lazy path is the
  * deliberate trade-off for the Next mount, not an oversight.
  */
+/**
+ * Parse `SF_CLAUDE_ALLOWED_SKILLS` — the opt-in list of Claude Code skills
+ * factory workers may invoke (comma-separated names, or `*` for any). Unset =
+ * NO skills (fail closed): the operator's machine can carry hundreds of
+ * installed skills, including outward-facing deploy/publish ones, so worker
+ * access to them is never implicit.
+ */
+function resolveClaudeAllowedSkills(): readonly string[] {
+  const raw = process.env.SF_CLAUDE_ALLOWED_SKILLS?.trim();
+  if (raw === undefined || raw.length === 0) {
+    return [];
+  }
+  if (raw === '*') {
+    return ['*'];
+  }
+  return raw
+    .split(',')
+    .map((name) => name.trim())
+    .filter((name) => name.length > 0);
+}
+
+/**
+ * Preferred skill families to steer workers toward — adapter-agnostic
+ * guidance (`SF_PREFERRED_SKILLS`; the older `SF_CLAUDE_PREFERRED_SKILLS`
+ * name still works). Codex loads its skill catalog natively; Claude also
+ * needs `SF_CLAUDE_ALLOWED_SKILLS` before the guidance has any effect.
+ */
+function resolvePreferredSkills(): readonly string[] {
+  const raw = (
+    process.env.SF_PREFERRED_SKILLS ?? process.env.SF_CLAUDE_PREFERRED_SKILLS
+  )?.trim();
+  if (raw === undefined || raw.length === 0) {
+    return [];
+  }
+  return raw
+    .split(',')
+    .map((name) => name.trim())
+    .filter((name) => name.length > 0);
+}
+
 /** The process-wide adapter catalog shared by preflight and the executor. */
 function getAdapterCatalog(): AdapterCatalog {
-  singletons.adapterCatalog ??= createDefaultAdapterCatalog();
+  singletons.adapterCatalog ??= createDefaultAdapterCatalog({
+    claudeAllowedSkills: resolveClaudeAllowedSkills(),
+    preferredSkills: resolvePreferredSkills(),
+  });
   return singletons.adapterCatalog;
 }
 
@@ -154,6 +198,11 @@ export function getApp(): App {
     operatorToken: operatorTokenProvider(),
     execution: getExecutionDaemon(),
     adapterCatalog: getAdapterCatalog(),
+    // AI-backed planning: unknown intents are decomposed by the operator's
+    // authenticated Claude CLI (validated fail-closed in core); the built-in
+    // intent and underspecified requests keep their deterministic paths, and
+    // any AI failure falls back to human triage with the reason recorded.
+    planner: createAiRunPlanner(),
     config: {
       allowedOrigins: runtime.allowedOrigins,
       csrfToken: csrfToken(),

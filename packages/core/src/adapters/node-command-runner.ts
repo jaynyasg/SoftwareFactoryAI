@@ -8,7 +8,14 @@
  * that overruns is killed and the promise rejects with a timeout-shaped error so
  * `normalizeAdapterError` maps it to `timeout`.
  */
-import { spawn } from 'node:child_process';
+// cross-spawn, not node:child_process — npm-installed CLIs (claude, codex on
+// some installs) are `.cmd` shims on Windows, which Node's spawn refuses to
+// execute without a shell (CVE-2024-27980 hardening → ENOENT/EINVAL). A shell
+// is NOT acceptable here: exec args carry raw prompt text, so shell
+// interpretation would be an injection vector. cross-spawn resolves the shim
+// and escapes args for cmd.exe itself; on POSIX it delegates to child_process
+// with identical semantics.
+import spawn from 'cross-spawn';
 import type { CommandResult, CommandRunOptions, CommandRunner } from './execution-adapter';
 
 class TimeoutError extends Error {
@@ -143,8 +150,15 @@ export function createNodeCommandRunner(): CommandRunner {
           finishResolve({ code: code ?? 0, stdout, stderr });
         });
 
-        if (options.input !== undefined && child.stdin !== null) {
-          child.stdin.write(options.input);
+        // stdin is ALWAYS settled: written+closed when input was provided,
+        // closed immediately otherwise. A silently open pipe is a stall trap —
+        // `codex exec` blocks forever "Reading additional input from stdin..."
+        // and `claude -p` wastes 3s waiting, even when the prompt came via
+        // argv (observed live: a worker sat 37 minutes at ~0 CPU on this).
+        if (child.stdin !== null) {
+          if (options.input !== undefined) {
+            child.stdin.write(options.input);
+          }
           child.stdin.end();
         }
       });

@@ -61,6 +61,7 @@ export * from './supervisor/run-request';
 export * from './supervisor/risk-tier';
 // Deterministic planner: planRun (pure) + emitPlan (ledger writer).
 export * from './supervisor/planner';
+export * from './supervisor/ai-plan';
 // Build contract (full-factory U3 / X3): derive (pure) + emit (digest-idempotent).
 export * from './supervisor/build-contract';
 // Ticket dependency graph: build, topo order, readyTickets, cycle/missing errors.
@@ -81,6 +82,7 @@ export * from './adapters/execution-adapter';
 export * from './adapters/adapter-errors';
 // Default Node child_process-backed CommandRunner (never required in tests).
 export * from './adapters/node-command-runner';
+export * from './adapters/session-env';
 // Local/BYO CLI adapters behind the shared contract.
 export * from './adapters/codex-cli-adapter';
 export * from './adapters/claude-code-cli-adapter';

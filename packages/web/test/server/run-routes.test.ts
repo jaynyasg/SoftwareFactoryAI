@@ -676,3 +676,62 @@ describe('POST /api/runs — run modes (full-factory U3)', () => {
     expect(events.some((e) => e.type === 'run.planned')).toBe(false);
   });
 });
+
+describe('POST /api/runs/:id/settings — mid-run model/effort override', () => {
+  it('records run.settings_overridden and the projection applies the latest override', async () => {
+    const { app, store } = makeApp();
+    const created = await app.handle(
+      req('POST', '/api/runs', authedHeaders(), {
+        prompt: MARKETPLACE_PROMPT,
+        modelProfile: 'claude-fable-5',
+        selectedAdapter: 'claude-code-cli',
+      }),
+    );
+    const runId = String(record(created).runId);
+
+    const res = await app.handle(
+      req('POST', `/api/runs/${runId}/settings`, authedHeaders(), {
+        selectedAdapter: 'codex-cli',
+        modelProfile: 'gpt-5.6-sol',
+        reason: 'usage window exhausted',
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect((record(res).run as RunProjection).modelProfile).toBe('gpt-5.6-sol');
+    expect((record(res).run as RunProjection).selectedAdapter).toBe('codex-cli');
+
+    const events = await store.readRun(runId);
+    const override = events.find((e) => e.type === 'run.settings_overridden');
+    expect(override).toBeDefined();
+    expect((override?.payload as { reason?: string }).reason).toBe('usage window exhausted');
+    // The original run.created evidence is untouched (append-only history).
+    const createdEvent = events.find((e) => e.type === 'run.created');
+    expect((createdEvent?.payload as { modelProfile?: string }).modelProfile).toBe(
+      'claude-fable-5',
+    );
+  });
+
+  it('rejects an empty override and terminal runs', async () => {
+    const { app } = makeApp();
+    const created = await app.handle(
+      req('POST', '/api/runs', authedHeaders(), { prompt: MARKETPLACE_PROMPT }),
+    );
+    const runId = String(record(created).runId);
+
+    const empty = await app.handle(req('POST', `/api/runs/${runId}/settings`, authedHeaders(), {}));
+    expect(empty.status).toBe(400);
+    expect(record(empty).error).toBe('nothing_to_override');
+
+    const seq = (record(created).run as RunProjection).lastSequence;
+    await app.handle(
+      req('POST', `/api/runs/${runId}/cancel`, authedHeaders(), { expectedVersion: seq }),
+    );
+    const late = await app.handle(
+      req('POST', `/api/runs/${runId}/settings`, authedHeaders(), {
+        modelProfile: 'claude-haiku-4-5',
+      }),
+    );
+    expect(late.status).toBe(422);
+    expect(record(late).error).toBe('run_terminal');
+  });
+});

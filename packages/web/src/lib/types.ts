@@ -161,7 +161,11 @@ export interface SetupStatus {
   readonly sandbox: { readonly status: string };
   readonly adapters: { readonly status: string; readonly detected: readonly string[] };
   readonly deploy: { readonly status: string };
-  readonly workspace: { readonly root: string };
+  readonly workspace: {
+    readonly root: string;
+    /** Whether SF_GIT_CHECKOUT_TOKEN is present (never the value; E5). */
+    readonly checkoutCredentialsPresent?: boolean;
+  };
   readonly runtime?: {
     readonly mode?: string;
     readonly publicBaseUrl?: string;

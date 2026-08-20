@@ -17,7 +17,7 @@ import { useSession } from '../session-context';
 import { browseLocalFolders, startRun } from '../../lib/api-client';
 import type { FolderBrowseResult } from '../../lib/api-client';
 
-const ADAPTERS = [
+export const ADAPTERS = [
   { id: 'codex-cli', label: 'Codex CLI (local)' },
   { id: 'claude-code-cli', label: 'Claude Code CLI (local)' },
   { id: 'api', label: 'API adapter' },
@@ -29,7 +29,7 @@ const ADAPTERS = [
  * model flag (`claude --model`, `codex exec --model`), so the list is a
  * curated convenience, not a hard allow-list — extend it as models ship.
  */
-const MODELS_BY_ADAPTER: Readonly<
+export const MODELS_BY_ADAPTER: Readonly<
   Record<string, readonly { readonly id: string; readonly label: string }[]>
 > = {
   // Mirrors the operator's ChatGPT-plan model catalog (~/.codex/
@@ -81,7 +81,11 @@ export function RunControl({
   const [prompt, setPrompt] = useState('');
   const [prdRef, setPrdRef] = useState('');
   const [prdText, setPrdText] = useState('');
-  const [localFolder, setLocalFolder] = useState(defaultLocalFolder ?? '');
+  // The folder starts EMPTY on purpose: silently pre-filling the server's
+  // default (the factory's own source directory) once aimed a run's write
+  // boundary at the factory itself. Empty = a fresh generated workspace;
+  // `defaultLocalFolder` only seeds where the Browse picker opens.
+  const [localFolder, setLocalFolder] = useState('');
   // Server-backed folder browser (the web picker never reveals absolute
   // paths, so browsing goes through the local-first server instead).
   const [browser, setBrowser] = useState<FolderBrowseResult | null>(null);
@@ -143,7 +147,7 @@ export function RunControl({
     setBrowserOpen(true);
     // Start where the field points; the server falls back to the workspace
     // boundary root when the field is empty or unreadable.
-    await browseTo(localFolder.trim() || undefined);
+    await browseTo(localFolder.trim() || defaultLocalFolder || undefined);
   }
 
   async function onStart(event: FormEvent): Promise<void> {
@@ -261,6 +265,7 @@ export function RunControl({
               id={`${fieldId}-folder`}
               className="input mono"
               value={localFolder}
+              placeholder="empty = fresh generated workspace"
               onChange={(e) => setLocalFolder(e.target.value)}
             />
             {browserOpen ? (

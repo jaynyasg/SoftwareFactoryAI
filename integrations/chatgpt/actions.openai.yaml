@@ -221,6 +221,82 @@ paths:
             application/json:
               schema:
                 type: object
+  /api/runs/{runId}/publish:
+    post:
+      operationId: publishRunWorkspace
+      summary: >-
+        Publish a completed run's repo-checkout deliverable back to its GitHub
+        remote: commits any uncommitted worker output and pushes HEAD to the
+        checkout branch. Recorded on the ledger as workspace.published;
+        checkout credentials never leave the publish client.
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Publish outcome (pushed flag, commit, branch).
+          content:
+            application/json:
+              schema:
+                type: object
+        '422':
+          description: The run has no ready repository checkout to publish.
+          content:
+            application/json:
+              schema:
+                type: object
+        '404':
+          description: Run does not exist.
+          content:
+            application/json:
+              schema:
+                type: object
+  /api/runs/{runId}/settings:
+    post:
+      operationId: overrideRunSettings
+      summary: >-
+        Override run settings mid-run (model and/or reasoning effort), recorded
+        as an append-only run.settings_overridden event. Tickets that already
+        executed keep their recorded evidence; every ticket that has not
+        executed yet picks up the new model on its next execution attempt.
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OverrideRunSettingsRequest'
+      responses:
+        '200':
+          description: Override recorded; projected run returned.
+          content:
+            application/json:
+              schema:
+                type: object
+        '400':
+          description: Neither modelProfile nor reasoningEffort was provided.
+          content:
+            application/json:
+              schema:
+                type: object
+        '422':
+          description: The run is completed/cancelled; settings can no longer change execution.
+          content:
+            application/json:
+              schema:
+                type: object
+        '404':
+          description: Run does not exist.
+          content:
+            application/json:
+              schema:
+                type: object
   /api/runs/{runId}/workspace:
     post:
       operationId: materializeWorkspace
@@ -964,6 +1040,28 @@ components:
               type: string
         run:
           $ref: '#/components/schemas/RunProjection'
+    OverrideRunSettingsRequest:
+      type: object
+      properties:
+        selectedAdapter:
+          type: string
+          description: New adapter for not-yet-executed tickets (e.g. usage-pool failover).
+        modelProfile:
+          type: string
+          description: New model id for not-yet-executed tickets (e.g. claude-sonnet-5).
+        reasoningEffort:
+          type: string
+          description: New reasoning-effort label recorded on the run.
+        reason:
+          type: string
+          description: Why the operator changed course (e.g. usage window exhausted).
+        expectedVersion:
+          type: integer
+          minimum: 0
+          description: >-
+            Optional optimistic-concurrency check; rejected with 409 when older
+            than the run's current ledger version.
+      additionalProperties: false
     MaterializeWorkspaceRequest:
       type: object
       properties:

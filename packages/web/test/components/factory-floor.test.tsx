@@ -42,6 +42,9 @@ import { FactoryFloor } from '../../src/components/factory-floor/FactoryFloor';
 import { ReviewStudio } from '../../src/components/factory-floor/ReviewStudio';
 import { BlueprintLanes } from '../../src/components/factory-floor/BlueprintLanes';
 import { ContractHandoff } from '../../src/components/factory-floor/ContractHandoff';
+import { RunDecisions } from '../../src/components/factory-floor/RunDecisions';
+import { RunReport } from '../../src/components/factory-floor/RunReport';
+import { RunProgress } from '../../src/components/factory-floor/RunProgress';
 import { RunCommandBar } from '../../src/components/factory-floor/RunCommandBar';
 import { FactoryCommandBar } from '../../src/components/factory-floor/FactoryCommandBar';
 import { InterventionQueue } from '../../src/components/factory-floor/InterventionQueue';
@@ -256,7 +259,13 @@ describe('RunControl', () => {
     expect(cap).toHaveAttribute('max', '20');
     expect(cap).toHaveValue('10');
     expect(screen.getByLabelText('Effort budget')).toHaveValue('extra high');
-    expect(screen.getByLabelText('Local folder')).toHaveValue('C:\\repo\\software-factory');
+    // NEVER pre-filled: a silently-defaulted folder once aimed a run's write
+    // boundary at the factory's own source. Empty = fresh generated workspace.
+    expect(screen.getByLabelText('Local folder')).toHaveValue('');
+    expect(screen.getByLabelText('Local folder')).toHaveAttribute(
+      'placeholder',
+      'empty = fresh generated workspace',
+    );
     expect(screen.getByLabelText('GitHub repository')).toBeInTheDocument();
     expect(screen.getByText('upper bound · system-gated')).toBeInTheDocument();
     expect(screen.getByLabelText('Prompt (optional)')).toBeInTheDocument();
@@ -618,6 +627,64 @@ describe('RunCommandBar (U9)', () => {
     );
     expect(screen.getByRole('button', { name: /retry execution/i })).toBeEnabled();
     expect(screen.getByTestId('execution-reason')).toHaveTextContent(/preflight failed/);
+  });
+
+  it('offers a mid-run model override that posts to the settings endpoint', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ runId: 'run-m', run: {} }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const onChanged = vi.fn();
+    try {
+      render(
+        withSession(
+          <RunCommandBar
+            runId="run-m"
+            status="running"
+            executionState="failed"
+            selectedAdapter="claude-code-cli"
+            modelProfile="claude-fable-5"
+            lastSequence={9}
+            onChanged={onChanged}
+          />,
+        ),
+      );
+      const select = screen.getByLabelText('Model for run run-m');
+      expect(select).toHaveValue('claude-fable-5');
+      // No Apply button until the selection actually differs.
+      expect(screen.queryByRole('button', { name: 'Apply to remaining tickets' })).toBeNull();
+      fireEvent.change(select, { target: { value: 'claude-sonnet-5' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Apply to remaining tickets' }));
+      await waitFor(() => expect(onChanged).toHaveBeenCalled());
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/runs/run-m/settings',
+        expect.objectContaining({ method: 'POST' }),
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('offers Start (not Retry) when blocked before any job was enqueued', () => {
+    // A preflight-blocked start never enqueued a job: the server rejects retry
+    // ("use start instead"), so the bar must offer Start, closing the
+    // fix -> Start -> re-rehearse loop the rehearsal summary promises.
+    render(
+      withSession(
+        <RunCommandBar
+          runId="run-d"
+          status="planned"
+          executionState="blocked"
+          executionReason="Preflight failed: credentials."
+          hasExecutionJob={false}
+          lastSequence={5}
+        />,
+      ),
+    );
+    expect(screen.getByRole('button', { name: /start execution for run run-d/i })).toBeEnabled();
+    expect(screen.queryByRole('button', { name: /retry execution/i })).toBeNull();
   });
 
   it('ignores a command that settles after unmount (no onChanged, no state update)', async () => {
@@ -1277,5 +1344,362 @@ describe('FactoryFloor blueprint-first hierarchy (U9/KTD7)', () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe('Failed rehearsal presentation + per-run decisions', () => {
+  const FAILED_PREFLIGHT = {
+    status: 'failed' as const,
+    attempt: 1,
+    checks: [
+      { check: 'dag', ok: true, detail: '1 ticket(s) form a valid dependency DAG.' },
+      {
+        check: 'workspace',
+        ok: false,
+        reason: 'The run requests a source workspace that has not been materialized.',
+        requiredAction: 'Materialize the workspace first (POST /api/runs/:id/workspace).',
+      },
+      {
+        check: 'approvals',
+        ok: false,
+        reason: 'The plan requires human triage before any build execution.',
+        requiredAction:
+          'Complete triage for this run (resolve the request scope), then re-plan and start.',
+      },
+    ],
+    failedChecks: ['workspace', 'approvals'],
+  };
+
+  const OPEN_DECISIONS: BlockedStageView[] = [
+    {
+      interventionId: 'run-test:preflight:workspace:1',
+      kind: 'source_choice',
+      blockingStage: 'preflight',
+      severity: 'warn',
+      reason: 'The run requests a source workspace that has not been materialized.',
+      requiredAction: 'Materialize the workspace first (POST /api/runs/:id/workspace).',
+      approvable: false,
+    },
+    {
+      interventionId: 'run-test:preflight:approvals:1',
+      kind: 'approval',
+      blockingStage: 'preflight',
+      severity: 'warn',
+      reason: 'The plan requires human triage before any build execution.',
+      requiredAction:
+        'Complete triage for this run (resolve the request scope), then re-plan and start.',
+      approvable: true,
+    },
+  ];
+
+  it('summarizes a failed rehearsal and separates each reason from its fix', () => {
+    render(<ContractHandoff contract={undefined} preflight={FAILED_PREFLIGHT} />);
+
+    const summary = screen.getByTestId('preflight-summary');
+    expect(summary).toHaveTextContent('2 of 3 checks blocked this run.');
+    expect(summary).toHaveTextContent(/Apply the fix, then press Start/);
+
+    const rows = screen.getAllByTestId('preflight-check');
+    const workspace = rows.find((row) => within(row).queryByText('workspace') !== null);
+    expect(workspace).toBeDefined();
+    expect(
+      within(workspace!).getByText(/requests a source workspace that has not been materialized/),
+    ).toBeVisible();
+    // The fix renders as its own labelled line, not fused into the reason.
+    expect(within(workspace!).getByText('fix')).toBeVisible();
+    expect(within(workspace!).getByText(/Materialize the workspace first/)).toBeVisible();
+  });
+
+  it('links a failed rehearsal to the decision surface when decisions are open', () => {
+    render(
+      <ContractHandoff
+        contract={undefined}
+        preflight={FAILED_PREFLIGHT}
+        openDecisionCount={2}
+        decisionsHref="#run-decisions"
+      />,
+    );
+    const link = screen.getByTestId('preflight-decisions-link');
+    expect(link).toHaveTextContent('Review 2 pending decisions');
+    expect(link).toHaveAttribute('href', '#run-decisions');
+  });
+
+  it('offers no decision link on a passing rehearsal', () => {
+    const { aggregate } = buildFullAggregate();
+    render(
+      <ContractHandoff
+        contract={aggregate.run.buildContract}
+        preflight={aggregate.preflight}
+        openDecisionCount={0}
+        decisionsHref="#run-decisions"
+      />,
+    );
+    expect(screen.queryByTestId('preflight-summary')).toBeNull();
+    expect(screen.queryByTestId('preflight-decisions-link')).toBeNull();
+  });
+
+  it('renders open interventions as decision cards with a Resolve control', () => {
+    render(withSession(<RunDecisions runId="run-test" interventions={OPEN_DECISIONS} />));
+
+    expect(screen.getByTestId('run-decisions')).toBeInTheDocument();
+    const cards = screen.getAllByTestId('run-decision');
+    expect(cards).toHaveLength(2);
+    expect(
+      within(cards[1]).getByText(/requires human triage before any build execution/),
+    ).toBeVisible();
+    expect(within(cards[1]).getByText(/Complete triage for this run/)).toBeVisible();
+    expect(
+      within(cards[1]).getByLabelText('Resolve intervention run-test:preflight:approvals:1'),
+    ).toBeVisible();
+  });
+
+  it('renders nothing when no decision is pending', () => {
+    render(withSession(<RunDecisions runId="run-test" interventions={[]} />));
+    expect(screen.queryByTestId('run-decisions')).toBeNull();
+  });
+
+  it('offers one-click workspace materialization ONLY on the workspace decision', () => {
+    render(withSession(<RunDecisions runId="run-test" interventions={OPEN_DECISIONS} />));
+
+    const cards = screen.getAllByTestId('run-decision');
+    // source_choice/preflight (the workspace check) gets the action button…
+    expect(
+      within(cards[0]).getByRole('button', { name: 'Materialize workspace for run run-test' }),
+    ).toBeVisible();
+    // …the approval (triage) decision does not.
+    expect(
+      within(cards[1]).queryByRole('button', { name: /Materialize workspace/ }),
+    ).toBeNull();
+  });
+
+  it('posts workspace materialization to the run endpoint and reloads on success', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ runId: 'run-test', result: { ok: true } }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const onResolved = vi.fn();
+    try {
+      render(
+        withSession(
+          <RunDecisions runId="run-test" interventions={OPEN_DECISIONS} onResolved={onResolved} />,
+        ),
+      );
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Materialize workspace for run run-test' }),
+      );
+      await waitFor(() => expect(onResolved).toHaveBeenCalled());
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/runs/run-test/workspace',
+        expect.objectContaining({ method: 'POST' }),
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe('RunProgress (at-a-glance execution banner)', () => {
+  const T = (id: string, state: string, title?: string) =>
+    ({
+      ticketId: id,
+      title,
+      dependsOn: [],
+      state,
+      attempts: 1,
+      firstSequence: 1,
+      lastSequence: 2,
+    }) as unknown as import('@software-factory/core').TicketView;
+
+  const ROW = {
+    sequence: 9,
+    eventId: 'evt-9',
+    runId: 'run-p',
+    ticketId: 'corpus-inventory',
+    type: 'worker.progress',
+    severity: 'info',
+    timestamp: 1_700_000_000_000,
+    actor: { kind: 'system', id: 'worker' },
+    subject: { kind: 'ticket', id: 'corpus-inventory' },
+    detail: 'Run: rg -n --hidden vault/',
+  } as unknown as import('@software-factory/core').LedgerRow;
+
+  it('shows completed count, the bar, the running ticket, and the latest action', () => {
+    render(
+      <RunProgress
+        tickets={[
+          T('a', 'completed'),
+          T('b', 'completed'),
+          T('corpus-inventory', 'running', 'Inventory the source corpus'),
+          T('d', 'created'),
+        ]}
+        rows={[ROW]}
+      />,
+    );
+    expect(screen.getByTestId('run-progress-count')).toHaveTextContent('2 of 4 tickets completed');
+    expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '2');
+    expect(screen.getByTestId('run-progress-now')).toHaveTextContent(
+      'Inventory the source corpus',
+    );
+    expect(screen.getByTestId('run-progress-action')).toHaveTextContent('Run: rg -n --hidden');
+  });
+
+  it('renders nothing before a plan exists', () => {
+    render(<RunProgress tickets={[]} rows={[]} />);
+    expect(screen.queryByTestId('run-progress')).toBeNull();
+  });
+});
+
+describe('RunProgress alert strip (errors + human interaction visibility)', () => {
+  const NO_TICKET_ROWS: import('@software-factory/core').LedgerRow[] = [];
+  const T2 = (id: string, state: string) =>
+    ({
+      ticketId: id,
+      dependsOn: [],
+      state,
+      attempts: 1,
+      firstSequence: 1,
+      lastSequence: 2,
+    }) as unknown as import('@software-factory/core').TicketView;
+
+  it('shows a prominent alert with a Review link when decisions are open', () => {
+    render(
+      <RunProgress
+        tickets={[T2('a', 'completed')]}
+        rows={NO_TICKET_ROWS}
+        executionState="blocked"
+        executionReason='Post-run gate "install" failed: install failed (exit 1).'
+        openDecisionCount={1}
+        decisionsHref="#needs-you"
+      />,
+    );
+    const alert = screen.getByTestId('run-progress-alert');
+    expect(alert).toHaveTextContent('1 decision needs you');
+    expect(alert).toHaveTextContent(/install.*failed/);
+    expect(within(alert).getByRole('link', { name: 'Review now' })).toHaveAttribute(
+      'href',
+      '#needs-you',
+    );
+  });
+
+  it('shows the blocked/failed state even without open decisions', () => {
+    render(
+      <RunProgress
+        tickets={[T2('a', 'completed')]}
+        rows={NO_TICKET_ROWS}
+        executionState="failed"
+        executionReason="1 ticket(s) failed: scaffold-workspace."
+      />,
+    );
+    expect(screen.getByTestId('run-progress-alert')).toHaveTextContent('Execution failed —');
+  });
+
+  it('renders no alert while execution is healthy', () => {
+    render(
+      <RunProgress tickets={[T2('a', 'running')]} rows={NO_TICKET_ROWS} executionState="started" />,
+    );
+    expect(screen.queryByTestId('run-progress-alert')).toBeNull();
+  });
+});
+
+describe('RunReport (completion report + ship-it actions)', () => {
+  function completedRun(overrides: Record<string, unknown> = {}) {
+    const { aggregate } = buildFullAggregate('run-report');
+    return {
+      ...aggregate.run,
+      status: 'completed',
+      githubRepo: 'https://github.com/octo/app',
+      ...overrides,
+    } as typeof aggregate.run;
+  }
+
+  it('summarizes the build and offers Publish to GitHub when a repo is attached', () => {
+    const { aggregate } = buildFullAggregate('run-report');
+    render(
+      withSession(
+        <RunReport
+          run={completedRun()}
+          tickets={aggregate.tickets}
+          gates={aggregate.gates}
+          rows={aggregate.run.ledger}
+          deploy={aggregate.deploy}
+        />,
+      ),
+    );
+    const report = screen.getByTestId('run-report');
+    expect(report).toHaveTextContent(/tickets completed/);
+    expect(report).toHaveTextContent(/gates \d+ passed/);
+    expect(
+      within(report).getByRole('button', { name: /Publish run .* to GitHub/ }),
+    ).toBeVisible();
+  });
+
+  it('publishes via the run endpoint and shows the pushed commit', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () =>
+        Promise.resolve({
+          runId: 'run-report',
+          repo: 'octo/app',
+          result: { pushed: true, commit: 'abc123def456', branch: 'main', noChanges: false },
+        }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const { aggregate } = buildFullAggregate('run-report');
+      render(
+        withSession(
+          <RunReport
+            run={completedRun()}
+            tickets={aggregate.tickets}
+            gates={aggregate.gates}
+            rows={aggregate.run.ledger}
+            deploy={aggregate.deploy}
+          />,
+        ),
+      );
+      fireEvent.click(screen.getByRole('button', { name: /Publish run .* to GitHub/ }));
+      await waitFor(() =>
+        expect(screen.getByTestId('publish-result')).toHaveTextContent('abc123def4'),
+      );
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining('/publish'),
+        expect.objectContaining({ method: 'POST' }),
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('states deploy status honestly and hides entirely for unfinished runs', () => {
+    const { aggregate } = buildFullAggregate('run-report');
+    const { rerender } = render(
+      withSession(
+        <RunReport
+          run={completedRun({ githubRepo: undefined })}
+          tickets={aggregate.tickets}
+          gates={aggregate.gates}
+          rows={aggregate.run.ledger}
+          deploy={{ status: 'idle' } as never}
+        />,
+      ),
+    );
+    expect(screen.getByTestId('run-report-deploy')).toHaveTextContent(/did not deploy/);
+    expect(screen.getByTestId('run-report')).toHaveTextContent(/local workspace only/);
+
+    rerender(
+      withSession(
+        <RunReport
+          run={{ ...completedRun(), status: 'running' } as never}
+          tickets={aggregate.tickets}
+          gates={aggregate.gates}
+          rows={aggregate.run.ledger}
+          deploy={aggregate.deploy}
+        />,
+      ),
+    );
+    expect(screen.queryByTestId('run-report')).toBeNull();
   });
 });

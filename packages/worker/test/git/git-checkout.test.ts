@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  EMPTY_REPO_COMMIT,
   createCommandGitCheckoutClient,
   parseGitHubRepo,
   sanitizeCheckoutDetail,
@@ -117,8 +118,92 @@ describe('createCommandGitCheckoutClient', () => {
     expect(result.commit).toBe(COMMIT);
     const argv = fake.calls.map((call) => call.args.join(' '));
     expect(argv[0]).toBe(`clone --depth 1 https://github.com/octo/app.git ${dest}`);
-    expect(argv).toContain('rev-parse HEAD');
+    expect(argv).toContain('rev-parse --verify --quiet HEAD');
     expect(argv).toContain('rev-parse --abbrev-ref HEAD');
+  });
+
+  it('treats an EMPTY repository as a valid blank source (unborn HEAD)', async () => {
+    const fake = createFakeRunner({
+      responses: {
+        'git clone': { code: 0, stdout: '', stderr: '' },
+        // Unborn HEAD: rev-parse cannot resolve a commit…
+        'git rev-parse': { code: 1, stdout: '', stderr: 'fatal: Needed a single revision' },
+        // …but the symbolic ref still names the default branch.
+        'git symbolic-ref': { code: 0, stdout: 'main\n', stderr: '' },
+      },
+    });
+    const client = createCommandGitCheckoutClient(fake);
+    const result = await client.checkout({ repo, dest });
+
+    expect(result).toEqual({ branch: 'main', commit: EMPTY_REPO_COMMIT });
+    const argv = fake.calls.map((call) => call.args.join(' '));
+    expect(argv).toContain('symbolic-ref --short HEAD');
+  });
+
+  it('re-clones an EMPTY repository without --branch and names the unborn branch as requested', async () => {
+    // Scripted per-call: clone WITH --branch fails (empty repo), ls-remote
+    // reports zero refs, the plain re-clone succeeds, HEAD stays unborn.
+    const calls: string[] = [];
+    const runner = {
+      run(command: string, args: readonly string[]) {
+        const argv = args.join(' ');
+        calls.push(argv);
+        if (argv.startsWith('clone') && argv.includes('--branch')) {
+          return Promise.resolve({
+            code: 128,
+            stdout: '',
+            stderr: 'fatal: Remote branch develop not found in upstream origin',
+          });
+        }
+        if (argv.startsWith('ls-remote')) {
+          return Promise.resolve({ code: 0, stdout: '', stderr: '' });
+        }
+        if (argv.startsWith('rev-parse --verify')) {
+          return Promise.resolve({ code: 1, stdout: '', stderr: 'fatal: Needed a single revision' });
+        }
+        if (argv === 'symbolic-ref --short HEAD') {
+          return Promise.resolve({ code: 0, stdout: 'develop\n', stderr: '' });
+        }
+        return Promise.resolve({ code: 0, stdout: '', stderr: '' });
+      },
+    };
+    const client = createCommandGitCheckoutClient(runner);
+    const result = await client.checkout({ repo, dest, branch: 'develop' });
+
+    expect(result).toEqual({ branch: 'develop', commit: EMPTY_REPO_COMMIT });
+    expect(calls.some((argv) => argv === 'symbolic-ref HEAD refs/heads/develop')).toBe(true);
+    expect(calls.filter((argv) => argv.startsWith('clone'))).toHaveLength(2);
+  });
+
+  it('still fails honestly when the requested branch is missing from a NON-empty repository', async () => {
+    const calls: string[] = [];
+    const runner = {
+      run(command: string, args: readonly string[]) {
+        const argv = args.join(' ');
+        calls.push(argv);
+        if (argv.startsWith('clone')) {
+          return Promise.resolve({
+            code: 128,
+            stdout: '',
+            stderr: 'fatal: Remote branch develop not found in upstream origin',
+          });
+        }
+        if (argv.startsWith('ls-remote')) {
+          // The repo HAS refs — the branch is genuinely missing.
+          return Promise.resolve({
+            code: 0,
+            stdout: `${COMMIT}\trefs/heads/main\n`,
+            stderr: '',
+          });
+        }
+        return Promise.resolve({ code: 0, stdout: '', stderr: '' });
+      },
+    };
+    const client = createCommandGitCheckoutClient(runner);
+    await expect(client.checkout({ repo, dest, branch: 'develop' })).rejects.toThrow(
+      /Remote branch develop not found/,
+    );
+    expect(calls.filter((argv) => argv.startsWith('clone'))).toHaveLength(1);
   });
 
   it('passes --branch when requested', async () => {

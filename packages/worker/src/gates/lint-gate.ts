@@ -1,11 +1,13 @@
 /**
- * Lint gate: runs the generated app's lint command through the sandbox and maps
- * a non-zero exit to a blocking failure with command + output evidence.
+ * Lint gate: runs the generated app's OWN `lint` manifest script through the
+ * sandbox (applicability-aware — see `createScriptGate`: a workspace with no
+ * manifest or no lint script passes honestly instead of letting pnpm walk up
+ * into the factory's monorepo).
  */
-import { createCommandGate } from './command-gate';
+import { createScriptGate } from './command-gate';
 import type { Gate } from './command-gate';
 
-/** Options for the lint gate (defaults to `pnpm lint`). */
+/** Options for the lint gate (defaults to the workspace's `lint` script). */
 export interface LintGateOptions {
   readonly command?: string;
   readonly args?: readonly string[];
@@ -14,10 +16,11 @@ export interface LintGateOptions {
 
 /** Create the lint gate. */
 export function createLintGate(options: LintGateOptions = {}): Gate {
-  return createCommandGate({
+  return createScriptGate({
     name: 'lint',
-    command: options.command ?? 'pnpm',
-    args: options.args ?? ['lint'],
+    script: 'lint',
+    command: options.command,
+    args: options.args,
     timeoutMs: options.timeoutMs,
   });
 }

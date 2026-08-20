@@ -632,6 +632,97 @@ async function clearAllRuns(ctx: RouteContext): Promise<ApiResponse> {
 }
 
 /**
+ * Publish a completed run's repo-checkout deliverable back to its GitHub
+ * remote (commit + push, recorded as `workspace.published`). Guarded like
+ * every run command; the checkout token never leaves the publish client (E5).
+ */
+async function publishRunWorkspace(ctx: RouteContext): Promise<ApiResponse> {
+  const runId = ctx.params.id;
+  const guarded = await guardRunCommand(ctx, runId, 'workspace.publish');
+  if (guarded.response !== null) {
+    return guarded.response;
+  }
+
+  let outcome;
+  try {
+    outcome = await ctx.publishWorkspace(runId);
+  } catch (error) {
+    return {
+      status: 502,
+      body: {
+        error: 'publish_failed',
+        message: error instanceof Error ? error.message : 'Publishing failed.',
+      },
+    };
+  }
+  if (outcome === null) {
+    return {
+      status: 503,
+      body: {
+        error: 'publish_disabled',
+        message: 'Workspace publishing is not enabled on this server instance.',
+      },
+    };
+  }
+  if (!outcome.ok) {
+    return { status: 422, body: { error: 'not_publishable', message: outcome.reason } };
+  }
+  return { status: 200, body: { runId, repo: outcome.repo, result: outcome.result } };
+}
+
+/**
+ * Mid-run operator settings override (model and/or effort). Appends a
+ * `run.settings_overridden` event — append-only and replay-honest: tickets
+ * that already executed keep the evidence they were recorded with, and every
+ * ticket that has not executed yet picks up the new model on its next
+ * execution attempt (the executor projects the run per job claim).
+ */
+async function overrideRunSettings(ctx: RouteContext): Promise<ApiResponse> {
+  const runId = ctx.params.id;
+  const body = asRecord(ctx.request.body);
+  const guarded = await guardRunCommand(ctx, runId, 'run.override_settings');
+  if (guarded.response !== null) {
+    return guarded.response;
+  }
+  const current = guarded.run;
+
+  if (current.status === 'completed' || current.status === 'cancelled') {
+    return {
+      status: 422,
+      body: {
+        error: 'run_terminal',
+        message: `Run ${runId} is "${current.status}"; settings can no longer change execution.`,
+        run: current,
+      },
+    };
+  }
+
+  const selectedAdapter = str(body.selectedAdapter);
+  const modelProfile = str(body.modelProfile);
+  const reasoningEffort = str(body.reasoningEffort);
+  if (selectedAdapter === undefined && modelProfile === undefined && reasoningEffort === undefined) {
+    return {
+      status: 400,
+      body: {
+        error: 'nothing_to_override',
+        message: 'Provide selectedAdapter, modelProfile, and/or reasoningEffort to override.',
+      },
+    };
+  }
+
+  await ctx.writer.append({
+    runId,
+    type: 'run.settings_overridden',
+    actor: { kind: 'operator', id: 'operator' },
+    subject: { kind: 'run', id: runId, version: current.lastSequence },
+    severity: 'info',
+    payload: { selectedAdapter, modelProfile, reasoningEffort, reason: str(body.reason) },
+  });
+  const run = projectRun(await ctx.reader.readRun(runId), runId);
+  return { status: 200, body: { runId, run } };
+}
+
+/**
  * Trigger (or retry) workspace materialization for a run (full-factory U4).
  * The materializer converges on retry: an already-ready workspace is reused,
  * unchanged-unavailable evidence dedups, and new checkout attempts increment
@@ -712,6 +803,8 @@ export function runRoutes(): RouteDef[] {
     { method: 'POST', pattern: '/api/runs/cancel-all', handler: cancelAllRuns },
     { method: 'POST', pattern: '/api/runs/clear-all', handler: clearAllRuns },
     { method: 'POST', pattern: '/api/runs/:id/cancel', handler: cancelRun },
+    { method: 'POST', pattern: '/api/runs/:id/settings', handler: overrideRunSettings },
+    { method: 'POST', pattern: '/api/runs/:id/publish', handler: publishRunWorkspace },
     { method: 'POST', pattern: '/api/runs/:id/workspace', handler: materializeWorkspaceRoute },
     { method: 'GET', pattern: '/api/runs/:id/workspace', handler: getWorkspace },
     { method: 'GET', pattern: '/api/runs/:id/outputs', handler: getRunOutputs },

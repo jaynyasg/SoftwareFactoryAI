@@ -155,6 +155,12 @@ export interface ResolveInterventionInput {
   readonly resolution: string;
   readonly note?: string;
   readonly resolvedBy?: string;
+  /**
+   * Actor kind for the resolution. Defaults to `operator` (the guarded queue
+   * resolve); systems that supersede entries with newer evidence (e.g. a fresh
+   * preflight attempt) pass `system` so the ledger never fakes a human.
+   */
+  readonly actorKind?: 'operator' | 'system';
 }
 
 /** Append `intervention.resolved`, idempotent per interventionId. */
@@ -166,7 +172,7 @@ export function resolveIntervention(
   return store.append({
     runId: intervention.runId,
     type: 'intervention.resolved',
-    actor: { kind: 'operator', id: input.resolvedBy ?? 'operator' },
+    actor: { kind: input.actorKind ?? 'operator', id: input.resolvedBy ?? 'operator' },
     subject: { kind: 'intervention', id: intervention.interventionId },
     severity: 'info',
     idempotencyKey: `${intervention.interventionId}:resolved`,

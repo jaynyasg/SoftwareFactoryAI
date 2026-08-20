@@ -1,11 +1,13 @@
 /**
- * Typecheck gate: runs the generated app's typecheck command through the sandbox
- * and maps a non-zero exit to a blocking failure with command + output evidence.
+ * Typecheck gate: runs the generated app's OWN `typecheck` manifest script
+ * through the sandbox (applicability-aware — see `createScriptGate`: a
+ * workspace with no manifest or no typecheck script passes honestly instead
+ * of letting pnpm walk up into the factory's monorepo).
  */
-import { createCommandGate } from './command-gate';
+import { createScriptGate } from './command-gate';
 import type { Gate } from './command-gate';
 
-/** Options for the typecheck gate (defaults to `pnpm typecheck`). */
+/** Options for the typecheck gate (defaults to the workspace's `typecheck` script). */
 export interface TypecheckGateOptions {
   readonly command?: string;
   readonly args?: readonly string[];
@@ -14,10 +16,11 @@ export interface TypecheckGateOptions {
 
 /** Create the typecheck gate. */
 export function createTypecheckGate(options: TypecheckGateOptions = {}): Gate {
-  return createCommandGate({
+  return createScriptGate({
     name: 'typecheck',
-    command: options.command ?? 'pnpm',
-    args: options.args ?? ['typecheck'],
+    script: 'typecheck',
+    command: options.command,
+    args: options.args,
     timeoutMs: options.timeoutMs,
   });
 }

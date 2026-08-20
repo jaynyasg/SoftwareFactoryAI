@@ -36,6 +36,7 @@ import {
 import { projectExecutionQueue } from '../../src/server/execution/queue';
 import { projectInterventions } from '../../src/server/execution/interventions';
 import type { PreflightRunner } from '../../src/server/execution/preflight';
+import type { RunWorkspaceMaterializer } from '../../src/server/workspace/runtime-materializer';
 import { handleMcpRequest } from '../../src/server/mcp';
 
 const TOKEN = 'test-operator-token';
@@ -103,6 +104,9 @@ function makeExecApp(
     executor?: TicketExecutor;
     preflight?: PreflightRunner | null;
     researcher?: RunResearcher | null;
+    /** Workspace materializer (start auto-materializes; default null so unit
+     * tests never reach the real runtime materializer / the network). */
+    materializer?: RunWorkspaceMaterializer | null;
     maxAttempts?: number;
     autoStart?: boolean;
     /** Wrap the shared store (e.g. to inject targeted append failures). */
@@ -143,6 +147,7 @@ function makeExecApp(
     execution: daemon,
     preflight: options.preflight,
     researcher: options.researcher,
+    materializer: options.materializer ?? null,
     // Deterministic ready catalog: these route tests exercise queue/daemon
     // semantics, not real CLI setup probing (covered by execution-worker tests).
     adapterCatalog: createAdapterCatalog([readyFakeAdapter()]),
@@ -336,6 +341,56 @@ describe('preflight blocks start (X2)', () => {
     expect(seen).not.toContain('run.started');
     expect(seen).not.toContain('worker.started');
     expect(projectRun(await store.readRun(runId), runId).executionState).toBe('blocked');
+  });
+
+  it('start auto-materializes a requested-but-unready source workspace first', async () => {
+    const materialized: string[] = [];
+    const { app } = makeExecApp({
+      materializer: (store, runId) => {
+        materialized.push(runId);
+        return Promise.resolve({
+          ok: false,
+          outcome: 'checkout_failed',
+          reason: 'fake',
+          attempt: 1,
+        });
+      },
+    });
+
+    // A repo-sourced run: Start must trigger materialization before preflight.
+    const sourced = await createPlannedRun(app, { githubRepo: 'octo/app' });
+    await app.handle(req('POST', `/api/runs/${sourced}/start`, authedHeaders(), {}));
+    expect(materialized).toEqual([sourced]);
+
+    // A prompt-only run (fresh generated workspace) never materializes.
+    const promptOnly = await createPlannedRun(app);
+    await app.handle(req('POST', `/api/runs/${promptOnly}/start`, authedHeaders(), {}));
+    expect(materialized).toEqual([sourced]);
+  });
+
+  it('a repeated rehearsal supersedes prior attempts — one open entry per failing check', async () => {
+    const { app, store } = makeExecApp();
+    const runId = await createPlannedRun(app, { githubRepo: 'octo/app' });
+
+    await app.handle(req('POST', `/api/runs/${runId}/start`, authedHeaders(), {}));
+    await app.handle(req('POST', `/api/runs/${runId}/start`, authedHeaders(), {}));
+
+    const projection = projectInterventions(await store.readRun(runId));
+    const preflightItems = projection.interventions.filter(
+      (item) => item.blockingStage === 'preflight',
+    );
+    const openItems = preflightItems.filter((item) => item.status === 'open');
+
+    // Attempt 2 raised fresh entries; attempt 1's were auto-resolved as
+    // superseded — the queue mirrors the LATEST rehearsal, never a pile-up.
+    const openChecks = openItems.map((item) => item.interventionId.split(':')[2]);
+    expect(new Set(openChecks).size).toBe(openChecks.length);
+    expect(openItems.every((item) => item.interventionId.endsWith(':2'))).toBe(true);
+
+    const superseded = preflightItems.filter((item) => item.status === 'resolved');
+    expect(superseded.length).toBeGreaterThan(0);
+    expect(superseded.every((item) => item.interventionId.endsWith(':1'))).toBe(true);
+    expect(superseded.every((item) => /Superseded/.test(item.resolution ?? ''))).toBe(true);
   });
 });
 

@@ -274,7 +274,7 @@ export function createSchedulerTicketExecutor(
         `The plan requires human triage before any build execution (review mode "${
           run.reviewMode ?? 'human'
         }" does not bypass policy).`,
-        'Complete triage for this run (clarify the request scope), re-plan, and start again.',
+        'Resolve the triage decision by stating the clarified scope, then create a new run with that clarified request — plans are fixed at run creation.',
         'policy_block',
       );
     }

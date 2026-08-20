@@ -12,92 +12,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import type { EventSeverity } from '@software-factory/core';
-import type { InterventionItem, InterventionQueueSnapshot } from '../../lib/types';
+import type { InterventionQueueSnapshot } from '../../lib/types';
 import { filterInterventionItems } from '../../lib/run-view';
-import { resolveInterventionItem } from '../../lib/api-client';
-import { useSession } from '../session-context';
 import { Mono, SeverityBadge } from './primitives';
+import { ResolveInterventionControl } from './RunDecisions';
 
 const SEVERITIES: readonly EventSeverity[] = ['info', 'warn', 'error', 'critical'];
-
-function ResolveControl({
-  item,
-  onResolved,
-}: {
-  readonly item: InterventionItem;
-  readonly onResolved?: () => void;
-}) {
-  const session = useSession();
-  const [open, setOpen] = useState(false);
-  const [resolution, setResolution] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function submit(): Promise<void> {
-    const trimmed = resolution.trim();
-    if (trimmed.length === 0) {
-      setError('State how this was resolved — the resolution is recorded on the ledger.');
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    try {
-      const result = await resolveInterventionItem(session, item.interventionId, {
-        resolution: trimmed,
-      });
-      if (result.ok) {
-        setOpen(false);
-        onResolved?.();
-      } else {
-        setError(result.message ?? `Resolve failed (${result.error}).`);
-      }
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Network error resolving.');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  if (!open) {
-    return (
-      <button
-        type="button"
-        className="btn btn--sm"
-        onClick={() => setOpen(true)}
-        aria-label={`Resolve intervention ${item.interventionId}`}
-      >
-        Resolve
-      </button>
-    );
-  }
-  return (
-    <span className="iq__resolve">
-      <input
-        className="input iq__resolve-input"
-        placeholder="How was this resolved?"
-        value={resolution}
-        onChange={(e) => setResolution(e.target.value)}
-        aria-label={`Resolution for ${item.interventionId}`}
-      />
-      <button
-        type="button"
-        className="btn btn--sm btn--primary"
-        disabled={busy}
-        onClick={() => void submit()}
-      >
-        {busy ? 'Recording…' : 'Record'}
-      </button>
-      <button type="button" className="btn btn--sm btn--ghost" onClick={() => setOpen(false)}>
-        Keep open
-      </button>
-      {error !== null ? (
-        <span className="sev-error" role="alert" style={{ fontSize: 'var(--fs-2xs)' }}>
-          {error}
-        </span>
-      ) : null}
-    </span>
-  );
-}
 
 export function InterventionQueue({
   snapshot,
@@ -146,7 +66,7 @@ export function InterventionQueue({
   });
 
   return (
-    <section className="panel iq" aria-label="Operator interventions">
+    <section className="panel iq" id="needs-you" aria-label="Operator interventions">
       <header className="panel__header">
         <div className="row" style={{ gap: 'var(--space-8)' }}>
           <h2 className="panel__title">Needs you</h2>
@@ -283,7 +203,10 @@ export function InterventionQueue({
                       </button>
                     ) : null}
                     {item.status === 'open' ? (
-                      <ResolveControl item={item} onResolved={onResolved} />
+                      <ResolveInterventionControl
+                        interventionId={item.interventionId}
+                        onResolved={onResolved}
+                      />
                     ) : null}
                   </span>
                 </div>

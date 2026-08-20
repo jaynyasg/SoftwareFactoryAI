@@ -47,9 +47,14 @@ import type { PreflightRunResult, PreflightRunner } from './execution/preflight'
 import type { ExecutionDaemon } from './execution/daemon';
 import { createRuntimeResearcher } from './research/runtime-researcher';
 import type { ResearchTriggerInput, RunResearcher } from './research/runtime-researcher';
-import { createRuntimeWorkspaceMaterializer } from './workspace/runtime-materializer';
+import {
+  createRuntimeWorkspaceMaterializer,
+  createRuntimeWorkspacePublisher,
+} from './workspace/runtime-materializer';
 import type {
   RunWorkspaceMaterializer,
+  RunWorkspacePublisher,
+  WorkspacePublishOutcome,
   WorkspaceTriggerInput,
 } from './workspace/runtime-materializer';
 import { createGenomePlanner } from './planner';
@@ -147,6 +152,11 @@ export interface AppDeps {
    */
   readonly materializer?: RunWorkspaceMaterializer | null;
   /**
+   * Workspace publisher for the completion report's "publish to GitHub"
+   * action. Defaults to the runtime publisher; pass `null` to disable.
+   */
+  readonly publisher?: RunWorkspacePublisher | null;
+  /**
    * Execution daemon (full-factory U5, hardening E1). The daemon OWNS worker
    * execution; routes only enqueue/mutate queue state and `notify()` it.
    * Unlike the researcher/materializer, the app never constructs a daemon
@@ -238,6 +248,12 @@ export interface RouteContext {
   ): Promise<WorkspaceMaterializationResult | null>;
   /** Whether a workspace materializer is wired on this instance. */
   readonly workspaceEnabled: boolean;
+  /**
+   * Publish a run's ready repo-checkout back to its GitHub remote (commit +
+   * push, recorded as `workspace.published`). `null` when publishing is
+   * disabled on this instance.
+   */
+  publishWorkspace(runId: string): Promise<WorkspacePublishOutcome | null>;
   /**
    * The process execution daemon (U5), or `null` when execution controls are
    * disabled on this instance. Routes use it ONLY to `notify()` after queue
@@ -503,6 +519,17 @@ export function createApp(deps: AppDeps): App {
       ? createRuntimeWorkspaceMaterializer({ runtime: config.runtime, clock })
       : deps.materializer;
 
+  // `undefined` -> default runtime publisher; `null` -> publishing disabled.
+  const publisher: RunWorkspacePublisher | null =
+    deps.publisher === undefined ? createRuntimeWorkspacePublisher({ clock }) : deps.publisher;
+
+  async function publishWorkspaceForRun(runId: string): Promise<WorkspacePublishOutcome | null> {
+    if (publisher === null) {
+      return null;
+    }
+    return publisher(store, runId);
+  }
+
   async function materializeWorkspaceForRun(
     runId: string,
     input: WorkspaceTriggerInput,
@@ -642,6 +669,7 @@ export function createApp(deps: AppDeps): App {
       researchEnabled: researcher !== null,
       materializeWorkspace: materializeWorkspaceForRun,
       workspaceEnabled: materializer !== null,
+      publishWorkspace: publishWorkspaceForRun,
       executionDaemon,
       runPreflight: runPreflightForRun,
     };

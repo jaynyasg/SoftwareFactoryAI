@@ -57,6 +57,18 @@ export function createAdapterCatalog(adapters: readonly ExecutionAdapter[]): Ada
 export interface DefaultAdapterCatalogOptions {
   /** Injected process runner for the CLI adapters (tests inject fakes). */
   readonly runner?: CommandRunner;
+  /**
+   * Claude Code skills workers may invoke (opt-in; default NONE — fail
+   * closed). `['*']` = any locally installed skill; names restrict guidance.
+   */
+  readonly claudeAllowedSkills?: readonly string[];
+  /**
+   * Skill names/families workers should PREFER when relevant — adapter-
+   * agnostic guidance appended to ticket prompts. For Claude it only takes
+   * effect once `claudeAllowedSkills` grants the Skill tool; Codex loads its
+   * own skill catalog natively, so the steering always applies there.
+   */
+  readonly preferredSkills?: readonly string[];
 }
 
 /**
@@ -67,8 +79,15 @@ export function createDefaultAdapterCatalog(
   options: DefaultAdapterCatalogOptions = {},
 ): AdapterCatalog {
   return createAdapterCatalog([
-    createCodexCliAdapter({ runner: options.runner }),
-    createClaudeCodeCliAdapter({ runner: options.runner }),
+    createCodexCliAdapter({
+      runner: options.runner,
+      preferredSkills: options.preferredSkills,
+    }),
+    createClaudeCodeCliAdapter({
+      runner: options.runner,
+      allowedSkills: options.claudeAllowedSkills,
+      preferredSkills: options.preferredSkills,
+    }),
     createApiAdapter(),
   ]);
 }

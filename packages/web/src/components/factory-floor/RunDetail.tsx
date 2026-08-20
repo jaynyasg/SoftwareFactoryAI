@@ -53,6 +53,9 @@ export function RunDetail({
           status={snapshot.run.status}
           executionState={snapshot.run.executionState}
           executionReason={snapshot.run.executionReason}
+          hasExecutionJob={snapshot.executionJob !== null}
+          selectedAdapter={snapshot.run.selectedAdapter}
+          modelProfile={snapshot.run.modelProfile}
           lastSequence={snapshot.lastSequence}
           preview={snapshot.preview}
           deploy={snapshot.deploy}

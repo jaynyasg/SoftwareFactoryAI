@@ -21,6 +21,9 @@ import { TraceLedger } from './TraceLedger';
 import { ReviewStudio } from './ReviewStudio';
 import { ResearchBrief } from './ResearchBrief';
 import { ContractHandoff } from './ContractHandoff';
+import { RunProgress } from './RunProgress';
+import { RunDecisions } from './RunDecisions';
+import { RunReport } from './RunReport';
 import { PackageHandoff } from './PackageHandoff';
 import { DeployStatus } from './DeployStatus';
 import { ArtifactDrawer } from './ArtifactDrawer';
@@ -138,6 +141,27 @@ export function RunView({
         </div>
       </section>
 
+      {/* Anything blocking on a human renders BEFORE the run grid (same
+          hierarchy rule as the factory floor's "Needs you" queue): the run
+          page must offer the decision, not just report the blockage. */}
+      <RunReport
+        run={run}
+        tickets={tickets}
+        gates={snapshot.gates}
+        rows={rows}
+        deploy={snapshot.deploy}
+      />
+      <RunProgress
+        tickets={tickets}
+        rows={rows}
+        executionState={run.executionState}
+        executionReason={run.executionReason}
+        openDecisionCount={snapshot.interventions.length}
+        decisionsHref="#run-decisions"
+      />
+
+      <RunDecisions runId={runId} interventions={snapshot.interventions} onResolved={refresh} />
+
       <div className="run-grid">
         <div className="run-grid__main">
           {snapshot.research.status !== 'none' ? (
@@ -184,7 +208,12 @@ export function RunView({
             diagnostics={run.diagnostics}
           />
           {run.buildContract !== undefined || snapshot.preflight.status !== 'none' ? (
-            <ContractHandoff contract={run.buildContract} preflight={snapshot.preflight} />
+            <ContractHandoff
+              contract={run.buildContract}
+              preflight={snapshot.preflight}
+              openDecisionCount={snapshot.interventions.length}
+              decisionsHref="#run-decisions"
+            />
           ) : null}
           <ReviewStudio
             runId={runId}

@@ -5,8 +5,10 @@
  * fake `CommandRunner`, so the gate -> sandbox -> runner path is exercised end
  * to end without any real process.
  */
-import { resolve } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createInMemoryEventStore, projectRun } from '@software-factory/core';
 import {
   createDependencyAuditGate,
@@ -20,7 +22,22 @@ import type { Gate, GateContext, GateResult, Sandbox } from '../../src/index';
 import { createFakeRunner } from '../_helpers/fake-runner';
 import type { FakeRunnerScript } from '../_helpers/fake-runner';
 
-const WORKSPACE = resolve('gate-test-workspace');
+// A REAL workspace dir with a manifest declaring the gate scripts: the
+// script gates are applicability-aware and honestly skip when no manifest
+// (or script) exists, so exercising the command path needs a manifest.
+const WORKSPACE = resolve(join(tmpdir(), 'sf-gate-runner-workspace'));
+
+beforeAll(() => {
+  mkdirSync(WORKSPACE, { recursive: true });
+  writeFileSync(
+    join(WORKSPACE, 'package.json'),
+    JSON.stringify({ name: 'gate-test-app', scripts: { lint: 'eslint .', typecheck: 'tsc' } }),
+  );
+});
+
+afterAll(() => {
+  rmSync(WORKSPACE, { recursive: true, force: true });
+});
 
 function sandboxWith(script: FakeRunnerScript): Sandbox {
   return createLocalFallbackSandbox({
@@ -57,10 +74,10 @@ function flakyGate(name: string, failures: number): Gate {
 describe('gate-runner: ordered pass with evidence', () => {
   it('emits gate.started -> gate.passed with command evidence for each gate', async () => {
     const store = createInMemoryEventStore();
+    // Script gates run `pnpm run <script>`; the fake keys on command+firstArg.
     const sandbox = sandboxWith({
       responses: {
-        'pnpm lint': { code: 0, stdout: 'lint clean', stderr: '' },
-        'pnpm typecheck': { code: 0, stdout: 'no type errors', stderr: '' },
+        'pnpm run': { code: 0, stdout: 'lint clean', stderr: '' },
       },
     });
 
@@ -84,7 +101,7 @@ describe('gate-runner: ordered pass with evidence', () => {
     // Evidence (command + output) rides on the gate.passed events and projects.
     const view = projectRun(events, 'run-gates');
     const lintPassed = view.ledger.find(
-      (row) => row.type === 'gate.passed' && row.evidence?.some((e) => e.ref === 'pnpm lint'),
+      (row) => row.type === 'gate.passed' && row.evidence?.some((e) => e.ref === 'pnpm run lint'),
     );
     expect(lintPassed).toBeDefined();
     expect(lintPassed?.evidence?.[0].note).toContain('lint clean');
@@ -94,10 +111,10 @@ describe('gate-runner: ordered pass with evidence', () => {
 describe('gate-runner: blocking failure', () => {
   it('stops the pipeline on the first failing gate and returns structured retry context', async () => {
     const store = createInMemoryEventStore();
+    // The lint gate fails first; typecheck must never run (blocking order).
     const sandbox = sandboxWith({
       responses: {
-        'pnpm lint': { code: 2, stdout: '', stderr: 'lint failed: 3 problems' },
-        'pnpm typecheck': { code: 0, stdout: '', stderr: '' },
+        'pnpm run': { code: 2, stdout: '', stderr: 'lint failed: 3 problems' },
       },
     });
 
@@ -114,7 +131,7 @@ describe('gate-runner: blocking failure', () => {
     expect(result.ranToCompletion).toBe(false);
     expect(result.failure).toBeDefined();
     expect(result.failure?.gate).toBe('lint');
-    expect(result.failure?.command).toBe('pnpm lint');
+    expect(result.failure?.command).toBe('pnpm run lint');
     expect(result.failure?.outputExcerpt).toContain('lint failed');
     expect(result.failure?.attempt).toBe(1);
 

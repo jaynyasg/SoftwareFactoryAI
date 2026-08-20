@@ -219,6 +219,61 @@ export function rerunGates(
   return mutate(`/api/runs/${encodeURIComponent(runId)}/gates/rerun`, session, { reason });
 }
 
+/**
+ * Mid-run settings override: records `run.settings_overridden` so every
+ * not-yet-executed ticket picks up the new model/effort on the next
+ * execution attempt. Already-executed tickets keep their recorded evidence.
+ */
+export function overrideRunSettings(
+  session: LocalSession,
+  runId: string,
+  input: {
+    readonly selectedAdapter?: string;
+    readonly modelProfile?: string;
+    readonly reasoningEffort?: string;
+    readonly reason?: string;
+  },
+): Promise<MutationResult<{ runId: string; run: RunProjection }>> {
+  return mutate(`/api/runs/${encodeURIComponent(runId)}/settings`, session, { ...input });
+}
+
+/** The publish result surfaced by the completion report's GitHub action. */
+export interface PublishRunResult {
+  readonly runId: string;
+  readonly repo: string;
+  readonly result: {
+    readonly pushed: boolean;
+    readonly commit?: string;
+    readonly branch: string;
+    readonly noChanges: boolean;
+    readonly note?: string;
+  };
+}
+
+/**
+ * Publish a completed run's repo-checkout deliverable to its GitHub remote
+ * (commit + push; recorded on the ledger as `workspace.published`).
+ */
+export function publishRunWorkspace(
+  session: LocalSession,
+  runId: string,
+): Promise<MutationResult<PublishRunResult>> {
+  return mutate(`/api/runs/${encodeURIComponent(runId)}/publish`, session, {});
+}
+
+/**
+ * Trigger (or retry) workspace materialization for a run (U4). Converges on
+ * retry server-side; the projected workspace/run in the response reflect the
+ * outcome, so callers just reload the aggregate.
+ */
+export function materializeRunWorkspace(
+  session: LocalSession,
+  runId: string,
+  options: { readonly branch?: string } = {},
+): Promise<MutationResult<unknown>> {
+  return mutate(`/api/runs/${encodeURIComponent(runId)}/workspace`, session, { ...options });
+}
+
 /* ----------------------------------------------------------------------------
  * Factory-wide execution controls (drain gate + cancel-all)
  *

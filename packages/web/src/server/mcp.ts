@@ -262,6 +262,38 @@ const TOOLS: readonly McpTool[] = [
     },
   },
   {
+    name: 'software_factory_override_settings',
+    description:
+      'Override run settings mid-run (model and/or reasoning effort), recorded as an append-only run.settings_overridden event. Tickets that already executed keep their recorded evidence; every ticket that has not executed yet picks up the new model on its next execution attempt. Useful when a usage window is exhausted and the remaining tickets should run on a cheaper model.',
+    inputSchema: {
+      type: 'object',
+      required: ['runId'],
+      properties: {
+        runId: { type: 'string' },
+        selectedAdapter: { type: 'string' },
+        modelProfile: { type: 'string' },
+        reasoningEffort: { type: 'string' },
+        reason: { type: 'string' },
+        expectedVersion: { type: 'integer', minimum: 0 },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'software_factory_publish_workspace',
+    description:
+      "Publish a completed run's repo-checkout deliverable back to its GitHub remote: commits any uncommitted worker output and pushes HEAD to the checkout branch. Recorded on the ledger as workspace.published; checkout credentials never leave the publish client.",
+    inputSchema: {
+      type: 'object',
+      required: ['runId'],
+      properties: {
+        runId: { type: 'string' },
+        expectedVersion: { type: 'integer', minimum: 0 },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'software_factory_get_workspace',
     description: 'Read the projected workspace materialization state for a run.',
     inputSchema: {
@@ -672,6 +704,34 @@ async function callFactoryTool(
         response = await deps.app.handle(
           internalRequest('POST', runPath(runId, 'workspace'), session, {
             branch: str(args.branch),
+            expectedVersion: num(args.expectedVersion),
+          }),
+        );
+        break;
+      }
+      case 'software_factory_override_settings': {
+        const runId = str(args.runId);
+        if (runId === undefined) {
+          return missingRunId();
+        }
+        response = await deps.app.handle(
+          internalRequest('POST', runPath(runId, 'settings'), session, {
+            selectedAdapter: str(args.selectedAdapter),
+            modelProfile: str(args.modelProfile),
+            reasoningEffort: str(args.reasoningEffort),
+            reason: str(args.reason),
+            expectedVersion: num(args.expectedVersion),
+          }),
+        );
+        break;
+      }
+      case 'software_factory_publish_workspace': {
+        const runId = str(args.runId);
+        if (runId === undefined) {
+          return missingRunId();
+        }
+        response = await deps.app.handle(
+          internalRequest('POST', runPath(runId, 'publish'), session, {
             expectedVersion: num(args.expectedVersion),
           }),
         );

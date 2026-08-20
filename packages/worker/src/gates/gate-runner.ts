@@ -21,6 +21,8 @@ import type {
   EventStore,
   GateStage,
 } from '@software-factory/core';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import type { Gate, GateContext, GateEvidence, GateResult } from './command-gate';
 import { createCommandGate } from './command-gate';
 import { createLintGate } from './lint-gate';
@@ -217,14 +219,51 @@ export interface CommandGateOverride {
   readonly timeoutMs?: number;
 }
 
-/** Create the install gate (defaults to `pnpm install`). */
+/**
+ * Create the install gate (defaults to `pnpm install`). Two hard-won rules
+ * (observed live on a nested run workspace):
+ *
+ *  - NO MANIFEST = PASS. A zero-dependency deliverable has nothing to
+ *    install; running the package manager anyway is worse than useless —
+ *    pnpm walks UP from a manifest-less dir, finds the FACTORY's own
+ *    workspace, and tries to install THAT (aborting on the no-TTY prompt).
+ *  - CONFINEMENT. When a manifest exists but the workspace declares no
+ *    pnpm-workspace.yaml of its own, `--ignore-workspace` pins pnpm to the
+ *    run workspace so it can never resolve a parent monorepo. `CI=true`
+ *    keeps the install headless (no interactive prompts in a sandbox).
+ */
 export function createInstallGate(options: CommandGateOverride = {}): Gate {
-  return createCommandGate({
+  return {
     name: 'install',
-    command: options.command ?? 'pnpm',
-    args: options.args ?? ['install'],
-    timeoutMs: options.timeoutMs,
-  });
+    run(ctx: GateContext): Promise<GateResult> {
+      if (!existsSync(join(ctx.workspaceDir, 'package.json'))) {
+        return Promise.resolve({
+          gate: 'install',
+          passed: true,
+          summary: 'No package.json at the workspace root — nothing to install.',
+          evidence: [
+            {
+              label: 'install:skipped',
+              detail:
+                'The workspace declares no package manifest; the deliverable has no dependencies to install.',
+            },
+          ],
+        });
+      }
+      const command = options.command ?? 'pnpm';
+      const defaultArgs =
+        command === 'pnpm' && !existsSync(join(ctx.workspaceDir, 'pnpm-workspace.yaml'))
+          ? ['install', '--ignore-workspace']
+          : ['install'];
+      return createCommandGate({
+        name: 'install',
+        command,
+        args: options.args ?? defaultArgs,
+        env: { CI: 'true' },
+        timeoutMs: options.timeoutMs,
+      }).run(ctx);
+    },
+  };
 }
 
 /** Options for the dependency-audit gate. */

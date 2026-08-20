@@ -31,6 +31,7 @@
  * of double-enqueueing (queue appends are keyed per job+attempt).
  */
 import { INTERVENTION_KINDS, projectRun } from '@software-factory/core';
+import { projectWorkspace } from '@software-factory/worker';
 import type {
   EventSeverity,
   FactoryEvent,
@@ -144,6 +145,19 @@ export async function requestExecutionStart(
       attempt: failures + 1,
       max: daemon.config.maxAttempts,
     };
+  }
+
+  // One-action start: a requested source workspace that is not ready yet is
+  // materialized HERE, not bounced back to the operator (the old loop was
+  // Start → preflight fail → "Materialize workspace" → Start). The routine is
+  // idempotent and converging — an already-ready workspace is a no-op, and a
+  // failed materialization records honest ledger evidence that the preflight
+  // workspace check below surfaces with its usual fix guidance.
+  const wantsSource =
+    (run.localFolder !== undefined && run.localFolder.length > 0) ||
+    (run.githubRepo !== undefined && run.githubRepo.length > 0);
+  if (wantsSource && projectWorkspace(events, runId).status !== 'ready') {
+    await ctx.materializeWorkspace(runId, {});
   }
 
   // Build contract before execution (X3): derive from current projections and

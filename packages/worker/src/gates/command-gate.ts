@@ -12,6 +12,8 @@
  * that the runner maps onto event evidence and, on failure, into the structured
  * retry context fed back to the worker runner.
  */
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { Sandbox, SandboxRunResult } from '../sandbox/sandbox';
 
 /** One piece of gate evidence (command, output excerpt, or a note/ref). */
@@ -73,6 +75,104 @@ export function excerptOf(stdout: string, stderr: string, max = MAX_OUTPUT_EXCER
   return `…${trimmed.slice(trimmed.length - (max - 1))}`;
 }
 
+/** Configuration for a manifest-script gate (e.g. `pnpm lint`). */
+export interface ScriptGateConfig {
+  readonly name: string;
+  /** The package-manifest script the gate runs (`lint`, `typecheck`, `test`). */
+  readonly script: string;
+  /** Explicit command override — runs AS-IS, bypassing manifest detection. */
+  readonly command?: string;
+  /** Explicit args override — runs AS-IS, bypassing manifest detection. */
+  readonly args?: readonly string[];
+  readonly timeoutMs?: number;
+}
+
+/**
+ * Build a gate around a package-manifest SCRIPT, applicability-aware:
+ *
+ *  - No `package.json` in the workspace → PASS ("nothing to run"). Running
+ *    `pnpm <script>` anyway makes pnpm walk UP out of the run workspace and
+ *    execute the FACTORY's own script (observed live: the lint gate ran the
+ *    factory repo's `eslint .` and failed on unrelated files).
+ *  - Manifest present but unparseable → FAIL honestly (broken deliverable).
+ *  - Script not declared → PASS ("script not declared — nothing to run").
+ *  - Otherwise `pnpm run <script>` headless (CI=true), confined to the
+ *    manifest that declared it.
+ *
+ * Explicit command/args overrides skip all detection and run as configured.
+ */
+export function createScriptGate(config: ScriptGateConfig): Gate {
+  return {
+    name: config.name,
+    run(ctx: GateContext): Promise<GateResult> {
+      if (config.command !== undefined || config.args !== undefined) {
+        return createCommandGate({
+          name: config.name,
+          command: config.command ?? 'pnpm',
+          args: config.args ?? ['run', config.script],
+          env: { CI: 'true' },
+          timeoutMs: config.timeoutMs,
+        }).run(ctx);
+      }
+
+      const manifestPath = join(ctx.workspaceDir, 'package.json');
+      if (!existsSync(manifestPath)) {
+        return Promise.resolve({
+          gate: config.name,
+          passed: true,
+          summary: `No package.json at the workspace root — no "${config.script}" script to run.`,
+          evidence: [
+            {
+              label: `${config.name}:skipped`,
+              detail: `The workspace declares no package manifest, so there is no "${config.script}" script to run at gate level.`,
+            },
+          ],
+        });
+      }
+
+      let scripts: Record<string, unknown> = {};
+      try {
+        const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as Record<string, unknown>;
+        scripts = (manifest.scripts as Record<string, unknown> | undefined) ?? {};
+      } catch (error) {
+        return Promise.resolve({
+          gate: config.name,
+          passed: false,
+          reason: `package.json is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+          evidence: [
+            {
+              label: `${config.name}:manifest`,
+              detail: 'The workspace package.json could not be parsed.',
+            },
+          ],
+        });
+      }
+
+      if (typeof scripts[config.script] !== 'string') {
+        return Promise.resolve({
+          gate: config.name,
+          passed: true,
+          summary: `package.json declares no "${config.script}" script — nothing to run.`,
+          evidence: [
+            {
+              label: `${config.name}:skipped`,
+              detail: `No "${config.script}" script is declared in the workspace manifest.`,
+            },
+          ],
+        });
+      }
+
+      return createCommandGate({
+        name: config.name,
+        command: 'pnpm',
+        args: ['run', config.script],
+        env: { CI: 'true' },
+        timeoutMs: config.timeoutMs,
+      }).run(ctx);
+    },
+  };
+}
+
 /** Configuration for a command-backed gate. */
 export interface CommandGateConfig {
   readonly name: string;
@@ -82,6 +182,8 @@ export interface CommandGateConfig {
   readonly cwd?: string;
   /** Paths the command may touch (validated by the sandbox policy). */
   readonly paths?: readonly string[];
+  /** Env overrides forwarded to the sandbox (subject to its allow/deny rules). */
+  readonly env?: Readonly<Record<string, string>>;
   readonly timeoutMs?: number;
   /** Map a sandbox result to pass/fail (default: exit 0 passes). */
   readonly isSuccess?: (result: SandboxRunResult) => boolean;
@@ -97,6 +199,7 @@ export function createCommandGate(config: CommandGateConfig): Gate {
         args: config.args,
         cwd: config.cwd ?? '.',
         paths: config.paths,
+        env: config.env,
         timeoutMs: config.timeoutMs,
         signal: ctx.signal,
       });

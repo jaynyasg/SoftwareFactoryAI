@@ -14,8 +14,19 @@
  */
 import { createNodeCommandRunner } from '@software-factory/core';
 import type { EventStore, RunCreatedPayload } from '@software-factory/core';
-import { createCommandGitCheckoutClient, materializeWorkspace } from '@software-factory/worker';
-import type { GitCheckoutClient, WorkspaceMaterializationResult } from '@software-factory/worker';
+import {
+  createCommandGitCheckoutClient,
+  createCommandGitPublishClient,
+  gitHubRemoteUrl,
+  materializeWorkspace,
+  projectWorkspace,
+} from '@software-factory/worker';
+import type {
+  GitCheckoutClient,
+  GitPublishClient,
+  GitPublishResult,
+  WorkspaceMaterializationResult,
+} from '@software-factory/worker';
 import { runCreatedPayload } from '../run-created';
 import { resolveWorkspaceRuntimeConfig } from '../runtime';
 import type { RuntimeConfig } from '../runtime';
@@ -82,5 +93,87 @@ export function createRuntimeWorkspaceMaterializer(
       },
       { store, git, clock },
     );
+  };
+}
+
+/* ----------------------------------------------------------------------------
+ * Workspace publish (the completion report's "ship the deliverable" action)
+ * ------------------------------------------------------------------------- */
+
+/** The outcome surfaced by the publish trigger route. */
+export type WorkspacePublishOutcome =
+  | { readonly ok: true; readonly result: GitPublishResult; readonly repo: string }
+  | { readonly ok: false; readonly reason: string };
+
+/** A publisher bound to the server runtime: pushes a run's checkout to GitHub. */
+export type RunWorkspacePublisher = (
+  store: EventStore,
+  runId: string,
+) => Promise<WorkspacePublishOutcome>;
+
+/** Options for building the runtime publisher (hooks injectable for tests). */
+export interface RuntimePublisherOptions {
+  readonly clock?: () => number;
+  /** Injectable publish client (default: command-backed `git`). */
+  readonly git?: GitPublishClient;
+}
+
+/**
+ * Build the default runtime workspace publisher. Publishable = a READY
+ * repo-checkout workspace; the push commits any uncommitted worker output
+ * and pushes HEAD to the checkout's branch on the credential-free remote
+ * (auth rides the git config env — E5). The outcome is recorded on the
+ * ledger as `workspace.published`.
+ */
+export function createRuntimeWorkspacePublisher(
+  options: RuntimePublisherOptions = {},
+): RunWorkspacePublisher {
+  const clock = options.clock ?? Date.now;
+  const git =
+    options.git ??
+    createCommandGitPublishClient(createNodeCommandRunner(), {
+      // E5: exec-time-only credential read; the value never leaves the client.
+      credentials: () => process.env.SF_GIT_CHECKOUT_TOKEN,
+    });
+
+  return async (store, runId) => {
+    const events = await store.readRun(runId);
+    const projection = projectWorkspace(events, runId);
+    const workspace = projection.workspace;
+    if (projection.status !== 'ready' || workspace?.kind !== 'repo_checkout') {
+      return {
+        ok: false,
+        reason:
+          workspace?.kind === 'local_folder'
+            ? 'This run works directly in a bound local folder — there is no checkout to publish.'
+            : 'The run has no ready repository checkout to publish.',
+      };
+    }
+
+    const [owner, repo] = workspace.repo.split('/');
+    const result = await git.publish({
+      dest: workspace.checkoutPath,
+      remoteUrl: gitHubRemoteUrl(owner, repo),
+      branch: workspace.branch,
+      message: `Software Factory: publish run ${runId} deliverable`,
+    });
+
+    await store.append({
+      runId,
+      type: 'workspace.published',
+      actor: { kind: 'operator', id: 'operator' },
+      subject: { kind: 'workspace', id: runId },
+      severity: result.pushed ? 'success' : 'info',
+      timestamp: clock(),
+      payload: {
+        repo: workspace.repo,
+        branch: result.branch,
+        commit: result.commit,
+        pushed: result.pushed,
+        note: result.note,
+      },
+    });
+
+    return { ok: true, result, repo: workspace.repo };
   };
 }

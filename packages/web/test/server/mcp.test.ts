@@ -50,6 +50,8 @@ const EXPECTED_TOOLS = [
   'software_factory_clear_all_runs',
   'software_factory_review_decide',
   'software_factory_materialize_workspace',
+  'software_factory_override_settings',
+  'software_factory_publish_workspace',
   'software_factory_get_workspace',
   'software_factory_start_run',
   'software_factory_pause_run',

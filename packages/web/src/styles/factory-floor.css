@@ -443,6 +443,134 @@
 .preflight-row__detail {
   overflow-wrap: anywhere;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+/* A failed row separates WHY it failed (reason) from the concrete FIX. */
+.preflight-row__reason {
+  color: var(--text-primary);
+}
+
+.preflight-row__fix {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-8);
+  color: var(--text-primary);
+  border-left: 2px solid color-mix(in srgb, var(--sev-warn) 65%, transparent);
+  padding-left: var(--space-8);
+}
+
+.preflight-row__fix > .label {
+  color: var(--sev-warn);
+  flex: none;
+}
+
+/* Failed rehearsal summary: the count, the fix loop, and the decision CTA. */
+.preflight-summary {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-4);
+  padding: var(--space-8) var(--space-12);
+  border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, var(--sev-error) 55%, transparent);
+  background: color-mix(in srgb, var(--sev-error) 10%, transparent);
+  font-size: var(--fs-2xs);
+}
+
+.preflight-summary__title {
+  color: var(--sev-error);
+  font-weight: 600;
+}
+
+.preflight-summary__body {
+  color: var(--text-primary);
+}
+
+/* ----------------------------------------------------------------------------
+ * Run progress — the at-a-glance "what is building right now" banner
+ * ------------------------------------------------------------------------- */
+
+.run-progress__bar {
+  width: 100%;
+  height: 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: color-mix(in srgb, var(--border-strong) 35%, transparent);
+  overflow: hidden;
+}
+
+.run-progress__fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--sev-success, #3fb950);
+  transition: width 400ms ease;
+}
+
+.run-progress__fill--warn {
+  background: var(--sev-warn);
+}
+
+.run-progress__now {
+  gap: var(--space-8);
+  flex-wrap: wrap;
+}
+
+.run-progress__action {
+  margin: 0;
+  font-size: var(--fs-2xs);
+  overflow-wrap: anywhere;
+}
+
+/* ----------------------------------------------------------------------------
+ * Run decisions — the per-run decision surface (X4 companion to "Needs you")
+ * ------------------------------------------------------------------------- */
+
+.run-decisions {
+  border-color: color-mix(in srgb, var(--sev-warn) 55%, transparent);
+  scroll-margin-top: var(--space-16);
+}
+
+.run-decisions__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+}
+
+.run-decisions__item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  padding: var(--space-8) var(--space-12);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+}
+
+.run-decisions__reason {
+  font-size: var(--fs-xs);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.run-decisions__fix {
+  margin: 0;
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-8);
+  font-size: var(--fs-2xs);
+  color: var(--text-primary);
+  border-left: 2px solid color-mix(in srgb, var(--sev-warn) 65%, transparent);
+  padding-left: var(--space-8);
+}
+
+.run-decisions__fix > .label {
+  color: var(--sev-warn);
+  flex: none;
 }
 
 /* Compact run command bar (start/pause/resume/retry/cancel). */

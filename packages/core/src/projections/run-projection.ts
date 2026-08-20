@@ -349,6 +349,14 @@ export function projectRun(raw: readonly unknown[], runId?: string): RunProjecti
         callerFamily = event.payload.callerFamily ?? callerFamily;
         mode = event.payload.mode ?? mode;
         break;
+      case 'run.settings_overridden':
+        // Mid-run operator course-change: the LATEST override wins for every
+        // ticket that has not executed yet; completed tickets keep the
+        // evidence they were recorded with.
+        selectedAdapter = event.payload.selectedAdapter ?? selectedAdapter;
+        modelProfile = event.payload.modelProfile ?? modelProfile;
+        reasoningEffort = event.payload.reasoningEffort ?? reasoningEffort;
+        break;
       case 'run.planned':
         status = 'planned';
         plannedTicketCount = event.payload.ticketCount;

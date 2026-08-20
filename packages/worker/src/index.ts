@@ -52,6 +52,7 @@ export * from './workspace/workspace-projection';
 export * from './workspace/workspace-materializer';
 // Repository checkout client (credential-safe, sanitized evidence).
 export * from './git/git-checkout';
+export * from './git/git-publish';
 
 /* U6 — Sandbox, dependency policy, quality gates, local preview */
 

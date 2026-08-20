@@ -12,6 +12,7 @@
  * exercisable without the real CLI being installed.
  */
 import { AdapterError, isAdapterError, normalizeAdapterError } from './adapter-errors';
+import { scrubNestedSessionEnv } from './session-env';
 import type {
   AdapterArtifact,
   AdapterExecuteOptions,
@@ -46,12 +47,29 @@ export interface CliAdapterConfig {
   readonly authArgs: readonly string[];
   /** Build the execution args for a task (prompt wiring, output format, etc.). */
   readonly buildExecArgs: (task: AdapterTask) => readonly string[];
+  /**
+   * Optional stdin payload for the execution command. Multi-line prompts MUST
+   * ride stdin on Windows: `.cmd` shims are re-invoked through cmd.exe, whose
+   * command line cannot carry newlines — an argv prompt arrives mangled/empty.
+   */
+  readonly buildExecInput?: (task: AdapterTask) => string | undefined;
   /** Declared local concurrency when available + authenticated (>= 1). */
   readonly capacity: number;
   /** Remediations surfaced when the CLI is missing. */
   readonly installActions: readonly SetupAction[];
   /** Remediations surfaced when the CLI is present but not authenticated. */
   readonly loginActions: readonly SetupAction[];
+  /**
+   * Optional per-execution progress parser factory. Called once per execute();
+   * the returned (stateful) parser receives every output chunk and yields
+   * human-readable progress messages, each emitted as a `progress` event —
+   * the ONLY adapter event kind the worker runner records to the ledger, so
+   * this is what makes a long-running ticket visibly alive in the UI.
+   */
+  readonly createProgressParser?: () => (
+    stream: 'stdout' | 'stderr',
+    chunk: string,
+  ) => readonly string[];
   /**
    * Optional parser turning a successful command result into artifacts + output.
    * Defaults to: output = trimmed stdout, artifacts = [].
@@ -134,11 +152,16 @@ export function createCliAdapter(config: CliAdapterConfig, deps: CliAdapterDeps)
   const { runner } = deps;
 
   async function detectSetup(options: DetectSetupOptions = {}): Promise<AdapterSetupState> {
+    // Every CLI spawn clears inherited Claude-session plumbing: a server
+    // started from inside a Claude Code session would otherwise hand the
+    // worker CLI a host proxy URL it cannot authenticate to (observed hang).
+    const env = scrubNestedSessionEnv();
     let versionResult: CommandResult;
     try {
       versionResult = await runner.run(config.command, config.versionArgs, {
         signal: options.signal,
         timeoutMs: PROBE_TIMEOUT_MS,
+        env,
       });
     } catch (error) {
       // A missing executable (ENOENT) or abort surfaces here.
@@ -168,6 +191,7 @@ export function createCliAdapter(config: CliAdapterConfig, deps: CliAdapterDeps)
       authResult = await runner.run(config.command, config.authArgs, {
         signal: options.signal,
         timeoutMs: PROBE_TIMEOUT_MS,
+        env,
       });
     } catch (error) {
       const normalized = normalizeAdapterError(error);
@@ -209,14 +233,23 @@ export function createCliAdapter(config: CliAdapterConfig, deps: CliAdapterDeps)
 
     opts.onEvent({ kind: 'progress', message: `Starting ${config.command} for ${task.ticketId}.` });
 
+    const parseProgress = config.createProgressParser?.();
     let result: CommandResult;
     try {
       result = await runner.run(config.command, config.buildExecArgs(task), {
         cwd: task.workspaceDir,
         signal: opts.signal,
         timeoutMs: opts.timeoutMs,
+        input: config.buildExecInput?.(task),
+        // Same nested-session guard as the probes (see detectSetup).
+        env: scrubNestedSessionEnv(),
         onOutput: (stream, chunk) => {
           opts.onEvent({ kind: 'log', stream, chunk });
+          if (parseProgress !== undefined) {
+            for (const message of parseProgress(stream, chunk)) {
+              opts.onEvent({ kind: 'progress', message });
+            }
+          }
         },
       });
     } catch (error) {

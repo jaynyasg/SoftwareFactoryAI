@@ -76,6 +76,18 @@ function buildItems(setup: SetupStatus): ChecklistItem[] {
             : 'Authenticate a local Codex or Claude Code CLI adapter (or configure the API adapter).',
     },
     {
+      key: 'checkout-credentials',
+      label: 'Source checkout credentials',
+      // Optional (only GitHub-source runs need it), so absence is never
+      // blocking — but WHERE to set it must be stated, because there is no UI
+      // field by design (E5: the token value never leaves the environment).
+      mark: setup.workspace.checkoutCredentialsPresent === true ? 'ok' : 'pending',
+      detail:
+        setup.workspace.checkoutCredentialsPresent === true
+          ? 'SF_GIT_CHECKOUT_TOKEN is set; GitHub-source runs can materialize checkouts.'
+          : 'Not set — needed only when a run sources a GitHub repository. Set SF_GIT_CHECKOUT_TOKEN in the environment that starts this server (for pnpm dev, packages/web/.env.local works), then restart it. There is no UI field: the value stays in the environment and is never recorded.',
+    },
+    {
       key: 'deploy',
       label: 'Deploy target',
       mark: deployMark,

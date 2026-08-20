@@ -237,7 +237,16 @@ export async function loadSetup(): Promise<SetupStatus> {
         []) as readonly string[],
     },
     deploy: { status: String((body.deploy as { status?: string })?.status ?? 'required') },
-    workspace: { root: String((body.workspace as { root?: string })?.root ?? process.cwd()) },
+    workspace: {
+      root: String((body.workspace as { root?: string })?.root ?? process.cwd()),
+      checkoutCredentialsPresent: Boolean(
+        (
+          body.workspace as {
+            materialization?: { checkoutCredentials?: { present?: boolean } };
+          }
+        )?.materialization?.checkoutCredentials?.present,
+      ),
+    },
     runtime: {
       mode: String((body.runtime as { mode?: string })?.mode ?? 'local'),
       publicBaseUrl:

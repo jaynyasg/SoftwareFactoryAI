@@ -74,6 +74,13 @@ export function sanitizeCheckoutDetail(text: string): string {
     .replace(/\bgithub_pat_[A-Za-z0-9_]{8,}\b/g, '***');
 }
 
+/**
+ * Commit sentinel recorded for an EMPTY repository (zero commits): the clone
+ * succeeds with an unborn HEAD, so there is no sha to pin — the sentinel keeps
+ * the evidence honest ("blank source") everywhere a commit is displayed.
+ */
+export const EMPTY_REPO_COMMIT = '(empty repository)';
+
 /** What a completed checkout resolved to. */
 export interface GitCheckoutResult {
   readonly branch: string;
@@ -115,7 +122,7 @@ export interface CommandGitCheckoutClientOptions {
  * process argv (E5) — env vars are readable only by the same user, argv by
  * every user on the machine.
  */
-function checkoutAuthEnv(token: string): Readonly<Record<string, string>> {
+export function checkoutAuthEnv(token: string): Readonly<Record<string, string>> {
   const basic = Buffer.from(`x-access-token:${token}`, 'utf8').toString('base64');
   return {
     GIT_CONFIG_COUNT: '1',
@@ -127,8 +134,11 @@ function checkoutAuthEnv(token: string): Readonly<Record<string, string>> {
 /**
  * The default `GitCheckoutClient` backed by the shared `CommandRunner`:
  * `git clone --depth 1 [--branch <b>] <url> <dest>` then `git rev-parse` for
- * the branch + commit evidence. The destination is recreated fresh so a retry
- * after a failed attempt starts clean. Every thrown error is sanitized.
+ * the branch + commit evidence. An EMPTY repository (zero commits) is a valid
+ * blank source: it clones with an unborn HEAD, so the evidence records the
+ * default (or requested) branch name and the `EMPTY_REPO_COMMIT` sentinel
+ * instead of failing. The destination is recreated fresh so a retry after a
+ * failed attempt starts clean. Every thrown error is sanitized.
  */
 export function createCommandGitCheckoutClient(
   runner: CommandRunner,
@@ -166,15 +176,54 @@ export function createCommandGitCheckoutClient(
       try {
         // Fresh destination per attempt so failed clones cannot poison retries.
         await rm(args.dest, { recursive: true, force: true });
+        const requestedBranch =
+          args.branch !== undefined && args.branch.length > 0 ? args.branch : undefined;
         const cloneArgs = ['clone', '--depth', '1'];
-        if (args.branch !== undefined && args.branch.length > 0) {
-          cloneArgs.push('--branch', args.branch);
+        if (requestedBranch !== undefined) {
+          cloneArgs.push('--branch', requestedBranch);
         }
         cloneArgs.push(cloneUrl, args.dest);
-        await git(cloneArgs, undefined, args.signal, authEnv);
-        const commit = await git(['rev-parse', 'HEAD'], args.dest, args.signal);
-        const branch = await git(['rev-parse', '--abbrev-ref', 'HEAD'], args.dest, args.signal);
-        return { branch, commit };
+        try {
+          await git(cloneArgs, undefined, args.signal, authEnv);
+        } catch (cloneError) {
+          // `--branch <b>` fails on an EMPTY repository the same way it fails
+          // on a missing branch. Disambiguate with one ls-remote probe: zero
+          // refs = empty repo, so re-clone without --branch and NAME the unborn
+          // branch as requested (the first commit will create it). Any refs at
+          // all = the branch is genuinely missing — rethrow honestly.
+          if (requestedBranch === undefined) {
+            throw cloneError;
+          }
+          const refs = await runner.run('git', ['ls-remote', '--heads', '--tags', cloneUrl], {
+            signal: args.signal,
+            timeoutMs,
+            env: authEnv,
+          });
+          if (refs.code !== 0 || refs.stdout.trim().length > 0) {
+            throw cloneError;
+          }
+          await rm(args.dest, { recursive: true, force: true });
+          await git(['clone', '--depth', '1', cloneUrl, args.dest], undefined, args.signal, authEnv);
+          await git(
+            ['symbolic-ref', 'HEAD', `refs/heads/${requestedBranch}`],
+            args.dest,
+            args.signal,
+          );
+        }
+        // An EMPTY repository clones fine but has an unborn HEAD: `rev-parse
+        // --verify HEAD` fails while `symbolic-ref` still names the default
+        // branch. Probe instead of throwing so blank sources materialize.
+        const head = await runner.run('git', ['rev-parse', '--verify', '--quiet', 'HEAD'], {
+          cwd: args.dest,
+          signal: args.signal,
+          timeoutMs,
+        });
+        if (head.code === 0) {
+          const branch = await git(['rev-parse', '--abbrev-ref', 'HEAD'], args.dest, args.signal);
+          return { branch, commit: head.stdout.trim() };
+        }
+        const branch = await git(['symbolic-ref', '--short', 'HEAD'], args.dest, args.signal);
+        return { branch, commit: EMPTY_REPO_COMMIT };
       } catch (error) {
         // Belt-and-braces: sanitize once more in case a raw error escaped.
         throw new Error(sanitizeCheckoutDetail(errorMessage(error)));

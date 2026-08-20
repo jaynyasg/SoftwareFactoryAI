@@ -32,11 +32,13 @@ import { useRunAggregate } from '../../lib/use-run-aggregate';
 import { useInterventionQueue } from '../../lib/use-intervention-queue';
 import { fetchAggregate } from '../../lib/api-client';
 import { RunControl } from './RunControl';
+import { RunReport } from './RunReport';
 import { SetupChecklist } from './SetupChecklist';
 import { RunBoard } from './RunBoard';
 import { RunStrip } from './RunStrip';
 import { BlueprintLanes } from './BlueprintLanes';
 import { ContractHandoff } from './ContractHandoff';
+import { RunProgress } from './RunProgress';
 import { RunCommandBar } from './RunCommandBar';
 import { FactoryCommandBar } from './FactoryCommandBar';
 import { InterventionQueue } from './InterventionQueue';
@@ -64,6 +66,37 @@ function LiveBlueprint({
 
   return (
     <div className="blueprint-grid">
+      {/* Full-width completion report: once the focused run finishes, the
+          floor shows WHAT WAS BUILT and the ship-it actions — the operator
+          must never have to hunt for the outcome. Renders nothing until
+          run.completed. */}
+      <div style={{ gridColumn: '1 / -1', minWidth: 0 }}>
+        <RunReport
+          run={snapshot.run}
+          tickets={snapshot.tickets}
+          gates={snapshot.gates}
+          rows={live.rows}
+          deploy={snapshot.deploy}
+        />
+      </div>
+      {/* Full-width execution banner: what is building RIGHT NOW + how far.
+          The full-run link rides its header — the floor's blueprint is the
+          summary; one prominent click opens the complete run surface. */}
+      <div style={{ gridColumn: '1 / -1', minWidth: 0 }}>
+        <RunProgress
+          tickets={snapshot.tickets}
+          rows={live.rows}
+          executionState={snapshot.run.executionState}
+          executionReason={snapshot.run.executionReason}
+          openDecisionCount={snapshot.interventions.length}
+          decisionsHref="#needs-you"
+          headerAction={
+            <Link className="btn btn--sm btn--primary" href={`/runs/${encodeURIComponent(runId)}`}>
+              Open full run →
+            </Link>
+          }
+        />
+      </div>
       <BlueprintLanes
         inputs={{
           run: snapshot.run,
@@ -82,12 +115,17 @@ function LiveBlueprint({
       <ContractHandoff
         contract={snapshot.run.buildContract}
         preflight={snapshot.preflight}
+        openDecisionCount={snapshot.interventions.length}
+        decisionsHref="#needs-you"
         actions={
           <RunCommandBar
             runId={runId}
             status={snapshot.run.status}
             executionState={snapshot.run.executionState}
             executionReason={snapshot.run.executionReason}
+            hasExecutionJob={snapshot.executionJob !== null}
+            selectedAdapter={snapshot.run.selectedAdapter}
+            modelProfile={snapshot.run.modelProfile}
             lastSequence={snapshot.lastSequence}
             preview={snapshot.preview}
             deploy={snapshot.deploy}

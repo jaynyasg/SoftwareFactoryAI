@@ -38,7 +38,7 @@ import type {
 } from '@software-factory/core';
 import { projectWorkspace } from '@software-factory/worker';
 import type { WorkspaceProjection } from '@software-factory/worker';
-import { raiseIntervention } from './interventions';
+import { projectInterventions, raiseIntervention, resolveIntervention } from './interventions';
 import { isKnownGateExpectation } from './gate-stages';
 import { resolveDeployRuntimeConfig, resolveWorkspaceRuntimeConfig } from '../runtime';
 import type { RuntimeConfig, WorkspaceRuntimeConfig } from '../runtime';
@@ -228,7 +228,7 @@ function probeCredentials(ctx: PreflightProbeContext): PreflightCheckOutcome {
     return fail(
       'credentials',
       `Repository ${ctx.run.githubRepo} requires checkout credentials, but none are configured.`,
-      'Set SF_GIT_CHECKOUT_TOKEN (source checkout credentials are separate from deploy/research credentials), then retry.',
+      'Set SF_GIT_CHECKOUT_TOKEN in the environment that starts this server (for `pnpm dev`, packages/web/.env.local works), restart it, then retry. Checkout credentials are environment-only by design — there is no UI field, the value is never recorded — and separate from deploy/research credentials.',
       'missing_credentials',
     );
   }
@@ -361,7 +361,7 @@ function probeApprovals(ctx: PreflightProbeContext): PreflightCheckOutcome {
     return fail(
       'approvals',
       'The plan requires human triage before any build execution.',
-      'Complete triage for this run (resolve the request scope), then re-plan and start.',
+      'Resolve this triage decision (in "Decisions needed" on the run page, or "Needs you" on the factory floor) by stating the clarified scope, then create a new run with that clarified request — plans are fixed at run creation, so this run stays plan-only.',
       'approval',
     );
   }
@@ -547,6 +547,30 @@ export function createRuntimePreflight(options: RuntimePreflightOptions = {}): P
           requiredAction,
         });
       }
+    }
+
+    // Supersede prior attempts' preflight entries so the queue always mirrors
+    // the LATEST rehearsal: a check that now passes is no longer a decision,
+    // and a check that still fails has a fresh entry for this attempt. `events`
+    // was read before this attempt appended anything, so only prior-attempt
+    // entries are touched — full history stays on the ledger as resolved rows.
+    const priorOpen = projectInterventions(events).open.filter(
+      (item) => item.runId === runId && item.blockingStage === 'preflight',
+    );
+    for (const item of priorOpen) {
+      const outcome = outcomes.find((o) =>
+        item.interventionId.startsWith(`${runId}:preflight:${o.check}:`),
+      );
+      await resolveIntervention(store, item, {
+        resolution:
+          outcome !== undefined && outcome.ok
+            ? `Superseded: the "${outcome.check}" check passed on rehearsal attempt ${attempt}.`
+            : `Superseded by rehearsal attempt ${attempt}${
+                outcome !== undefined ? ` — see the newest "${outcome.check}" entry` : ''
+              }.`,
+        resolvedBy: 'preflight',
+        actorKind: 'system',
+      });
     }
 
     const failedChecks = outcomes.filter((o) => !o.ok).map((o) => o.check);

@@ -134,6 +134,20 @@ export interface RunCreatedPayload {
    */
   readonly mode?: RunMode;
 }
+/**
+ * Mid-run operator override of run settings (model/effort). Append-only and
+ * replay-honest: the projection applies the LATEST override, so tickets that
+ * already executed keep their recorded evidence while every ticket that has
+ * not started yet picks up the new model on its next execution attempt.
+ */
+export interface RunSettingsOverriddenPayload {
+  /** New adapter for not-yet-executed tickets (e.g. usage-pool failover). */
+  readonly selectedAdapter?: string;
+  readonly modelProfile?: string;
+  readonly reasoningEffort?: string;
+  /** Why the operator changed course (e.g. "usage window exhausted"). */
+  readonly reason?: string;
+}
 export interface RunPlannedPayload {
   readonly ticketCount: number;
   /**
@@ -369,6 +383,14 @@ export interface WorkspaceRefResolvedPayload {
   readonly repo: string;
   readonly branch: string;
   readonly commit: string;
+}
+/** A completed run's checkout was published back to its GitHub remote. */
+export interface WorkspacePublishedPayload {
+  readonly repo: string;
+  readonly branch: string;
+  readonly commit?: string;
+  readonly pushed: boolean;
+  readonly note?: string;
 }
 export interface WorkspaceCheckoutCompletedPayload {
   readonly repo: string;
@@ -776,6 +798,7 @@ export interface OperatorHealthSamplePayload {
  */
 export interface EventPayloadMap {
   'run.created': RunCreatedPayload;
+  'run.settings_overridden': RunSettingsOverriddenPayload;
   'run.planned': RunPlannedPayload;
   'run.started': EmptyPayload;
   'run.completed': RunCompletedPayload;
@@ -798,6 +821,7 @@ export interface EventPayloadMap {
   'workspace.checkout_started': WorkspaceCheckoutStartedPayload;
   'workspace.ref_resolved': WorkspaceRefResolvedPayload;
   'workspace.checkout_completed': WorkspaceCheckoutCompletedPayload;
+  'workspace.published': WorkspacePublishedPayload;
   'workspace.checkout_failed': WorkspaceCheckoutFailedPayload;
   'workspace.unavailable': WorkspaceUnavailablePayload;
   'execution.paused': ExecutionPausedPayload;
@@ -916,6 +940,7 @@ export type AppendableEvent = AppendableByType[FactoryEventType];
 /** Every known event type, in a stable order. */
 export const EVENT_TYPES = [
   'run.created',
+  'run.settings_overridden',
   'run.planned',
   'run.started',
   'run.completed',
@@ -938,6 +963,7 @@ export const EVENT_TYPES = [
   'workspace.checkout_started',
   'workspace.ref_resolved',
   'workspace.checkout_completed',
+  'workspace.published',
   'workspace.checkout_failed',
   'workspace.unavailable',
   'execution.paused',

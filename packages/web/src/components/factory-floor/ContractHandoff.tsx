@@ -27,7 +27,17 @@ function ContractRow({
   );
 }
 
-function PreflightRows({ preflight }: { readonly preflight: PreflightSnapshot }) {
+function PreflightRows({
+  preflight,
+  openDecisionCount = 0,
+  decisionsHref,
+}: {
+  readonly preflight: PreflightSnapshot;
+  /** OPEN interventions on this run — surfaced as the decision call-to-action. */
+  readonly openDecisionCount?: number;
+  /** In-page anchor of the decision surface ("Needs you" / "Decisions needed"). */
+  readonly decisionsHref?: string;
+}) {
   if (preflight.status === 'none') {
     return (
       <p className="muted" style={{ fontSize: 'var(--fs-2xs)' }}>
@@ -36,21 +46,50 @@ function PreflightRows({ preflight }: { readonly preflight: PreflightSnapshot })
       </p>
     );
   }
+  const failedCount = preflight.checks.filter((check) => !check.ok).length;
   return (
-    <ul className="preflight-list" aria-label="Preflight checks">
-      {preflight.checks.map((check) => (
-        <li key={check.check} className="preflight-row" data-testid="preflight-check">
-          <SeverityBadge
-            severity={check.ok ? 'success' : 'error'}
-            label={check.ok ? 'pass' : 'fail'}
-          />
-          <span className="preflight-row__name mono">{check.check.replace(/_/g, ' ')}</span>
-          <span className="muted preflight-row__detail">
-            {check.ok ? check.detail : `${check.reason ?? 'failed'} ${check.requiredAction ?? ''}`}
+    <>
+      {failedCount > 0 ? (
+        <div className="preflight-summary" role="status" data-testid="preflight-summary">
+          <span className="preflight-summary__title">
+            {failedCount} of {preflight.checks.length} checks blocked this run.
           </span>
-        </li>
-      ))}
-    </ul>
+          <span className="preflight-summary__body">
+            Every failed check lists its fix below. Apply the fix, then press Start — the
+            rehearsal re-runs automatically and execution begins once every check passes.
+          </span>
+          {decisionsHref !== undefined && openDecisionCount > 0 ? (
+            <a className="btn btn--sm" href={decisionsHref} data-testid="preflight-decisions-link">
+              Review {openDecisionCount} pending decision{openDecisionCount === 1 ? '' : 's'}
+            </a>
+          ) : null}
+        </div>
+      ) : null}
+      <ul className="preflight-list" aria-label="Preflight checks">
+        {preflight.checks.map((check) => (
+          <li key={check.check} className="preflight-row" data-testid="preflight-check">
+            <SeverityBadge
+              severity={check.ok ? 'success' : 'error'}
+              label={check.ok ? 'pass' : 'fail'}
+            />
+            <span className="preflight-row__name mono">{check.check.replace(/_/g, ' ')}</span>
+            {check.ok ? (
+              <span className="muted preflight-row__detail">{check.detail}</span>
+            ) : (
+              <span className="preflight-row__detail">
+                <span className="preflight-row__reason">{check.reason ?? 'Check failed.'}</span>
+                {check.requiredAction !== undefined ? (
+                  <span className="preflight-row__fix">
+                    <span className="label">fix</span>
+                    <span>{check.requiredAction}</span>
+                  </span>
+                ) : null}
+              </span>
+            )}
+          </li>
+        ))}
+      </ul>
+    </>
   );
 }
 
@@ -58,11 +97,17 @@ export function ContractHandoff({
   contract,
   preflight,
   actions,
+  openDecisionCount,
+  decisionsHref,
 }: {
   readonly contract: BuildContractView | undefined;
   readonly preflight: PreflightSnapshot;
   /** The run command actions rendered adjacent to the contract (RunCommandBar). */
   readonly actions?: ReactNode;
+  /** OPEN interventions on this run — drives the decision call-to-action. */
+  readonly openDecisionCount?: number;
+  /** In-page anchor of the decision surface ("Needs you" / "Decisions needed"). */
+  readonly decisionsHref?: string;
 }) {
   return (
     <section className="panel contract" aria-label="Build contract and preflight">
@@ -178,7 +223,11 @@ export function ContractHandoff({
 
         <div className="stack" aria-label="Dry-run rehearsal">
           <span className="label">dry-run rehearsal</span>
-          <PreflightRows preflight={preflight} />
+          <PreflightRows
+            preflight={preflight}
+            openDecisionCount={openDecisionCount}
+            decisionsHref={decisionsHref}
+          />
         </div>
       </div>
     </section>

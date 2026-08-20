@@ -65,6 +65,16 @@ const CONNECTOR_SURFACE: Readonly<Record<string, ConnectorMapping>> = {
   'GET /api/runs/:id/outputs': { action: 'getRunOutputs', mcp: 'software_factory_get_outputs' },
   // Review.
   'POST /api/runs/:id/review': { action: 'reviewRun', mcp: 'software_factory_review_decide' },
+  // Mid-run settings override (model/effort for not-yet-executed tickets).
+  'POST /api/runs/:id/settings': {
+    action: 'overrideRunSettings',
+    mcp: 'software_factory_override_settings',
+  },
+  // Publish the completed deliverable back to its GitHub remote.
+  'POST /api/runs/:id/publish': {
+    action: 'publishRunWorkspace',
+    mcp: 'software_factory_publish_workspace',
+  },
   // Workspace materialization.
   'POST /api/runs/:id/workspace': {
     action: 'materializeWorkspace',
