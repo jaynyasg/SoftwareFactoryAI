@@ -48,6 +48,9 @@ export * from './knowledge/knowledge-projection';
 
 // Loopback operator token/session: generation, constant-time verify, provider.
 export * from './security/operator-token';
+export * from './security/password';
+export * from './security/secret-box';
+export * from './security/credential-vault';
 // Pure command guard for mutating actions (token/origin/CSRF/stale-version).
 export * from './security/command-guard';
 // Risk-tier review policy: human-mode approvals + no-stop autonomous handling.
