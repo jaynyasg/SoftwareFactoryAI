@@ -22,7 +22,7 @@ describe('AppShell view switcher', () => {
     );
 
     const floor = screen.getByRole('link', { name: 'Factory floor' });
-    const operator = screen.getByRole('link', { name: 'Operator view' });
+    const operator = screen.getByRole('link', { name: 'Status view' });
     expect(floor).toHaveAttribute('href', '/');
     expect(operator).toHaveAttribute('href', '/operator');
     expect(floor).toHaveAttribute('aria-current', 'page');
@@ -37,7 +37,7 @@ describe('AppShell view switcher', () => {
       </AppShell>,
     );
 
-    expect(screen.getByRole('link', { name: 'Operator view' })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: 'Status view' })).toHaveAttribute(
       'aria-current',
       'page',
     );

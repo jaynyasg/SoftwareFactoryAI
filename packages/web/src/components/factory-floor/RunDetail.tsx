@@ -33,14 +33,11 @@ export function RunDetail({
     <div className="stack" style={{ gap: 'var(--space-16)' }}>
       <div className="row" style={{ justifyContent: 'space-between' }}>
         <span className="row" style={{ flex: 'none' }}>
-          <Link className="btn btn--sm btn--ghost" href="/">
+          <Link className="btn btn--sm" href="/">
             ← Factory floor
           </Link>
-          <Link
-            className="btn btn--sm btn--ghost"
-            href={`/operator?runId=${encodeURIComponent(runId)}`}
-          >
-            Operator view
+          <Link className="btn btn--sm" href={`/operator?runId=${encodeURIComponent(runId)}`}>
+            Status view
           </Link>
           {execution.enabled && execution.held ? (
             <span className="badge sev-warn" data-testid="factory-held-badge">

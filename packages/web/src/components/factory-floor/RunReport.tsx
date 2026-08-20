@@ -16,6 +16,79 @@ import type { PublishRunResult } from '../../lib/api-client';
 import { useSession } from '../session-context';
 import { Mono, SeverityBadge } from './primitives';
 
+/** One milestone in the build story, derived purely from ledger rows. */
+interface StoryEntry {
+  readonly at: number;
+  readonly label: string;
+  readonly detail?: string;
+  readonly severity: 'info' | 'warn' | 'success';
+}
+
+/**
+ * Derive the build's NARRATIVE from the ledger: creation, planning decisions,
+ * rehearsals, workspace, course-changes (adapter/model overrides), adversity
+ * overcome (failed attempts), ticket flow, gates, publish, completion. Every
+ * entry traces to a recorded event — the story is the ledger, retold.
+ */
+function deriveStory(rows: readonly LedgerRow[]): StoryEntry[] {
+  const story: StoryEntry[] = [];
+  const push = (row: LedgerRow, label: string, severity: StoryEntry['severity'] = 'info') =>
+    story.push({ at: row.timestamp, label, detail: row.detail, severity });
+
+  for (const row of rows) {
+    switch (row.type) {
+      case 'run.created':
+        push(row, 'Run created');
+        break;
+      case 'supervisor.decision':
+        push(row, 'Supervisor decision');
+        break;
+      case 'run.planned':
+        push(row, 'Plan recorded');
+        break;
+      case 'preflight.passed':
+        push(row, 'Dry-run rehearsal passed', 'success');
+        break;
+      case 'preflight.failed':
+        push(row, 'Dry-run rehearsal blocked', 'warn');
+        break;
+      case 'workspace.checkout_completed':
+        push(row, 'Workspace checked out', 'success');
+        break;
+      case 'workspace.local_bound':
+        push(row, 'Local folder bound as workspace', 'success');
+        break;
+      case 'run.settings_overridden':
+        push(row, 'Operator changed course (adapter/model override)', 'warn');
+        break;
+      case 'execution.failed':
+        push(row, 'Execution attempt failed — recovered later', 'warn');
+        break;
+      case 'worker.completed':
+        if (row.ticketId !== undefined) {
+          push(row, `Ticket completed: ${row.ticketId}`, 'success');
+        }
+        break;
+      case 'gate.failed':
+        push(row, `Gate failed: ${row.ticketId ?? 'post-run'}`, 'warn');
+        break;
+      case 'workspace.published':
+        push(row, 'Deliverable published to GitHub', 'success');
+        break;
+      case 'run.completed':
+        push(row, 'Run completed', 'success');
+        break;
+      default:
+        break;
+    }
+  }
+  return story;
+}
+
+function formatTime(ms: number): string {
+  return new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
 function formatDuration(ms: number): string {
   const minutes = Math.floor(ms / 60_000);
   const hours = Math.floor(minutes / 60);
@@ -87,8 +160,15 @@ export function RunReport({
     }
   }
 
+  const story = deriveStory(rows);
+
   return (
-    <section className="panel run-report" aria-label="Build report" data-testid="run-report">
+    <section
+      className="panel run-report"
+      id="run-report"
+      aria-label="Build report"
+      data-testid="run-report"
+    >
       <header className="panel__header">
         <h2 className="panel__title">Build report</h2>
         <SeverityBadge severity="success" label="run completed" />
@@ -111,6 +191,23 @@ export function RunReport({
             <span className="label">deliverable</span>
             <Mono value={run.buildContract.workspace} max={56} />
           </div>
+        ) : null}
+
+        {story.length > 0 ? (
+          <details className="run-report__story" data-testid="run-report-story" open>
+            <summary className="label">build story · {story.length} milestones</summary>
+            <ol className="run-report__timeline">
+              {story.map((entry, index) => (
+                <li key={`${entry.at}-${index}`} className={`run-report__milestone sev-${entry.severity}`}>
+                  <span className="run-report__time mono">{formatTime(entry.at)}</span>
+                  <span className="run-report__milestone-label">{entry.label}</span>
+                  {entry.detail ? (
+                    <span className="muted run-report__milestone-detail">{entry.detail}</span>
+                  ) : null}
+                </li>
+              ))}
+            </ol>
+          </details>
         ) : null}
 
         <div className="stack" style={{ gap: 'var(--space-4)' }} data-testid="run-report-ship">

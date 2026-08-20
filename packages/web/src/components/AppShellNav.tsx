@@ -11,7 +11,7 @@ import { usePathname } from 'next/navigation';
 
 const VIEWS = [
   { href: '/', label: 'Factory floor' },
-  { href: '/operator', label: 'Operator view' },
+  { href: '/operator', label: 'Status view' },
 ] as const;
 
 export function AppShellNav() {

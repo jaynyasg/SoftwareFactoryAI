@@ -76,6 +76,15 @@ export function RunView({
 
   return (
     <div className="stack" style={{ gap: 'var(--space-16)' }}>
+      {/* The OUTCOME leads: a completed run's report (summary, story, ship-it
+          actions) renders above everything else on the run page. */}
+      <RunReport
+        run={run}
+        tickets={tickets}
+        gates={snapshot.gates}
+        rows={rows}
+        deploy={snapshot.deploy}
+      />
       <section className="panel" aria-label="Run summary">
         <header className="panel__header">
           <div className="row" style={{ gap: 'var(--space-8)' }}>
@@ -144,13 +153,6 @@ export function RunView({
       {/* Anything blocking on a human renders BEFORE the run grid (same
           hierarchy rule as the factory floor's "Needs you" queue): the run
           page must offer the decision, not just report the blockage. */}
-      <RunReport
-        run={run}
-        tickets={tickets}
-        gates={snapshot.gates}
-        rows={rows}
-        deploy={snapshot.deploy}
-      />
       <RunProgress
         tickets={tickets}
         rows={rows}

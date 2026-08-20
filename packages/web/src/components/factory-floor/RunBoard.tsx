@@ -83,8 +83,8 @@ export function RunBoard({
                         </button>
                       )
                     ) : null}
-                    <Link className="btn btn--sm btn--ghost" href={`/runs/${run.runId}`}>
-                      Open
+                    <Link className="btn btn--sm" href={`/runs/${run.runId}`}>
+                      Open run →
                     </Link>
                   </span>
                 </li>

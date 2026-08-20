@@ -1,5 +1,5 @@
 /**
- * Operator dashboard (server component). The operator-facing surface — distinct
+ * Status dashboard (server component). The operator-facing surface — distinct
  * from the user run page — loads the operator aggregate (operator projection +
  * computed metrics + per-run diagnostics) for the requested run id (or the latest
  * run) and renders the read-only health / adapter / queue / deploy panels.
@@ -28,10 +28,10 @@ export default async function OperatorPage({
 
   return (
     <AppShell>
-      <section className="panel" aria-label="Operator dashboard">
+      <section className="panel" aria-label="Status dashboard">
         <header className="panel__header">
           <div className="row" style={{ gap: 'var(--space-8)' }}>
-            <h2 className="panel__title">Operator dashboard</h2>
+            <h2 className="panel__title">Status dashboard</h2>
             {data !== null ? <Mono value={data.runId ?? 'unknown'} max={24} /> : null}
           </div>
           {data !== null ? (

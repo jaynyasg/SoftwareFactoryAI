@@ -44,6 +44,7 @@ import { BlueprintLanes } from '../../src/components/factory-floor/BlueprintLane
 import { ContractHandoff } from '../../src/components/factory-floor/ContractHandoff';
 import { RunDecisions } from '../../src/components/factory-floor/RunDecisions';
 import { RunReport } from '../../src/components/factory-floor/RunReport';
+import { RunCompletionToast } from '../../src/components/factory-floor/RunCompletionToast';
 import { RunProgress } from '../../src/components/factory-floor/RunProgress';
 import { RunCommandBar } from '../../src/components/factory-floor/RunCommandBar';
 import { FactoryCommandBar } from '../../src/components/factory-floor/FactoryCommandBar';
@@ -432,7 +433,7 @@ describe('FactoryFloor empty state', () => {
     expect(screen.getByLabelText('PRD (optional)')).toBeInTheDocument();
     // View switching lives in the AppShell header now (AppShellNav), so the
     // floor itself renders no Operator link — see app-shell.test.tsx.
-    expect(screen.queryByRole('link', { name: 'Operator view' })).toBeNull();
+    expect(screen.queryByRole('link', { name: 'Status view' })).toBeNull();
     expect(screen.getByLabelText('Setup checklist')).toBeInTheDocument();
     expect(screen.getByText('No runs yet.')).toBeInTheDocument();
     // Anti-slop: no fake progress in the empty state.
@@ -1701,5 +1702,47 @@ describe('RunReport (completion report + ship-it actions)', () => {
       ),
     );
     expect(screen.queryByTestId('run-report')).toBeNull();
+  });
+});
+
+describe('RunCompletionToast + build story', () => {
+  it('pops only on the running -> completed transition and scrolls to the report', () => {
+    const { rerender } = render(<RunCompletionToast status="running" runId="run-t" />);
+    expect(screen.queryByTestId('run-completion-toast')).toBeNull();
+
+    rerender(<RunCompletionToast status="completed" runId="run-t" />);
+    const toast = screen.getByTestId('run-completion-toast');
+    expect(toast).toHaveTextContent('Run completed');
+    expect(within(toast).getByRole('button', { name: 'View build report' })).toBeVisible();
+
+    fireEvent.click(within(toast).getByRole('button', { name: 'Dismiss completion notice' }));
+    expect(screen.queryByTestId('run-completion-toast')).toBeNull();
+  });
+
+  it('never pops for a run that was already completed on load', () => {
+    render(<RunCompletionToast status="completed" runId="run-t2" />);
+    expect(screen.queryByTestId('run-completion-toast')).toBeNull();
+  });
+
+  it('tells the build story from the ledger inside the report', () => {
+    const { aggregate } = buildFullAggregate('run-story');
+    render(
+      withSession(
+        <RunReport
+          run={{ ...aggregate.run, status: 'completed' } as typeof aggregate.run}
+          tickets={aggregate.tickets}
+          gates={aggregate.gates}
+          rows={aggregate.run.ledger}
+          deploy={aggregate.deploy}
+        />,
+      ),
+    );
+    const story = screen.getByTestId('run-report-story');
+    expect(story).toHaveTextContent(/build story · \d+ milestones/);
+    expect(story).toHaveTextContent('Run created');
+    expect(story).toHaveTextContent('Supervisor decision');
+    expect(story).toHaveTextContent(/Ticket completed/);
+    // Adversity is part of the story, told honestly.
+    expect(story).toHaveTextContent(/Gate failed/);
   });
 });

@@ -31,6 +31,7 @@ import { deriveFactoryPulse } from '../../lib/run-view';
 import { useRunAggregate } from '../../lib/use-run-aggregate';
 import { useInterventionQueue } from '../../lib/use-intervention-queue';
 import { fetchAggregate } from '../../lib/api-client';
+import { RunCompletionToast } from './RunCompletionToast';
 import { RunControl } from './RunControl';
 import { RunReport } from './RunReport';
 import { SetupChecklist } from './SetupChecklist';
@@ -66,6 +67,8 @@ function LiveBlueprint({
 
   return (
     <div className="blueprint-grid">
+      {/* Pops on the running→completed transition so a finish is never missed. */}
+      <RunCompletionToast status={snapshot.run.status} runId={runId} />
       {/* Full-width completion report: once the focused run finishes, the
           floor shows WHAT WAS BUILT and the ship-it actions — the operator
           must never have to hunt for the outcome. Renders nothing until
