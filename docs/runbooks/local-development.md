@@ -15,13 +15,14 @@ How to set up and work on the Software Factory locally.
 
 ```bash
 pnpm install
+pnpm --filter @software-factory/cli run build  # CLI ships a dist-only subpath — see Module resolution
 pnpm typecheck
 pnpm lint
 pnpm test
 ```
 
-All four must pass on a clean checkout. CI runs the same commands
-(`.github/workflows/ci.yml`).
+All of these must pass on a clean checkout. CI runs the same sequence — including
+the CLI build step — in `.github/workflows/ci.yml`.
 
 ## Repository layout
 
@@ -63,13 +64,23 @@ click **Resume execution** in the Factory Floor banner. Set
 
 ## Module resolution (how the monorepo wires together)
 
-Internal packages are **source-only** — `@software-factory/core` resolves directly to
-its TypeScript source via the package `exports` field. There is no build step to run
-before consuming a package:
+Most internal packages are **source-only** — e.g. `@software-factory/core` resolves
+directly to its TypeScript source via the package `exports` field, with no build step
+needed before consuming it:
 
 - **Typecheck:** `tsconfig.base.json` `paths` map `@software-factory/*` to source.
 - **Tests:** Vite resolves the package `exports` to source and transforms TS.
 - **Runtime:** pnpm workspace symlinks + `tsx` execute the source directly.
+
+**Exception — `@software-factory/cli`:** its `./run-outputs` subpath export is
+`dist`-only for ESM consumers. The `exports` map's `import` condition points at
+`./dist/run-outputs.js`, and the `default` → `src` fallback fires only for a CJS
+`require` (which nothing here uses), so the subpath cannot load until the CLI is
+built with `pnpm --filter @software-factory/cli run build`. Without it,
+`packages/web` tests that import `@software-factory/cli/run-outputs` fail to
+resolve it — which is why both the fresh-checkout sequence above and CI build the
+CLI before typecheck. Full write-up:
+[docs/solutions/test-failures/cli-subpath-export-dist-vs-src-2026-08-21.md](../solutions/test-failures/cli-subpath-export-dist-vs-src-2026-08-21.md).
 
 ## Operator token (preview)
 
