@@ -34,8 +34,10 @@ import { createDefaultAdapterCatalog, createFileSystemEventStore } from '@softwa
 import type { AdapterCatalog, EventStore, OperatorTokenProvider } from '@software-factory/core';
 import { resolveAdapterCatalogOptions } from './adapter-env';
 import { createAiRunPlanner } from './ai-planner';
-import { createApp } from './app';
+import { createApp, sessionCookieName } from './app';
 import type { App } from './app';
+import { createAuthService, createFileAuthStores } from './auth/service';
+import type { AuthService } from './auth/service';
 import { createExecutionDaemon } from './execution/daemon';
 import type { ExecutionDaemon } from './execution/daemon';
 import { createRuntimeCompletionStage } from './execution/completion-stage';
@@ -58,6 +60,7 @@ interface FactorySingletons {
   app?: App;
   daemon?: ExecutionDaemon;
   adapterCatalog?: AdapterCatalog;
+  auth?: AuthService | null;
 }
 
 const globalRef = globalThis as typeof globalThis & { __softwareFactory__?: FactorySingletons };
@@ -152,14 +155,45 @@ export function getExecutionDaemon(): ExecutionDaemon {
   return singletons.daemon;
 }
 
+/** SF_INSECURE_COOKIES=1: plain-HTTP LAN opt-out (drops __Host-/Secure). */
+function insecureCookies(): boolean {
+  return process.env.SF_INSECURE_COOKIES === '1' || process.env.SF_INSECURE_COOKIES === 'true';
+}
+
+/**
+ * The process-wide auth service — MULTI-USER MODE ONLY (`SF_MULTI_USER=1`).
+ * File-backed stores under `<factoryDir>/auth`; the bootstrap invite arms the
+ * first admin account (consume-once; SF_BOOTSTRAP_REARM=1 re-arms it for an
+ * admin password reset). `null` = single-tenant, today's behavior
+ * byte-for-byte. Full fail-closed env resolution hardens in U11.
+ */
+export function getAuthService(): AuthService | null {
+  if (singletons.auth === undefined) {
+    const flag = process.env.SF_MULTI_USER;
+    if (flag === '1' || flag === 'true') {
+      singletons.auth = createAuthService({
+        stores: createFileAuthStores(join(resolveRuntimeConfig().factoryDir, 'auth')),
+        bootstrapInvite: process.env.SF_BOOTSTRAP_INVITE,
+        bootstrapRearm:
+          process.env.SF_BOOTSTRAP_REARM === '1' || process.env.SF_BOOTSTRAP_REARM === 'true',
+      });
+    } else {
+      singletons.auth = null;
+    }
+  }
+  return singletons.auth;
+}
+
 /** The process-wide local API app. Built once, reused across requests. */
 export function getApp(): App {
   const runtime = resolveRuntimeConfig();
+  const auth = getAuthService();
   singletons.app ??= createApp({
     store: getStore(),
     operatorToken: operatorTokenProvider(),
     execution: getExecutionDaemon(),
     adapterCatalog: getAdapterCatalog(),
+    auth: auth !== null ? { service: auth, insecureCookies: insecureCookies() } : null,
     // AI-backed planning: unknown intents are decomposed by the operator's
     // authenticated Claude CLI (validated fail-closed in core); the built-in
     // intent and underspecified requests keep their deterministic paths, and
@@ -185,4 +219,47 @@ export async function getLocalSession(): Promise<LocalSession> {
   await mkdir(resolveRuntimeConfig().factoryDir, { recursive: true });
   const session = await operatorTokenProvider().getOrCreate();
   return { operatorToken: session.token, csrfToken: csrfToken() };
+}
+
+/**
+ * Page-level auth (multi-user U9): the session for server components plus the
+ * headers loaders forward into `handle()` so SSR sees the SAME owner-scoped
+ * view the API answers over the wire.
+ */
+export interface PageAuth {
+  readonly session: LocalSession;
+  /** Forward into run-data loaders (LoaderAuth). Empty single-tenant. */
+  readonly loaderAuth: Readonly<Record<string, string | undefined>>;
+}
+
+/**
+ * Resolve the page session. SINGLE-TENANT: today's loopback session, never
+ * null. MULTI-USER: verifies the request's session cookie — `null` means the
+ * caller is anonymous/expired and the page must redirect to /login (pages
+ * decide; no layout-level auth per Next 15 guidance). The OPERATOR TOKEN IS
+ * NEVER PART OF A MULTI-USER PAGE PAYLOAD.
+ */
+export async function getPageAuth(): Promise<PageAuth | null> {
+  const auth = getAuthService();
+  if (auth === null) {
+    return { session: await getLocalSession(), loaderAuth: {} };
+  }
+  // next/headers is only importable inside a request scope; dynamic import
+  // keeps this module loadable from the standalone (non-Next) server too.
+  const { cookies } = await import('next/headers');
+  const jar = await cookies();
+  const cookieName = sessionCookieName(insecureCookies());
+  const token = jar.get(cookieName)?.value;
+  if (token === undefined) {
+    return null;
+  }
+  const verified = await auth.verifySession(token);
+  if (verified === null) {
+    return null;
+  }
+  const { csrfToken: sessionCsrf, ...identity } = verified;
+  return {
+    session: { csrfToken: sessionCsrf, identity, multiUser: true },
+    loaderAuth: { cookie: `${cookieName}=${encodeURIComponent(token)}` },
+  };
 }

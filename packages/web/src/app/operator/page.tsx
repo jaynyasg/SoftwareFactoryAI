@@ -7,6 +7,8 @@
  * Scoped to a run id via `?runId=` so the dashboard is deterministic and
  * parallel-safe: it never silently follows a newer run started elsewhere.
  */
+import { redirect } from 'next/navigation';
+import { getPageAuth } from '../../server/instance';
 import { loadOperatorAggregate } from '../../server/run-data';
 import { runStatusSeverity } from '../../lib/run-view';
 import { AppShell } from '../../components/AppShell';
@@ -24,7 +26,15 @@ export default async function OperatorPage({
   searchParams: Promise<{ runId?: string }>;
 }) {
   const { runId } = await searchParams;
-  const data = await loadOperatorAggregate(runId);
+  // Multi-user (U9): the dashboard is login-gated and owner-scoped through
+  // the loaders. Single-tenant renders exactly as before.
+  const auth = await getPageAuth();
+  if (auth === null) {
+    redirect(
+      `/login?returnTo=${encodeURIComponent(runId !== undefined ? `/operator?runId=${runId}` : '/operator')}`,
+    );
+  }
+  const data = await loadOperatorAggregate(runId, auth.loaderAuth);
 
   return (
     <AppShell>

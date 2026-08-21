@@ -1740,3 +1740,55 @@
     grid-column: 2;
   }
 }
+
+/* ----------------------------------------------------------------------------
+ * Auth surfaces (multi-user U9): login + invite redemption + user menu.
+ * ------------------------------------------------------------------------- */
+
+.auth-page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: var(--space-24, 24px);
+}
+
+.auth-panel {
+  width: min(420px, 92vw);
+}
+
+.auth-form {
+  display: grid;
+  gap: var(--space-16, 16px);
+}
+
+.auth-form__field {
+  display: grid;
+  gap: var(--space-4, 4px);
+  font-size: 0.85rem;
+}
+
+.auth-form__field input {
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border, #2a2f3a);
+  background: var(--surface-2, #12151c);
+  color: inherit;
+  font: inherit;
+}
+
+.auth-form__error {
+  color: var(--danger, #ff6b6b);
+  font-size: 0.85rem;
+  margin: 0;
+}
+
+.auth-page__hint {
+  margin-top: var(--space-12, 12px);
+  font-size: 0.85rem;
+}
+
+.app-header__user {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-8, 8px);
+}

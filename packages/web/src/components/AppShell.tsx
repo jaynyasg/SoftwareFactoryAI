@@ -7,6 +7,7 @@
 import type { ReactNode } from 'react';
 import Link from 'next/link';
 import { AppShellNav } from './AppShellNav';
+import { UserMenu } from './auth/UserMenu';
 
 export function AppShell({ children }: { readonly children: ReactNode }) {
   return (
@@ -19,6 +20,8 @@ export function AppShell({ children }: { readonly children: ReactNode }) {
           <span className="app-header__tag">Control Room Ledger</span>
         </div>
         <AppShellNav />
+        {/* Multi-user (U9): current user + sign-out; renders nothing single-tenant. */}
+        <UserMenu />
         <span className="app-header__tag mono">127.0.0.1 · local-first</span>
       </header>
       <main className="app-main">{children}</main>

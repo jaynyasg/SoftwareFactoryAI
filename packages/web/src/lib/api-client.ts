@@ -40,7 +40,11 @@ export type MutationResult<T> =
 function mutationHeaders(session: LocalSession): HeadersInit {
   return {
     'content-type': 'application/json',
-    'x-operator-token': session.operatorToken,
+    // Single-tenant: the loopback operator token. Multi-user: ABSENT — the
+    // HttpOnly session cookie (sent automatically same-origin) authenticates.
+    ...(session.operatorToken !== undefined
+      ? { 'x-operator-token': session.operatorToken }
+      : {}),
     'x-csrf-token': session.csrfToken,
   };
 }
@@ -50,6 +54,19 @@ async function readJson(res: Response): Promise<Record<string, unknown>> {
     return (await res.json()) as Record<string, unknown>;
   } catch {
     return {};
+  }
+}
+
+/**
+ * Multi-user U9: an expired/revoked session answers 401 `unauthenticated`.
+ * Send the browser to the login page carrying a return-to, so the user lands
+ * back where they were. Single-tenant auth failures use OTHER error codes
+ * (`invalid_token` etc.) and never trigger this.
+ */
+function redirectToLoginOnExpiredSession(status: number, error: unknown): void {
+  if (status === 401 && error === 'unauthenticated' && typeof window !== 'undefined') {
+    const returnTo = encodeURIComponent(window.location.pathname + window.location.search);
+    window.location.assign(`/login?returnTo=${returnTo}`);
   }
 }
 
@@ -67,6 +84,7 @@ async function mutate<T>(
   if (res.ok) {
     return { ok: true, status: res.status, data: json as T };
   }
+  redirectToLoginOnExpiredSession(res.status, json.error);
   return {
     ok: false,
     status: res.status,
@@ -293,10 +311,12 @@ export async function fetchExecutionOverview(): Promise<ExecutionOverview> {
     headers: { accept: 'application/json' },
     cache: 'no-store',
   });
+  const json = await readJson(res);
   if (!res.ok) {
+    redirectToLoginOnExpiredSession(res.status, json.error);
     throw new Error(`execution_fetch_failed:${res.status}`);
   }
-  return parseExecutionOverview(await readJson(res));
+  return parseExecutionOverview(json);
 }
 
 /** Release the drain gate so queued work starts (POST /api/execution/resume). */
@@ -467,6 +487,7 @@ export async function fetchInterventions(): Promise<InterventionQueueSnapshot> {
     cache: 'no-store',
   });
   if (!res.ok) {
+    redirectToLoginOnExpiredSession(res.status, (await readJson(res)).error);
     throw new Error(`interventions_fetch_failed:${res.status}`);
   }
   const body = await readJson(res);
@@ -496,6 +517,7 @@ export async function fetchAggregate(runId: string, afterSequence: number): Prom
     { headers: { accept: 'application/json' }, cache: 'no-store' },
   );
   if (!res.ok) {
+    redirectToLoginOnExpiredSession(res.status, (await readJson(res)).error);
     throw new Error(`run_fetch_failed:${res.status}`);
   }
   return (await res.json()) as RunAggregate;

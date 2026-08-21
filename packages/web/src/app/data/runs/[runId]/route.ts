@@ -10,6 +10,8 @@
  */
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
+import { readCookie, sessionCookieName } from '../../../../server/app';
+import { getAuthService } from '../../../../server/instance';
 import { loadRunAggregate } from '../../../../server/run-data';
 
 export const runtime = 'nodejs';
@@ -23,7 +25,36 @@ export async function GET(
   const afterRaw = req.nextUrl.searchParams.get('after');
   const after = afterRaw !== null && Number.isFinite(Number(afterRaw)) ? Number(afterRaw) : 0;
 
-  const aggregate = await loadRunAggregate(runId, after);
+  // Multi-user (U9): an expired/anonymous poll answers an HONEST 401 (the
+  // client redirects to /login) — never a masking 404. Valid callers forward
+  // their credentials so the poll sees the SAME owner-scoped view as the API.
+  const callerHeaders = {
+    cookie: req.headers.get('cookie') ?? undefined,
+    authorization: req.headers.get('authorization') ?? undefined,
+  };
+  const authService = getAuthService();
+  if (authService !== null) {
+    const insecure =
+      process.env.SF_INSECURE_COOKIES === '1' || process.env.SF_INSECURE_COOKIES === 'true';
+    const sessionToken = readCookie(callerHeaders, sessionCookieName(insecure));
+    const rawBearer = callerHeaders.authorization;
+    const bearer = rawBearer?.toLowerCase().startsWith('bearer ')
+      ? rawBearer.slice('bearer '.length).trim()
+      : undefined;
+    const identity =
+      sessionToken !== undefined
+        ? await authService.verifySession(sessionToken)
+        : bearer !== undefined && bearer.startsWith('sfai_')
+          ? await authService.verifyApiToken(bearer)
+          : null;
+    if (identity === null) {
+      return NextResponse.json(
+        { error: 'unauthenticated', message: 'Sign in to view this run.' },
+        { status: 401 },
+      );
+    }
+  }
+  const aggregate = await loadRunAggregate(runId, after, callerHeaders);
   if (aggregate === null) {
     return NextResponse.json(
       { error: 'not_found', message: `Run ${runId} does not exist.` },

@@ -30,3 +30,12 @@ export function useSession(): LocalSession {
   }
   return session;
 }
+
+/**
+ * Session when available, `null` outside a provider. For chrome-level
+ * affordances (the AppShell user menu) that render on pages with AND without
+ * a session provider (e.g. the read-only operator dashboard).
+ */
+export function useOptionalSession(): LocalSession | null {
+  return useContext(SessionContext);
+}
