@@ -30,6 +30,13 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Build CLI
+        # @software-factory/cli/run-outputs is a dist/ subpath export; ESM
+        # consumers (vitest, the web routes) resolve it via the "import"
+        # condition to ./dist, so web tests that import it fail until the CLI
+        # is built. core/worker export from src and need no build step.
+        run: pnpm --filter @software-factory/cli run build
+
       - name: Typecheck
         run: pnpm typecheck
 
