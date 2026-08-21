@@ -1792,3 +1792,137 @@
   align-items: center;
   gap: var(--space-8, 8px);
 }
+
+/* ----------------------------------------------------------------------------
+ * Credential wizard + admin panel (multi-user U10).
+ * ------------------------------------------------------------------------- */
+
+.credential-wizard {
+  display: grid;
+  gap: var(--space-24, 24px);
+}
+
+.credential-wizard__group {
+  display: grid;
+  gap: var(--space-12, 12px);
+}
+
+.credential-wizard__group-title {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  opacity: 0.75;
+  margin: 0;
+}
+
+.credential-row {
+  display: grid;
+  gap: var(--space-8, 8px);
+  padding: var(--space-12, 12px);
+  border: 1px solid var(--border, #2a2f3a);
+  border-radius: 8px;
+}
+
+.credential-row__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-8, 8px);
+}
+
+.credential-row__label {
+  font-weight: 600;
+}
+
+.credential-row__hint {
+  margin: 0;
+  font-size: 0.8rem;
+}
+
+.credential-row__controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-8, 8px);
+}
+
+.credential-row__controls input[type='password'] {
+  flex: 1 1 240px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border, #2a2f3a);
+  background: var(--surface-2, #12151c);
+  color: inherit;
+  font: inherit;
+}
+
+.credential-row__message {
+  margin: 0;
+  font-size: 0.8rem;
+}
+
+.credential-row__message--ok {
+  color: var(--success, #4ade80);
+}
+
+.credential-row__message--warn {
+  color: var(--warning, #fbbf24);
+}
+
+.credential-row__message--error {
+  color: var(--danger, #ff6b6b);
+}
+
+.credential-row__confirm,
+.admin-users__confirm {
+  border: 1px solid var(--warning, #fbbf24);
+  border-radius: 8px;
+  padding: var(--space-12, 12px);
+  display: grid;
+  gap: var(--space-8, 8px);
+  font-size: 0.85rem;
+}
+
+.credential-nudge {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-12, 12px);
+  padding: var(--space-12, 12px);
+  border: 1px solid var(--warning, #fbbf24);
+  border-radius: 8px;
+  font-size: 0.9rem;
+}
+
+.api-token-panel,
+.admin-invites,
+.admin-users {
+  display: grid;
+  gap: var(--space-12, 12px);
+}
+
+.api-token-panel__minted,
+.admin-invites__minted {
+  border: 1px solid var(--success, #4ade80);
+  border-radius: 8px;
+  padding: var(--space-12, 12px);
+  display: grid;
+  gap: var(--space-8, 8px);
+  word-break: break-all;
+}
+
+.admin-invites__list,
+.admin-users__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-8, 8px);
+}
+
+.admin-invites__row,
+.admin-users__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-12, 12px);
+}

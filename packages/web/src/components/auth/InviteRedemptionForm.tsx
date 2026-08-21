@@ -34,7 +34,9 @@ export function InviteRedemptionForm({ token }: { readonly token: string }) {
     try {
       const res = await preauthPost('/api/auth/invite/redeem', { token, username, password });
       if (res.ok) {
-        window.location.assign('/');
+        // Land in the credential wizard: runs execute on the invitee's own
+        // accounts, so connecting them is the natural first stop (skippable).
+        window.location.assign('/onboarding');
         return;
       }
       if (res.body.error === 'invalid_invite') {

@@ -270,6 +270,22 @@ export function FactoryFloor({
         />
       </div>
 
+      {/* Multi-user (U10): a signed-in user with ZERO execution credentials
+          can browse but not run — nudge them to the wizard instead of letting
+          the first login dead-end. Adding a credential clears this (the
+          server-provided setup prop re-renders on navigation). */}
+      {setup.userCredentials !== undefined && !setup.userCredentials.execution ? (
+        <div className="credential-nudge" role="status" data-testid="credential-nudge">
+          <span>
+            No execution credential yet — runs execute on YOUR accounts, so nothing can start
+            until you connect one.
+          </span>
+          <a href="/onboarding" className="button">
+            Connect your accounts
+          </a>
+        </div>
+      ) : null}
+
       {/* 0 — factory-wide controls: the held/resume gate (nothing runs
           automatically on open) and the destructive cancel-all/clear-all
           commands. Run counts make the bar CONTEXTUAL: controls render only

@@ -120,14 +120,14 @@ describe('InviteRedemptionForm (G12)', () => {
     });
   }
 
-  it('redeems and lands signed-in on the floor', async () => {
+  it('redeems and lands signed-in in the credential wizard', async () => {
     const { calls } = stubFetch([{ status: 201, body: { identity: { username: 'new-user' } } }]);
     const { assigned } = stubNavigation();
     render(<InviteRedemptionForm token="invite-token-abc" />);
     fill();
     fireEvent.click(screen.getByRole('button', { name: /create account/i }));
 
-    await waitFor(() => expect(assigned).toEqual(['/']));
+    await waitFor(() => expect(assigned).toEqual(['/onboarding']));
     expect(JSON.parse(String(calls[0].init.body))).toMatchObject({ token: 'invite-token-abc' });
   });
 

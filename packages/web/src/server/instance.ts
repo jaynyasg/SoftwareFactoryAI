@@ -30,8 +30,20 @@
 import { randomBytes } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { createDefaultAdapterCatalog, createFileSystemEventStore } from '@software-factory/core';
-import type { AdapterCatalog, EventStore, OperatorTokenProvider } from '@software-factory/core';
+import {
+  createCredentialVault,
+  createDefaultAdapterCatalog,
+  createFileCredentialStore,
+  createFileSystemEventStore,
+  createSecretBox,
+} from '@software-factory/core';
+import type {
+  AdapterCatalog,
+  CredentialVault,
+  EventStore,
+  OperatorTokenProvider,
+  SecretBox,
+} from '@software-factory/core';
 import { resolveAdapterCatalogOptions } from './adapter-env';
 import { createAiRunPlanner } from './ai-planner';
 import { createApp, sessionCookieName } from './app';
@@ -61,6 +73,7 @@ interface FactorySingletons {
   daemon?: ExecutionDaemon;
   adapterCatalog?: AdapterCatalog;
   auth?: AuthService | null;
+  credentialVault?: CredentialVault | null;
 }
 
 const globalRef = globalThis as typeof globalThis & { __softwareFactory__?: FactorySingletons };
@@ -184,6 +197,42 @@ export function getAuthService(): AuthService | null {
   return singletons.auth;
 }
 
+/**
+ * The process-wide credential vault — multi-user mode only. A malformed or
+ * missing SF_MASTER_KEY degrades to an UNREADABLE vault (box null): logins
+ * and presence keep working, credential reads/writes answer the typed
+ * admin-directed error, runs block. Full fail-closed env rules land in U11.
+ */
+export function getCredentialVault(): CredentialVault | null {
+  if (singletons.credentialVault === undefined) {
+    if (getAuthService() === null) {
+      singletons.credentialVault = null;
+    } else {
+      let box: SecretBox | null = null;
+      const masterKey = process.env.SF_MASTER_KEY;
+      if (masterKey !== undefined && masterKey.length > 0) {
+        try {
+          box = createSecretBox({ masterKey });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          console.error(`[software-factory] SF_MASTER_KEY invalid: ${message}`);
+          box = null;
+        }
+      } else {
+        console.warn(
+          '[software-factory] SF_MULTI_USER is on but SF_MASTER_KEY is unset — the credential ' +
+            'vault is unreadable until an admin sets it (generate one with generateMasterKey()).',
+        );
+      }
+      singletons.credentialVault = createCredentialVault({
+        box,
+        store: createFileCredentialStore(join(resolveRuntimeConfig().factoryDir, 'credentials')),
+      });
+    }
+  }
+  return singletons.credentialVault;
+}
+
 /** The process-wide local API app. Built once, reused across requests. */
 export function getApp(): App {
   const runtime = resolveRuntimeConfig();
@@ -194,6 +243,7 @@ export function getApp(): App {
     execution: getExecutionDaemon(),
     adapterCatalog: getAdapterCatalog(),
     auth: auth !== null ? { service: auth, insecureCookies: insecureCookies() } : null,
+    credentialVault: getCredentialVault(),
     // AI-backed planning: unknown intents are decomposed by the operator's
     // authenticated Claude CLI (validated fail-closed in core); the built-in
     // intent and underspecified requests keep their deterministic paths, and

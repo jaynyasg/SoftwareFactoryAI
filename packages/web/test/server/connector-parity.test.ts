@@ -27,6 +27,7 @@ import { researchRoutes } from '../../src/server/research/research-routes';
 import { executionRoutes } from '../../src/server/routes/execution';
 import { fsRoutes } from '../../src/server/routes/fs';
 import { authRoutes } from '../../src/server/routes/auth';
+import { credentialRoutes } from '../../src/server/routes/credentials';
 import { handleMcpRequest } from '../../src/server/mcp';
 
 const SCHEMA_FILE = fileURLToPath(
@@ -171,6 +172,21 @@ const CONNECTOR_SURFACE: Readonly<Record<string, ConnectorMapping>> = {
       'Destructive admin action (kills sessions/tokens and cancels the user\'s runs); ' +
       'deliberately unreachable from remote connectors.',
   },
+  // Per-user credential wizard (U10). Credential VALUES ride these routes on
+  // their way into the encrypted vault — a browser-only surface by design;
+  // remote connectors must never carry (or coax an agent into pasting)
+  // credential material.
+  'GET /api/credentials': {
+    excluded: 'Presence-only wizard read; connectors have no credential UI to feed.',
+  },
+  'POST /api/credentials/:kind': {
+    excluded:
+      'Carries a raw credential VALUE into the vault — human-in-browser only, never a ' +
+      'connector operation (E5).',
+  },
+  'POST /api/credentials/:kind/delete': {
+    excluded: 'Wizard-only destructive action with a confirmation flow the UI renders.',
+  },
   // Local filesystem browsing (Run control folder picker).
   'POST /api/fs/browse': {
     excluded:
@@ -192,6 +208,7 @@ function allRoutes(): readonly RouteDef[] {
     ...executionRoutes(),
     ...fsRoutes(),
     ...authRoutes(),
+    ...credentialRoutes(),
   ];
 }
 

@@ -176,10 +176,36 @@ async function getSetup(ctx: RouteContext): Promise<ApiResponse> {
   const runtime = ctx.config.runtime;
   const mode = runtime?.mode ?? 'local';
   const workspaceConfig = runtime?.workspace ?? resolveWorkspaceRuntimeConfig();
+
+  // Multi-user (U10): the CALLER's credential presence (never values, E5) so
+  // the floor can nudge a zero-credential user toward the wizard.
+  let userCredentials:
+    | {
+        readonly execution: boolean;
+        readonly github: boolean;
+        readonly presence: readonly unknown[];
+      }
+    | undefined;
+  if (ctx.multiUser && ctx.credentialVault !== null && ctx.identity !== null) {
+    const presence = await ctx.credentialVault.getPresence(ctx.identity.userId);
+    const has = (kind: string): boolean =>
+      presence.some((row) => row.kind === kind && row.present);
+    userCredentials = {
+      execution:
+        has('claude_oauth_token') ||
+        has('anthropic_api_key') ||
+        has('openai_api_key') ||
+        has('codex_auth_json'),
+      github: has('github_token'),
+      presence,
+    };
+  }
+
   return {
     status: 200,
     body: {
       operatorToken: { present: session !== null },
+      ...(userCredentials !== undefined ? { userCredentials } : {}),
       sandbox: { status: 'unknown' },
       adapters:
         ctx.adapterCatalog === null

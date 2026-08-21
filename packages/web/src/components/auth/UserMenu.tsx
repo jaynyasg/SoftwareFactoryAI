@@ -34,6 +34,14 @@ export function UserMenu() {
 
   return (
     <span className="app-header__user" data-testid="user-menu">
+      <a href="/settings" className="app-header__tag">
+        Settings
+      </a>
+      {role === 'admin' ? (
+        <a href="/admin" className="app-header__tag">
+          Admin
+        </a>
+      ) : null}
       <span className="mono" title={role === 'admin' ? 'Admin account' : 'Account'}>
         {username}
         {role === 'admin' ? ' · admin' : ''}

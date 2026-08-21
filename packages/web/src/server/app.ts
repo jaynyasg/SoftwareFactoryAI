@@ -42,6 +42,9 @@ import type {
 } from '@software-factory/core';
 import { runRoutes } from './routes/runs';
 import { authRoutes } from './routes/auth';
+import { credentialRoutes } from './routes/credentials';
+import type { CredentialProber } from './routes/credentials';
+import { createRuntimeCredentialProber } from './execution/credential-prober';
 import { eventRoutes } from './routes/events';
 import { reviewRoutes } from './routes/review';
 import { setupRoutes } from './routes/setup';
@@ -204,6 +207,11 @@ export interface AppDeps {
    * (U10). Absent/null = no vault on this instance.
    */
   readonly credentialVault?: CredentialVault | null;
+  /**
+   * Live credential probe (U10). Defaults to the runtime prober (bound-
+   * adapter probes + provider API pings); tests inject fakes.
+   */
+  readonly credentialProber?: CredentialProber;
 }
 
 /* ----------------------------------------------------------------------------
@@ -301,6 +309,8 @@ export interface RouteContext {
   readonly authService: AuthService | null;
   /** The credential vault when configured on this instance (U7/U10). */
   readonly credentialVault: CredentialVault | null;
+  /** Live credential probe for the wizard save routes (U10). */
+  readonly credentialProber: CredentialProber;
   /** Whether multi-user auth is active on this instance. */
   readonly multiUser: boolean;
   /** Session-cookie writer for auth routes (mode-aware naming/flags). */
@@ -722,6 +732,7 @@ export function createApp(deps: AppDeps): App {
   // Multi-user auth (U3): present = enforce identities + declared access.
   const auth = deps.auth ?? null;
   const credentialVault = deps.credentialVault ?? null;
+  const credentialProber = deps.credentialProber ?? createRuntimeCredentialProber();
 
   // Adapter catalog (U6): `undefined` -> the real default catalog (with the
   // shared env-derived skill options); `null` -> no catalog (readiness
@@ -758,6 +769,7 @@ export function createApp(deps: AppDeps): App {
     ...executionRoutes(),
     ...fsRoutes(),
     ...authRoutes(),
+    ...credentialRoutes(),
   ];
 
   assertRoutesClassified(routes);
@@ -893,6 +905,7 @@ export function createApp(deps: AppDeps): App {
       identity,
       authService: auth?.service ?? null,
       credentialVault,
+      credentialProber,
       multiUser: auth != null,
       sessionCookie: (value) => serializeSessionCookie(value, insecureCookies),
       clientIp: deriveClientIp(request.headers, undefined, true),

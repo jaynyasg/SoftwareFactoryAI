@@ -522,3 +522,151 @@ export async function fetchAggregate(runId: string, afterSequence: number): Prom
   }
   return (await res.json()) as RunAggregate;
 }
+
+/* ----------------------------------------------------------------------------
+ * Per-user credentials, API tokens, and admin surfaces (multi-user U10)
+ * ------------------------------------------------------------------------- */
+
+/** Presence-only row for one credential slot (values never reach the client). */
+export interface CredentialPresenceItem {
+  readonly kind: string;
+  readonly present: boolean;
+  readonly updatedAt?: number;
+  readonly validatedAt?: number;
+}
+
+/** Live probe outcome returned by a save (G17 distinguishes rate limits). */
+export interface CredentialProbeInfo {
+  readonly status: 'valid' | 'valid_rate_limited' | 'invalid' | 'unverifiable';
+  readonly detail?: string;
+}
+
+export async function fetchCredentials(): Promise<readonly CredentialPresenceItem[]> {
+  const res = await fetch('/api/credentials', {
+    headers: { accept: 'application/json' },
+    cache: 'no-store',
+  });
+  const body = await readJson(res);
+  if (!res.ok) {
+    redirectToLoginOnExpiredSession(res.status, body.error);
+    throw new Error(`credentials_fetch_failed:${res.status}`);
+  }
+  return (body.credentials as CredentialPresenceItem[]) ?? [];
+}
+
+export interface SaveCredentialResult {
+  readonly credentials: readonly CredentialPresenceItem[];
+  readonly probe?: CredentialProbeInfo;
+  readonly message?: string;
+}
+
+export function saveCredential(
+  session: LocalSession,
+  kind: string,
+  value: string,
+): Promise<MutationResult<SaveCredentialResult>> {
+  return mutate(`/api/credentials/${encodeURIComponent(kind)}`, session, { value });
+}
+
+export interface DeleteCredentialConfirmation {
+  readonly error: 'confirm_required';
+  readonly activeRuns: readonly { runId: string; title?: string; status: string }[];
+}
+
+export function deleteCredential(
+  session: LocalSession,
+  kind: string,
+  confirm = false,
+): Promise<MutationResult<{ credentials: readonly CredentialPresenceItem[] }>> {
+  return mutate(`/api/credentials/${encodeURIComponent(kind)}/delete`, session, { confirm });
+}
+
+/** Mint (or rotate) the caller's personal API token — value shown ONCE. */
+export function mintApiToken(
+  session: LocalSession,
+): Promise<MutationResult<{ token: string; shownOnce: boolean }>> {
+  return mutate('/api/auth/token', session, {});
+}
+
+export interface AdminInviteItem {
+  readonly inviteId: string;
+  readonly createdAt: number;
+  readonly expiresAt: number;
+  readonly forUserId?: string;
+  readonly status: 'open' | 'redeemed' | 'revoked' | 'expired';
+}
+
+export async function fetchInvites(): Promise<readonly AdminInviteItem[]> {
+  const res = await fetch('/api/auth/invites', {
+    headers: { accept: 'application/json' },
+    cache: 'no-store',
+  });
+  const body = await readJson(res);
+  if (!res.ok) {
+    redirectToLoginOnExpiredSession(res.status, body.error);
+    throw new Error(`invites_fetch_failed:${res.status}`);
+  }
+  return (body.invites as AdminInviteItem[]) ?? [];
+}
+
+/** Issue an invite; the TOKEN appears exactly once for the admin to hand out. */
+export function createInvite(
+  session: LocalSession,
+  forUserId?: string,
+): Promise<MutationResult<{ inviteId: string; token: string }>> {
+  return mutate('/api/auth/invites', session, { forUserId });
+}
+
+export function revokeInvite(
+  session: LocalSession,
+  inviteId: string,
+): Promise<MutationResult<{ ok: boolean }>> {
+  return mutate(`/api/auth/invites/${encodeURIComponent(inviteId)}/revoke`, session, {});
+}
+
+export interface AdminUserItem {
+  readonly userId: string;
+  readonly username: string;
+  readonly role: 'admin' | 'user';
+  readonly createdAt: number;
+  readonly revoked: boolean;
+  readonly hasApiToken: boolean;
+}
+
+export async function fetchUsers(): Promise<readonly AdminUserItem[]> {
+  const res = await fetch('/api/auth/users', {
+    headers: { accept: 'application/json' },
+    cache: 'no-store',
+  });
+  const body = await readJson(res);
+  if (!res.ok) {
+    redirectToLoginOnExpiredSession(res.status, body.error);
+    throw new Error(`users_fetch_failed:${res.status}`);
+  }
+  return (body.users as AdminUserItem[]) ?? [];
+}
+
+export interface RevokeUserResult {
+  readonly ok: boolean;
+  readonly sessionsInvalidated: number;
+  readonly apiTokensRevoked: number;
+  readonly runsCancelled: readonly string[];
+}
+
+export function revokeUser(
+  session: LocalSession,
+  userId: string,
+): Promise<MutationResult<RevokeUserResult>> {
+  return mutate(`/api/auth/users/${encodeURIComponent(userId)}/revoke`, session, {});
+}
+
+/** The caller's run list (admins see all) — used to NAME runs in confirmations. */
+export async function fetchRunsList(): Promise<readonly RunProjection[]> {
+  const res = await fetch('/api/runs', { headers: { accept: 'application/json' }, cache: 'no-store' });
+  const body = await readJson(res);
+  if (!res.ok) {
+    redirectToLoginOnExpiredSession(res.status, body.error);
+    throw new Error(`runs_fetch_failed:${res.status}`);
+  }
+  return (body.runs as RunProjection[]) ?? [];
+}

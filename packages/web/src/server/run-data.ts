@@ -306,8 +306,19 @@ export async function loadSetup(auth: LoaderAuth = {}): Promise<SetupStatus> {
     headers: { ...auth },
   });
   const body = bodyOf(res);
+  const userCredentials = body.userCredentials as
+    | { execution?: boolean; github?: boolean }
+    | undefined;
   return {
     operatorToken: { present: Boolean((body.operatorToken as { present?: boolean })?.present) },
+    ...(userCredentials !== undefined
+      ? {
+          userCredentials: {
+            execution: userCredentials.execution === true,
+            github: userCredentials.github === true,
+          },
+        }
+      : {}),
     sandbox: { status: String((body.sandbox as { status?: string })?.status ?? 'unknown') },
     adapters: parseAdapterSetup(body.adapters),
     deploy: { status: String((body.deploy as { status?: string })?.status ?? 'required') },

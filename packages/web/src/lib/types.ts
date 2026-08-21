@@ -186,4 +186,12 @@ export interface SetupStatus {
     readonly factoryDir?: string;
     readonly operatorTokenSource?: string;
   };
+  /**
+   * The CALLER's credential presence (multi-user U10; absent single-tenant).
+   * Drives the zero-credential wizard nudge on the floor.
+   */
+  readonly userCredentials?: {
+    readonly execution: boolean;
+    readonly github: boolean;
+  };
 }
