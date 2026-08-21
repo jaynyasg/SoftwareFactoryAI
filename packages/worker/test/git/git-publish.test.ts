@@ -10,7 +10,7 @@ import { createFakeRunner } from '../_helpers/fake-runner';
 const TOKEN = 'ghp_SuperSecretPublishToken1234';
 const COMMIT = 'abc123def4567890abc123def4567890abc123de';
 const ARGS = {
-  dest: 'C:\ws\run-1',
+  dest: 'C:\\ws\\run-1',
   remoteUrl: 'https://github.com/octo/app.git',
   branch: 'main',
   message: 'Software Factory: publish run run-1 deliverable',
