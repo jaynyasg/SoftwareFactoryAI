@@ -105,3 +105,7 @@ export * from './provenance/run-provenance';
 export * from './package/run-packaging';
 // Ledger-derived deploy preconditions + destination/push/deploy completion.
 export * from './deploy/render/deploy-completion';
+export * from './deploy/vercel/vercel-client';
+export * from './deploy/vercel/vercel-deployer';
+export * from './deploy/vercel/deploy-completion';
+export * from './deploy/lovable/handoff';

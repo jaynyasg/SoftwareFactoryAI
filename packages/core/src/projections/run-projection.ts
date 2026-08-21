@@ -17,6 +17,7 @@ import {
 } from '../events/event-types';
 import type {
   CallerFamily,
+  DeployTarget,
   ContractGeneratedPayload,
   EventActor,
   EventEvidence,
@@ -288,6 +289,8 @@ export interface RunProjection {
    * those runs are ADMIN-OWNED by definition (migration G5).
    */
   readonly ownerId?: string;
+  /** Deploy target for the generated app (U12/U13); absent = Render default. */
+  readonly deployTarget?: DeployTarget;
   /** Explicit execution state — see `RunExecutionState` (realized in U5). */
   readonly executionState: RunExecutionState;
   /** Human-facing reason for a blocked/failed/paused execution state. */
@@ -326,6 +329,7 @@ export function projectRun(raw: readonly unknown[], runId?: string): RunProjecti
   let reviewMode: ReviewMode | undefined;
   let callerFamily: CallerFamily | undefined;
   let ownerId: string | undefined;
+  let deployTarget: DeployTarget | undefined;
   let mode: RunMode | undefined;
   let buildContract: BuildContractView | undefined;
   let plannedTicketCount: number | undefined;
@@ -360,6 +364,7 @@ export function projectRun(raw: readonly unknown[], runId?: string): RunProjecti
         callerFamily = event.payload.callerFamily ?? callerFamily;
         mode = event.payload.mode ?? mode;
         ownerId = event.payload.ownerId ?? ownerId;
+        deployTarget = event.payload.deployTarget ?? deployTarget;
         break;
       case 'run.settings_overridden':
         // Mid-run operator course-change: the LATEST override wins for every
@@ -544,6 +549,7 @@ export function projectRun(raw: readonly unknown[], runId?: string): RunProjecti
     callerFamily,
     mode,
     ownerId,
+    deployTarget,
     executionState,
     executionReason,
     buildContract,

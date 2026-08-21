@@ -17,6 +17,7 @@ const PHASE_LABELS: Readonly<Record<DeployStatusValue, string>> = {
   health_pending: 'Hosted health pending',
   health_failed: 'Hosted health failed',
   hosted_ready: 'Hosted & healthy',
+  handoff_ready: 'Handoff ready (import into Lovable)',
 };
 
 export function DeployStatus({ deploy }: { readonly deploy: DeployView }) {
@@ -58,9 +59,34 @@ export function DeployStatus({ deploy }: { readonly deploy: DeployView }) {
               <Mono value={deploy.url} max={40} copyable />
             </a>
           </div>
+        ) : deploy.status === 'handoff_ready' ? (
+          // U13: an HONEST handoff — the repo is published and the import
+          // link is clickable, but NO hosting happened and none is claimed.
+          <div className="stack" data-testid="handoff-ready">
+            <span className="label">import into lovable</span>
+            <a
+              href={deploy.importUrl}
+              target="_blank"
+              rel="noreferrer"
+              data-testid="handoff-import-url"
+            >
+              <Mono value={deploy.importUrl ?? ''} max={44} copyable />
+            </a>
+            {deploy.repoUrl ? (
+              <>
+                <span className="label">published repo</span>
+                <a href={deploy.repoUrl} target="_blank" rel="noreferrer">
+                  <Mono value={deploy.repoUrl} max={44} copyable />
+                </a>
+              </>
+            ) : null}
+            <p className="muted" style={{ fontSize: 'var(--fs-2xs)', whiteSpace: 'pre-line' }}>
+              {deploy.instructions}
+            </p>
+          </div>
         ) : (
           <p className="muted" style={{ fontSize: 'var(--fs-2xs)' }}>
-            Hosted URL appears only after Render success and hosted health passes.
+            Hosted URL appears only after provider success and hosted health passes.
           </p>
         )}
       </div>

@@ -147,7 +147,8 @@ export function getExecutionDaemon(): ExecutionDaemon {
         runtime,
         adapters: getAdapterCatalog(),
         gateStages: createRuntimeGateStages({ runtime }),
-        completionStage: createRuntimeCompletionStage({ runtime }),
+        // U12: owned runs deploy with the OWNER's Render/Vercel credentials.
+        completionStage: createRuntimeCompletionStage({ runtime, vault: getCredentialVault() }),
         // U7/U11: multi-user runs bind the OWNER's decrypted credentials into
         // a per-job adapter catalog (single-tenant: undefined, unchanged).
         credentials: (() => {

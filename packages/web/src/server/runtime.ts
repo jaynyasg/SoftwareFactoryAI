@@ -118,6 +118,10 @@ export interface DeployRuntimeConfig {
   readonly previewCommand?: string;
   /** Local preview URL health is probed at, when a preview command is set. */
   readonly previewUrl?: string;
+  /** Whether a Vercel token is PRESENT (single-tenant env; never the value). */
+  readonly vercelTokenPresent: boolean;
+  /** Optional hosted-URL override for Vercel health checks. */
+  readonly vercelHostedUrl?: string;
 }
 
 export interface RuntimeConfig {
@@ -180,6 +184,8 @@ interface RuntimeEnv {
   readonly SF_EXEC_AUTOSTART?: string;
   readonly RENDER_API_KEY?: string;
   readonly SF_RENDER_API_KEY?: string;
+  readonly SF_VERCEL_TOKEN?: string;
+  readonly SF_VERCEL_HOSTED_URL?: string;
   readonly SF_RENDER_SERVICE_ID?: string;
   readonly SF_RENDER_HOSTED_URL?: string;
   readonly SF_DEPLOY_GITHUB_OWNER?: string;
@@ -332,6 +338,8 @@ export function resolveDeployRuntimeConfig(
     allowTemporaryRepo: parseBool(env.SF_DEPLOY_ALLOW_TEMP_REPO),
     previewCommand: clean(env.SF_PREVIEW_COMMAND),
     previewUrl: clean(env.SF_PREVIEW_URL),
+    vercelTokenPresent: clean(env.SF_VERCEL_TOKEN) !== undefined,
+    vercelHostedUrl: clean(env.SF_VERCEL_HOSTED_URL),
   };
 }
 

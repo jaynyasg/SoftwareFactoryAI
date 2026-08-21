@@ -124,7 +124,8 @@ export type DeployStatusValue =
   | 'migration_failed'
   | 'health_pending'
   | 'health_failed'
-  | 'hosted_ready';
+  | 'hosted_ready'
+  | 'handoff_ready';
 
 export interface DeployView {
   readonly status: DeployStatusValue;
@@ -132,6 +133,10 @@ export interface DeployView {
   readonly url?: string;
   readonly reason?: string;
   readonly action?: string;
+  /** Handoff fields (U13): present ONLY on `handoff_ready` — never a hosted URL. */
+  readonly repoUrl?: string;
+  readonly importUrl?: string;
+  readonly instructions?: string;
 }
 
 export function deriveDeploy(events: readonly FactoryEvent[]): DeployView {
@@ -158,6 +163,15 @@ export function deriveDeploy(events: readonly FactoryEvent[]): DeployView {
         break;
       case 'deploy.hosted_ready':
         view = { status: 'hosted_ready', url: event.payload.url };
+        break;
+      case 'deploy.handoff_ready':
+        // U13: an honest publish-and-import handoff — no hosted URL claimed.
+        view = {
+          status: 'handoff_ready',
+          repoUrl: event.payload.repoUrl,
+          importUrl: event.payload.importUrl,
+          instructions: event.payload.instructions,
+        };
         break;
       default:
         break;
@@ -529,6 +543,7 @@ export const DEPLOY_STATUS_SEVERITY: Readonly<Record<DeployStatusValue, EventSev
   health_pending: 'warn',
   health_failed: 'error',
   hosted_ready: 'success',
+  handoff_ready: 'success',
 };
 
 const DEPLOY_LANE_STATUS: Readonly<Record<DeployStatusValue, string>> = {
@@ -540,6 +555,7 @@ const DEPLOY_LANE_STATUS: Readonly<Record<DeployStatusValue, string>> = {
   health_pending: 'health pending',
   health_failed: 'health failed',
   hosted_ready: 'hosted · healthy',
+  handoff_ready: 'handoff ready',
 };
 
 function researchLane(research: ResearchProjection): BlueprintLane {

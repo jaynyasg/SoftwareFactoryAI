@@ -46,6 +46,8 @@ import { createSchedulerTicketExecutor } from '../../src/server/execution/ticket
 import { createCompletionStage } from '../../src/server/execution/completion-stage';
 import type {
   CompletionDeployer,
+  CompletionLovableHandoff,
+  CompletionVercelDeployer,
   CompletionPackager,
   CompletionPreviewRunner,
 } from '../../src/server/execution/completion-stage';
@@ -131,11 +133,13 @@ const CONFIGURED_DEPLOY: DeployRuntimeConfig = {
   githubOwner: 'octo',
   githubRepo: 'app',
   allowTemporaryRepo: false,
+  vercelTokenPresent: false,
 };
 
 const UNCONFIGURED_DEPLOY: DeployRuntimeConfig = {
   renderApiKeyPresent: false,
   allowTemporaryRepo: false,
+  vercelTokenPresent: false,
 };
 
 /** Real packager over a fake git runner; counts invocations + git calls. */
@@ -245,6 +249,9 @@ interface HarnessOptions {
   readonly deployConfig: DeployRuntimeConfig;
   readonly packager: CompletionPackager;
   readonly deployer: CompletionDeployer;
+  /** U12/U13 provider seams (absent = target pauses with setup-required). */
+  readonly vercelDeployer?: CompletionVercelDeployer;
+  readonly lovableHandoff?: CompletionLovableHandoff;
 }
 
 interface Harness {
@@ -278,6 +285,8 @@ function makeHarness(options: HarnessOptions): Harness {
     deployConfig: options.deployConfig,
     packager: options.packager,
     deployer: options.deployer,
+    vercelDeployer: options.vercelDeployer,
+    lovableHandoff: options.lovableHandoff,
     preview: fakePreview(det.clock),
     clock: det.clock,
   });
@@ -309,9 +318,9 @@ function makeHarness(options: HarnessOptions): Harness {
   return { app, store, daemon, makeDaemon };
 }
 
-async function createAndStart(app: App): Promise<string> {
+async function createAndStart(app: App, body: Record<string, unknown> = {}): Promise<string> {
   const created = await app.handle(
-    req('POST', '/api/runs', authedHeaders(), { prompt: MARKETPLACE_PROMPT }),
+    req('POST', '/api/runs', authedHeaders(), { prompt: MARKETPLACE_PROMPT, ...body }),
   );
   expect(created.status).toBe(201);
   const runId = record(created).runId as string;
@@ -616,5 +625,123 @@ describe('U8: preflight deploy probe', () => {
     expect(deployCheck?.detail).toMatch(/missing/i);
     expect(deployCheck?.detail).toMatch(/Render API key/);
     expect(deployCheck?.detail).toMatch(/deploy\.setup_required/);
+  });
+});
+
+/* ----------------------------------------------------------------------------
+ * U12/U13: deploy-target selection (render default, vercel, lovable handoff)
+ * ------------------------------------------------------------------------- */
+
+describe('U12/U13: deploy-target selection', () => {
+  it('target vercel routes to the Vercel seam (never the Render deployer) with the run context', async () => {
+    const counting = countingPackager();
+    let renderCalls = 0;
+    let vercelCalls = 0;
+    let seenOwnerId: string | undefined | null = null;
+    const { app, store, daemon } = makeHarness({
+      deployConfig: { ...CONFIGURED_DEPLOY, vercelTokenPresent: true },
+      packager: counting.packager,
+      deployer: (params, deps) => {
+        renderCalls += 1;
+        return scriptedDeployer([true])(params, deps);
+      },
+      vercelDeployer: (params) => {
+        vercelCalls += 1;
+        seenOwnerId = params.ownerId;
+        return Promise.resolve({
+          outcome: {
+            status: 'hosted_ready' as const,
+            url: 'https://my-app.vercel.app',
+            retryable: false as const,
+          },
+        });
+      },
+    });
+    const runId = await createAndStart(app, { deployTarget: 'vercel' });
+    const tick = await daemon.tick();
+    expect(tick.completed).toBe(1);
+
+    expect(vercelCalls).toBe(1);
+    expect(renderCalls).toBe(0);
+    // Single-tenant run: no owner. (Multi-user owner resolution is pinned in
+    // the runtime-wiring unit tests; the seam receives whatever the run has.)
+    expect(seenOwnerId).toBeUndefined();
+
+    const completed = (await events(store, runId)).find(
+      (event) => event.type === 'run.completed',
+    );
+    expect((completed?.payload as { summary: string }).summary).toContain('my-app.vercel.app');
+  });
+
+  it('target vercel WITHOUT a wired provider pauses with setup-required (run still completes)', async () => {
+    const counting = countingPackager();
+    const { app, store, daemon } = makeHarness({
+      deployConfig: CONFIGURED_DEPLOY,
+      packager: counting.packager,
+      deployer: scriptedDeployer([true]),
+    });
+    const runId = await createAndStart(app, { deployTarget: 'vercel' });
+    await daemon.tick();
+
+    const all = await events(store, runId);
+    const seen = typesOf(all);
+    expect(seen).toContain('run.completed');
+    expect(seen).not.toContain('deploy.hosted_ready');
+    const completed = all.find((event) => event.type === 'run.completed');
+    expect((completed?.payload as { summary: string }).summary).toContain('setup required');
+  });
+
+  it('target lovable-handoff records the honest handoff: import link, NO hosted URL anywhere', async () => {
+    const counting = countingPackager();
+    const { app, store, daemon } = makeHarness({
+      deployConfig: CONFIGURED_DEPLOY,
+      packager: counting.packager,
+      deployer: scriptedDeployer([true]),
+      lovableHandoff: (params, deps) =>
+        deps.store
+          .append({
+            runId: params.runId,
+            type: 'deploy.handoff_ready',
+            actor: { kind: 'deploy', id: 'lovable', display: 'lovable-handoff' },
+            subject: { kind: 'deploy', id: 'app' },
+            severity: 'success',
+            payload: {
+              repoUrl: 'https://github.com/octo/app',
+              importUrl: 'https://lovable.dev/projects/new?import=repo',
+              instructions: 'Open lovable.dev and import the repo.',
+              provider: 'lovable',
+            },
+          })
+          .then(() => ({
+            outcome: {
+              status: 'handoff_ready' as const,
+              repoUrl: 'https://github.com/octo/app',
+              importUrl: 'https://lovable.dev/projects/new?import=repo',
+              instructions: 'Open lovable.dev and import the repo.',
+              retryable: false as const,
+            },
+          })),
+    });
+    const runId = await createAndStart(app, { deployTarget: 'lovable-handoff' });
+    const tick = await daemon.tick();
+    expect(tick.completed).toBe(1);
+
+    const all = await events(store, runId);
+    const seen = typesOf(all);
+    expect(seen).toContain('deploy.handoff_ready');
+    expect(seen).not.toContain('deploy.hosted_ready');
+    expect(seen).toContain('run.completed');
+    const completed = all.find((event) => event.type === 'run.completed');
+    const summary = (completed?.payload as { summary: string }).summary;
+    expect(summary).toContain('lovable.dev');
+    expect(summary).toContain('no hosted URL');
+
+    // Parity: the outputs contract exposes the handoff the way it exposes
+    // Render's hosted URL (same deploy slot, no hosting claimed).
+    const { buildRunOutputs } = await import('@software-factory/cli/run-outputs');
+    const outputs = buildRunOutputs(runId, all, '/events');
+    expect(outputs.deploy.status).toBe('handoff_ready');
+    expect(outputs.deploy.importUrl).toContain('lovable.dev');
+    expect(outputs.hostedUrl).toBeUndefined();
   });
 });

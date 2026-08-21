@@ -41,24 +41,33 @@ import {
   projectTickets,
 } from '@software-factory/core';
 import type {
+  CredentialVault,
+  DeployTarget,
   EventStore,
   FactoryEvent,
   ProvenanceDeployConfig,
   TicketProjection,
 } from '@software-factory/core';
 import {
+  completeLovableHandoff,
   completeRunDeploy,
+  completeRunVercelDeploy,
   createCommandGitRemoteClient,
   createRenderClient,
+  createVercelClient,
   deriveDeployPreconditions,
   generateRenderConfig,
   packageCompletedRun,
   startPreview,
 } from '@software-factory/worker';
 import type {
+  CompleteLovableHandoffParams,
+  CompleteLovableHandoffResult,
   CompleteRunDeployDeps,
   CompleteRunDeployParams,
   CompleteRunDeployResult,
+  CompleteRunVercelDeployDeps,
+  CompleteRunVercelDeployParams,
   PackageCompletedRunDeps,
   PackageCompletedRunParams,
   PackageCompletedRunResult,
@@ -109,11 +118,25 @@ export type CompletionPackager = (
   deps: Pick<PackageCompletedRunDeps, 'store'>,
 ) => Promise<PackageCompletedRunResult>;
 
-/** Deployer seam (production: `completeRunDeploy` with a real Render client). */
+/** Deployer seam (production: `completeRunDeploy` with a real Render client).
+ * `ownerId` (U12) lets the production wiring resolve the run OWNER's deploy
+ * credential from the vault in multi-user mode. */
 export type CompletionDeployer = (
-  params: CompleteRunDeployParams,
+  params: CompleteRunDeployParams & { readonly ownerId?: string },
   deps: Pick<CompleteRunDeployDeps, 'store' | 'signal'>,
 ) => Promise<CompleteRunDeployResult>;
+
+/** Vercel deployer seam (U12) — mirrors the Render seam. */
+export type CompletionVercelDeployer = (
+  params: CompleteRunVercelDeployParams & { readonly ownerId?: string },
+  deps: Pick<CompleteRunVercelDeployDeps, 'store' | 'signal'>,
+) => Promise<CompleteRunDeployResult>;
+
+/** Lovable handoff seam (U13) — publish + import-link artifact, no hosting. */
+export type CompletionLovableHandoff = (
+  params: CompleteLovableHandoffParams & { readonly ownerId?: string },
+  deps: { readonly store: EventStore; readonly signal: AbortSignal },
+) => Promise<CompleteLovableHandoffResult>;
 
 /** Preview outcome the (injectable) preview runner reports. */
 export interface CompletionPreviewOutcome {
@@ -134,6 +157,10 @@ export interface CompletionStageOptions {
   readonly packager: CompletionPackager;
   /** Absent = deploy never attempted (records setup-required when planned). */
   readonly deployer: CompletionDeployer;
+  /** Vercel provider (U12). Absent = target vercel pauses with setup-required. */
+  readonly vercelDeployer?: CompletionVercelDeployer;
+  /** Lovable handoff (U13). Absent = target lovable pauses with setup-required. */
+  readonly lovableHandoff?: CompletionLovableHandoff;
   /** Absent = preview honestly un-attempted. */
   readonly preview?: CompletionPreviewRunner;
   readonly clock?: () => number;
@@ -265,32 +292,113 @@ export function createCompletionStage(options: CompletionStageOptions): Executor
         );
       }
 
-      /* 3. Deploy (only when planned; pauses/failures never fail the run). */
+      /* 3. Deploy (only when planned; pauses/failures never fail the run).
+         The run's recorded deployTarget selects the provider (U12/U13);
+         absent = the Render default. Owner credentials resolve inside the
+         production deployer wiring (multi-user). */
       if (plansDeploy && packagePath !== undefined) {
         const deployEvents = await ctx.store.readRun(ctx.runId);
+        const deployRun = projectRun(deployEvents, ctx.runId);
+        const target: DeployTarget = deployRun.deployTarget ?? 'render';
         const preconditions = deriveDeployPreconditions(deployEvents);
         const github =
           deployConfig.githubOwner !== undefined && deployConfig.githubRepo !== undefined
             ? { owner: deployConfig.githubOwner, repo: deployConfig.githubRepo }
             : undefined;
-        const result = await options.deployer(
-          {
-            runId: ctx.runId,
-            artifactId: 'app',
-            packagePath,
-            commit: packageCommit ?? 'unknown',
-            preconditions,
-            github,
-            allowTemporaryRepo: deployConfig.allowTemporaryRepo,
-            render: {
-              serviceId: deployConfig.renderServiceId,
-              apiKeyPresent: deployConfig.renderApiKeyPresent,
-            },
-            hostedUrl: deployConfig.hostedUrl,
-            clock,
-          },
-          { store: ctx.store, signal: ctx.signal },
-        );
+        const common = {
+          runId: ctx.runId,
+          artifactId: 'app',
+          packagePath,
+          commit: packageCommit ?? 'unknown',
+          preconditions,
+          github,
+          allowTemporaryRepo: deployConfig.allowTemporaryRepo,
+          ownerId: deployRun.ownerId,
+          clock,
+        };
+
+        if (target === 'lovable-handoff') {
+          // U13: an HONEST publish-and-import handoff — never claimed hosting.
+          const handoff =
+            options.lovableHandoff !== undefined
+              ? await options.lovableHandoff(common, { store: ctx.store, signal: ctx.signal })
+              : null;
+          if (handoff === null) {
+            const action =
+              'Lovable handoff is not wired on this server instance; retry once it is enabled.';
+            notes.push(`Deploy paused (setup required): ${action}`);
+            const deployAttempt = countDeployFailureEvents(await ctx.store.readRun(ctx.runId));
+            await raiseIntervention(ctx.store, {
+              runId: ctx.runId,
+              interventionId: `${ctx.runId}:deploy:setup:${deployAttempt}`,
+              kind: 'deploy_setup',
+              blockingStage: 'deploy',
+              reason: 'The lovable-handoff provider is not configured on this instance.',
+              requiredAction: action,
+            });
+          } else if (handoff.outcome.status === 'handoff_ready') {
+            notes.push(
+              `Lovable handoff ready: repo published at ${handoff.outcome.repoUrl}; import it at ${handoff.outcome.importUrl} (no hosted URL — Lovable hosts after import).`,
+            );
+            const openDeploy = filterInterventions(
+              projectInterventions(await ctx.store.readRun(ctx.runId)),
+              { runId: ctx.runId, blockingStage: 'deploy', openOnly: true },
+            );
+            for (const intervention of openDeploy) {
+              await resolveIntervention(ctx.store, intervention, {
+                resolution: 'handoff_ready',
+                note: `Repo published; Lovable import link recorded (${handoff.outcome.importUrl}).`,
+              });
+            }
+          } else {
+            notes.push(`Deploy paused (setup required): ${handoff.outcome.action}`);
+            const deployAttempt = countDeployFailureEvents(await ctx.store.readRun(ctx.runId));
+            await raiseIntervention(ctx.store, {
+              runId: ctx.runId,
+              interventionId: `${ctx.runId}:deploy:setup:${deployAttempt}`,
+              kind: 'deploy_setup',
+              blockingStage: 'deploy',
+              reason:
+                'The Lovable handoff is paused pending setup; the local build, package, and provenance are complete and preserved.',
+              requiredAction: `${handoff.outcome.action} Then retry execution (POST /api/runs/:id/retry).`,
+            });
+          }
+          if (ctx.signal.aborted) {
+            return { status: 'yielded', reason: 'Execution aborted during the completion stage.' };
+          }
+          return { status: 'ok', notes };
+        }
+
+        const result =
+          target === 'vercel'
+            ? options.vercelDeployer !== undefined
+              ? await options.vercelDeployer(
+                  {
+                    ...common,
+                    vercel: { tokenPresent: deployConfig.vercelTokenPresent },
+                    hostedUrl: deployConfig.vercelHostedUrl,
+                  },
+                  { store: ctx.store, signal: ctx.signal },
+                )
+              : {
+                  outcome: {
+                    status: 'setup_required' as const,
+                    action:
+                      'Vercel deploys are not wired on this server instance; retry once they are enabled.',
+                    retryable: true as const,
+                  },
+                }
+            : await options.deployer(
+                {
+                  ...common,
+                  render: {
+                    serviceId: deployConfig.renderServiceId,
+                    apiKeyPresent: deployConfig.renderApiKeyPresent,
+                  },
+                  hostedUrl: deployConfig.hostedUrl,
+                },
+                { store: ctx.store, signal: ctx.signal },
+              );
         notes.push(deployNote(result));
         const outcome = result.outcome;
         if (outcome.status === 'hosted_ready') {
@@ -368,6 +476,13 @@ function summarizeDeployConfig(): ProvenanceDeployConfig {
 export interface RuntimeCompletionStageOptions {
   readonly runtime?: RuntimeConfig;
   readonly clock?: () => number;
+  /**
+   * Per-user credential vault (multi-user U12). When present, the RUN OWNER's
+   * render_api_key / vercel_token are resolved from the vault at deploy time
+   * (decrypt late) and the server-level deploy keys are NEVER read for owned
+   * runs. Absent = single-tenant env-key behavior, unchanged.
+   */
+  readonly vault?: CredentialVault | null;
 }
 
 /**
@@ -385,18 +500,72 @@ export function createRuntimeCompletionStage(
   const packager: CompletionPackager = (params, deps) =>
     packageCompletedRun(params, { store: deps.store, runner });
 
+  const vault = options.vault ?? null;
+
+  /** Decrypt-late owner deploy credential (multi-user); undefined otherwise. */
+  const ownerDeployKey = async (
+    ownerId: string | undefined,
+    kind: 'render_api_key' | 'vercel_token',
+  ): Promise<string | undefined> => {
+    if (vault === null || ownerId === undefined) {
+      return undefined;
+    }
+    const read = await vault.readCredential(ownerId, kind);
+    return read.ok ? read.value : undefined;
+  };
+
   const deployer: CompletionDeployer = async (params, deps) => {
-    const apiKey = process.env.SF_RENDER_API_KEY ?? process.env.RENDER_API_KEY;
+    // Multi-user (U12): owned runs deploy with the OWNER's Render key from
+    // the vault; the server-level key applies only single-tenant (R11).
+    const ownerKey = await ownerDeployKey(params.ownerId, 'render_api_key');
+    const apiKey =
+      vault !== null && params.ownerId !== undefined
+        ? ownerKey
+        : (process.env.SF_RENDER_API_KEY ?? process.env.RENDER_API_KEY);
     // TODO: surface `provenanceDestinationOf(result.gitDestination)` in the
     // (already-written) provenance package once a provenance-update seam
     // exists; the resolved destination is available on the returned result.
-    return completeRunDeploy(params, {
+    return completeRunDeploy(
+      {
+        ...params,
+        render: { ...params.render, apiKeyPresent: apiKey !== undefined },
+      },
+      {
+        store: deps.store,
+        signal: deps.signal,
+        renderClient: createRenderClient({ apiKey }),
+        gitClient: createCommandGitRemoteClient(runner),
+      },
+    );
+  };
+
+  const vercelDeployer: CompletionVercelDeployer = async (params, deps) => {
+    // Multi-user: the OWNER's Vercel token; single-tenant: SF_VERCEL_TOKEN.
+    const ownerToken = await ownerDeployKey(params.ownerId, 'vercel_token');
+    const token =
+      vault !== null && params.ownerId !== undefined
+        ? ownerToken
+        : process.env.SF_VERCEL_TOKEN;
+    return completeRunVercelDeploy(
+      {
+        ...params,
+        vercel: { ...params.vercel, tokenPresent: token !== undefined },
+      },
+      {
+        store: deps.store,
+        signal: deps.signal,
+        vercelClient: createVercelClient({ token }),
+        gitClient: createCommandGitRemoteClient(runner),
+      },
+    );
+  };
+
+  const lovableHandoff: CompletionLovableHandoff = (params, deps) =>
+    completeLovableHandoff(params, {
       store: deps.store,
       signal: deps.signal,
-      renderClient: createRenderClient({ apiKey }),
       gitClient: createCommandGitRemoteClient(runner),
     });
-  };
 
   const preview: CompletionPreviewRunner | undefined =
     deployConfig.previewCommand !== undefined && deployConfig.previewUrl !== undefined
@@ -434,6 +603,8 @@ export function createRuntimeCompletionStage(
     deployConfig,
     packager,
     deployer,
+    vercelDeployer,
+    lovableHandoff,
     preview,
     clock: options.clock,
   });

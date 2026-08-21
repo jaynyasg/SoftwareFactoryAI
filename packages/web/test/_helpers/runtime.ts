@@ -68,6 +68,7 @@ export function testRuntimeConfig(overrides: TestRuntimeConfigOverrides = {}): R
     deploy: {
       renderApiKeyPresent: false,
       allowTemporaryRepo: false,
+      vercelTokenPresent: false,
       ...overrides.deploy,
     },
   };

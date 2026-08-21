@@ -284,7 +284,9 @@ for (const backend of BACKENDS) {
 }
 
 describe('file backend at-rest hygiene', () => {
-  it('persists no plaintext secrets: passwords, session tokens, invite tokens, API secrets', async () => {
+  // Several full-cost scrypt ops; clock-independent — needs wall time only
+  // (same contention-flake fix as the lockout test above).
+  it('persists no plaintext secrets: passwords, session tokens, invite tokens, API secrets', { timeout: 120_000 }, async () => {
     const made = BACKENDS[1].make();
     const { service, admin } = await withAdmin(made.stores);
     const invite = await service.issueInvite(admin.identity.userId);

@@ -159,6 +159,21 @@ export interface RunCreatedPayload {
    * admin-owned (same optional-field compatibility pattern as `mode`).
    */
   readonly ownerId?: string;
+  /**
+   * Where the completion stage ships the GENERATED app (U12/U13). Absent =
+   * the Render default (pre-U12 ledgers fold identically). `lovable-handoff`
+   * is an honest publish-and-import handoff, never claimed hosting.
+   */
+  readonly deployTarget?: DeployTarget;
+}
+
+/** Deploy targets for the apps the factory builds (U12/U13). */
+export const DEPLOY_TARGETS = ['render', 'vercel', 'lovable-handoff'] as const;
+export type DeployTarget = (typeof DEPLOY_TARGETS)[number];
+
+/** Type guard for a deploy-target value. */
+export function isDeployTarget(value: unknown): value is DeployTarget {
+  return typeof value === 'string' && (DEPLOY_TARGETS as readonly string[]).includes(value);
 }
 /**
  * Mid-run operator override of run settings (model/effort). Append-only and
@@ -799,6 +814,20 @@ export interface DeployHealthFailedPayload {
 export interface DeployHostedReadyPayload {
   readonly url: string;
 }
+/**
+ * Publish-and-import handoff completed (U13, Lovable): the generated repo is
+ * published and the import link + instructions are recorded. HONEST state —
+ * no hosting happened and no hosted URL is claimed.
+ */
+export interface DeployHandoffReadyPayload {
+  /** The published GitHub repository URL. */
+  readonly repoUrl: string;
+  /** The provider import link the user opens (e.g. Lovable's GitHub import). */
+  readonly importUrl: string;
+  /** Step-by-step import instructions surfaced in the deploy panel. */
+  readonly instructions: string;
+  readonly provider: 'lovable';
+}
 
 // security
 export interface SecurityBlockPayload {
@@ -913,6 +942,7 @@ export interface EventPayloadMap {
   'deploy.health_pending': EmptyPayload;
   'deploy.health_failed': DeployHealthFailedPayload;
   'deploy.hosted_ready': DeployHostedReadyPayload;
+  'deploy.handoff_ready': DeployHandoffReadyPayload;
   'security.block': SecurityBlockPayload;
   'security.command_rejected': SecurityCommandRejectedPayload;
   'genome.module_selected': GenomeModuleSelectedPayload;
@@ -1055,6 +1085,7 @@ export const EVENT_TYPES = [
   'deploy.health_pending',
   'deploy.health_failed',
   'deploy.hosted_ready',
+  'deploy.handoff_ready',
   'security.block',
   'security.command_rejected',
   'genome.module_selected',

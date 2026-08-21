@@ -75,7 +75,8 @@ export type DeployOutputStatus =
   | 'migration_failed'
   | 'health_pending'
   | 'health_failed'
-  | 'hosted_ready';
+  | 'hosted_ready'
+  | 'handoff_ready';
 
 /** The projected deploy state (R29/R30): URL only on `hosted_ready`. */
 export interface DeployOutput {
@@ -86,6 +87,10 @@ export interface DeployOutput {
   readonly action?: string;
   /** Whether the current deploy state can be retried (all non-ready states). */
   readonly retryable: boolean;
+  /** Handoff fields (U13, `handoff_ready` only): published repo + import link. */
+  readonly repoUrl?: string;
+  readonly importUrl?: string;
+  readonly instructions?: string;
 }
 
 /** The stable artifact contract `run`/`status` return (and `--json` prints). */
@@ -186,6 +191,17 @@ function deriveLifecycle(events: readonly FactoryEvent[]): DerivedLifecycle {
       case 'deploy.hosted_ready':
         derived.hostedUrl = event.payload.url;
         derived.deploy = { status: 'hosted_ready', url: event.payload.url, retryable: false };
+        break;
+      case 'deploy.handoff_ready':
+        // U13: parity across CLI/MCP/UI — the handoff artifact rides the SAME
+        // deploy slot the hosted URL does, but claims NO hosting.
+        derived.deploy = {
+          status: 'handoff_ready',
+          repoUrl: event.payload.repoUrl,
+          importUrl: event.payload.importUrl,
+          instructions: event.payload.instructions,
+          retryable: false,
+        };
         break;
       case 'package.created':
         derived.repoPath = event.payload.repoPath ?? derived.repoPath;

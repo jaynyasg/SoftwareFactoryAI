@@ -50,7 +50,9 @@
  */
 import {
   DEFAULT_RUN_MODE,
+  DEPLOY_TARGETS,
   RUN_MODES,
+  isDeployTarget,
   isRealRun,
   isRunMode,
   projectResearch,
@@ -221,6 +223,19 @@ async function createRun(ctx: RouteContext): Promise<ApiResponse> {
   const mode: RunMode = isRunMode(rawMode) ? rawMode : DEFAULT_RUN_MODE;
   const wantsResearch = runModeWantsResearch(mode);
 
+  // Deploy target for the GENERATED app (U12/U13): validated up front like
+  // the mode — an unknown target is a client error, never a silent default.
+  const rawTarget: unknown = body.deployTarget;
+  if (rawTarget !== undefined && !isDeployTarget(rawTarget)) {
+    return {
+      status: 400,
+      body: {
+        error: 'invalid_deploy_target',
+        message: `deployTarget must be one of: ${DEPLOY_TARGETS.join(', ')}.`,
+      },
+    };
+  }
+
   const candidateRunId = ctx.idGenerator();
   const denial = await ctx.guardMutation({
     subject: { kind: 'run', id: candidateRunId },
@@ -257,6 +272,8 @@ async function createRun(ctx: RouteContext): Promise<ApiResponse> {
     // The normalized mode is recorded durably — this is the U5 seam: a
     // `research-plan-and-start` run carries its start request in run state.
     mode,
+    // U12/U13: where the completion stage ships the generated app.
+    ...(isDeployTarget(rawTarget) ? { deployTarget: rawTarget } : {}),
     // Multi-user (U5): the run durably belongs to the account that created it
     // (admins own their own runs too). Single-tenant ledgers stay byte-
     // identical — no ownerId field is ever written there.

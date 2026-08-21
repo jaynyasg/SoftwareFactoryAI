@@ -110,6 +110,8 @@ export interface StartRunInput {
    * click plans AND begins execution; omitted = the server's plan-only default.
    */
   readonly mode?: 'plan-only' | 'plan-and-start' | 'research-and-plan' | 'research-plan-and-start';
+  /** Where the completion stage ships the GENERATED app (U12/U13). */
+  readonly deployTarget?: 'render' | 'vercel' | 'lovable-handoff';
 }
 
 export interface StartRunResult {

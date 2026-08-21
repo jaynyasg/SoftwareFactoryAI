@@ -98,6 +98,10 @@ export function RunControl({
   const modelOptions = MODELS_BY_ADAPTER[adapter] ?? MODELS_BY_ADAPTER[ADAPTERS[0].id];
   const [effort, setEffort] = useState<(typeof EFFORTS)[number]>('extra high');
   const [reviewMode, setReviewMode] = useState<ReviewMode>('human');
+  // U12/U13: where the completion stage ships the generated app.
+  const [deployTarget, setDeployTarget] = useState<'render' | 'vercel' | 'lovable-handoff'>(
+    'render',
+  );
   // Default is plan AND start: one "Start run" click carries the run to
   // executing workers. Checking "Plan only" restores the review-first flow
   // (blueprint now, execution via the run page's Start button later).
@@ -195,6 +199,7 @@ export function RunControl({
         reasoningEffort: effort,
         requestedWorkerCap: workerCap,
         reviewMode,
+        deployTarget,
         mode: planOnly ? 'plan-only' : 'plan-and-start',
       });
       if (result.ok) {
@@ -435,6 +440,24 @@ export function RunControl({
                   {m.label}
                 </option>
               ))}
+            </select>
+          </div>
+
+          <div className="field">
+            <label className="field__label" htmlFor={`${fieldId}-deploy-target`}>
+              Deploy target
+            </label>
+            <select
+              id={`${fieldId}-deploy-target`}
+              className="select"
+              value={deployTarget}
+              onChange={(e) =>
+                setDeployTarget(e.target.value as 'render' | 'vercel' | 'lovable-handoff')
+              }
+            >
+              <option value="render">Render (hosted)</option>
+              <option value="vercel">Vercel (hosted)</option>
+              <option value="lovable-handoff">Lovable (publish + import handoff)</option>
             </select>
           </div>
 
