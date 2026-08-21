@@ -695,15 +695,32 @@ export function createApp(deps: AppDeps): App {
     }
   }
 
+  // Multi-user auth (U3): present = enforce identities + declared access.
+  const auth = deps.auth ?? null;
+  const credentialVault = deps.credentialVault ?? null;
+  const credentialProber = deps.credentialProber ?? createRuntimeCredentialProber();
+
+  // U7/U11: owned runs check out and publish with the OWNER's GitHub token,
+  // resolved exec-time from the vault (never the server env token).
+  const ownerGithubToken =
+    credentialVault !== null
+      ? async (ownerId: string): Promise<string | undefined> => {
+          const read = await credentialVault.readCredential(ownerId, 'github_token');
+          return read.ok ? read.value : undefined;
+        }
+      : undefined;
+
   // `undefined` -> default runtime materializer; `null` -> workspace disabled.
   const materializer: RunWorkspaceMaterializer | null =
     deps.materializer === undefined
-      ? createRuntimeWorkspaceMaterializer({ runtime: config.runtime, clock })
+      ? createRuntimeWorkspaceMaterializer({ runtime: config.runtime, clock, ownerGithubToken })
       : deps.materializer;
 
   // `undefined` -> default runtime publisher; `null` -> publishing disabled.
   const publisher: RunWorkspacePublisher | null =
-    deps.publisher === undefined ? createRuntimeWorkspacePublisher({ clock }) : deps.publisher;
+    deps.publisher === undefined
+      ? createRuntimeWorkspacePublisher({ clock, ownerGithubToken })
+      : deps.publisher;
 
   async function publishWorkspaceForRun(runId: string): Promise<WorkspacePublishOutcome | null> {
     if (publisher === null) {
@@ -729,11 +746,6 @@ export function createApp(deps: AppDeps): App {
   // stays with the server entry points. Omitted/null -> execution disabled.
   const executionDaemon: ExecutionDaemon | null = deps.execution ?? null;
 
-  // Multi-user auth (U3): present = enforce identities + declared access.
-  const auth = deps.auth ?? null;
-  const credentialVault = deps.credentialVault ?? null;
-  const credentialProber = deps.credentialProber ?? createRuntimeCredentialProber();
-
   // Adapter catalog (U6): `undefined` -> the real default catalog (with the
   // shared env-derived skill options); `null` -> no catalog (readiness
   // enforced fail-closed at execution time instead).
@@ -750,6 +762,8 @@ export function createApp(deps: AppDeps): App {
           runtime: config.runtime,
           clock,
           adapters: adapterCatalog ?? undefined,
+          // U7/U11: per-owner credential checks in multi-user mode.
+          vault: credentialVault ?? undefined,
         })
       : deps.preflight;
 

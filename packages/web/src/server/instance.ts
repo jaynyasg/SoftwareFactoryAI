@@ -53,6 +53,10 @@ import type { AuthService } from './auth/service';
 import { createExecutionDaemon } from './execution/daemon';
 import type { ExecutionDaemon } from './execution/daemon';
 import { createRuntimeCompletionStage } from './execution/completion-stage';
+import {
+  createRunCredentialResolver,
+  sweepOrphanCodexHomes,
+} from './execution/credential-bundles';
 import { createRuntimeGateStages } from './execution/gate-stages';
 import { createSchedulerTicketExecutor } from './execution/ticket-executor';
 import {
@@ -144,9 +148,30 @@ export function getExecutionDaemon(): ExecutionDaemon {
         adapters: getAdapterCatalog(),
         gateStages: createRuntimeGateStages({ runtime }),
         completionStage: createRuntimeCompletionStage({ runtime }),
+        // U7/U11: multi-user runs bind the OWNER's decrypted credentials into
+        // a per-job adapter catalog (single-tenant: undefined, unchanged).
+        credentials: (() => {
+          const vault = getCredentialVault();
+          return vault !== null
+            ? createRunCredentialResolver({
+                vault,
+                catalog: (spawnEnv) =>
+                  createDefaultAdapterCatalog({ ...resolveAdapterCatalogOptions(), spawnEnv }),
+              })
+            : undefined;
+        })(),
       }),
     });
     singletons.daemon = daemon;
+    // U7: remove ephemeral codex homes left by a crashed previous process —
+    // before any run executes (never while runs are in flight).
+    void sweepOrphanCodexHomes().then((removed) => {
+      if (removed.length > 0) {
+        console.warn(
+          `[software-factory] swept ${removed.length} orphaned codex home(s) from a previous process.`,
+        );
+      }
+    });
     // U11 scale-safety: hosted logs must state the single-instance limit once
     // per process — this build's storage/queue cannot scale horizontally.
     if (runtime.mode === 'cloud') {
@@ -170,7 +195,7 @@ export function getExecutionDaemon(): ExecutionDaemon {
 
 /** SF_INSECURE_COOKIES=1: plain-HTTP LAN opt-out (drops __Host-/Secure). */
 function insecureCookies(): boolean {
-  return process.env.SF_INSECURE_COOKIES === '1' || process.env.SF_INSECURE_COOKIES === 'true';
+  return resolveRuntimeConfig().multiUser.insecureCookies;
 }
 
 /**
@@ -182,13 +207,21 @@ function insecureCookies(): boolean {
  */
 export function getAuthService(): AuthService | null {
   if (singletons.auth === undefined) {
-    const flag = process.env.SF_MULTI_USER;
-    if (flag === '1' || flag === 'true') {
+    const multiUser = resolveRuntimeConfig().multiUser;
+    for (const warning of multiUser.warnings) {
+      console.warn(warning);
+    }
+    if (multiUser.enabled) {
+      console.warn(
+        `[software-factory] multi-user: ON (source=${multiUser.source ?? 'env'}, ` +
+          `vault=${multiUser.masterKey !== undefined ? 'readable' : 'UNREADABLE'}, ` +
+          `bootstrap=${multiUser.bootstrapInvite !== undefined ? 'armed' : 'absent'}). ` +
+          'The legacy shared operator token is refused; personal API tokens and sessions authenticate.',
+      );
       singletons.auth = createAuthService({
         stores: createFileAuthStores(join(resolveRuntimeConfig().factoryDir, 'auth')),
-        bootstrapInvite: process.env.SF_BOOTSTRAP_INVITE,
-        bootstrapRearm:
-          process.env.SF_BOOTSTRAP_REARM === '1' || process.env.SF_BOOTSTRAP_REARM === 'true',
+        bootstrapInvite: multiUser.bootstrapInvite,
+        bootstrapRearm: multiUser.bootstrapRearm,
       });
     } else {
       singletons.auth = null;
@@ -208,21 +241,10 @@ export function getCredentialVault(): CredentialVault | null {
     if (getAuthService() === null) {
       singletons.credentialVault = null;
     } else {
+      const multiUser = resolveRuntimeConfig().multiUser;
       let box: SecretBox | null = null;
-      const masterKey = process.env.SF_MASTER_KEY;
-      if (masterKey !== undefined && masterKey.length > 0) {
-        try {
-          box = createSecretBox({ masterKey });
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          console.error(`[software-factory] SF_MASTER_KEY invalid: ${message}`);
-          box = null;
-        }
-      } else {
-        console.warn(
-          '[software-factory] SF_MULTI_USER is on but SF_MASTER_KEY is unset — the credential ' +
-            'vault is unreadable until an admin sets it (generate one with generateMasterKey()).',
-        );
+      if (multiUser.masterKey !== undefined) {
+        box = createSecretBox({ masterKey: multiUser.masterKey });
       }
       singletons.credentialVault = createCredentialVault({
         box,

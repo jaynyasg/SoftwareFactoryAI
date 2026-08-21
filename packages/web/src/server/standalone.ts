@@ -21,13 +21,25 @@
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { createDefaultAdapterCatalog, createFileSystemEventStore } from '@software-factory/core';
+import {
+  createCredentialVault,
+  createDefaultAdapterCatalog,
+  createFileCredentialStore,
+  createFileSystemEventStore,
+  createSecretBox,
+} from '@software-factory/core';
+import type { CredentialVault } from '@software-factory/core';
 import { resolveAdapterCatalogOptions } from './adapter-env';
 import { createApp } from './app';
 import type { RunningServer } from './app';
+import { createAuthService, createFileAuthStores } from './auth/service';
 import { createExecutionDaemon } from './execution/daemon';
 import type { ExecutionDaemon } from './execution/daemon';
 import { createRuntimeCompletionStage } from './execution/completion-stage';
+import {
+  createRunCredentialResolver,
+  sweepOrphanCodexHomes,
+} from './execution/credential-bundles';
 import { createRuntimeGateStages } from './execution/gate-stages';
 import { createSchedulerTicketExecutor } from './execution/ticket-executor';
 import {
@@ -83,6 +95,41 @@ export async function startStandaloneServer(
   // through the SAME shared module as the Next mount — this entry point used
   // to drop SF_CLAUDE_ALLOWED_SKILLS silently.
   const adapterCatalog = createDefaultAdapterCatalog(resolveAdapterCatalogOptions());
+
+  // Multi-user (U11): same activation as the Next mount — env flag or
+  // initialized auth stores on disk (downgrade fail-closed). Warnings and the
+  // mode line print once at boot so a misconfigured deploy self-explains.
+  const multiUser = runtime.multiUser;
+  for (const warning of multiUser.warnings) {
+    console.warn(warning);
+  }
+  const authService = multiUser.enabled
+    ? createAuthService({
+        stores: createFileAuthStores(join(factoryDir, 'auth')),
+        bootstrapInvite: multiUser.bootstrapInvite,
+        bootstrapRearm: multiUser.bootstrapRearm,
+      })
+    : null;
+  const credentialVault: CredentialVault | null = multiUser.enabled
+    ? createCredentialVault({
+        box: multiUser.masterKey !== undefined ? createSecretBox({ masterKey: multiUser.masterKey }) : null,
+        store: createFileCredentialStore(join(factoryDir, 'credentials')),
+      })
+    : null;
+  if (multiUser.enabled) {
+    console.warn(
+      `[software-factory] multi-user: ON (source=${multiUser.source ?? 'env'}, ` +
+        `vault=${multiUser.masterKey !== undefined ? 'readable' : 'UNREADABLE'}, ` +
+        `bootstrap=${multiUser.bootstrapInvite !== undefined ? 'armed' : 'absent'}). ` +
+        'The legacy shared operator token is refused; personal API tokens and sessions authenticate.',
+    );
+    // U7: remove ephemeral codex homes left by a crashed previous process.
+    const swept = await sweepOrphanCodexHomes();
+    if (swept.length > 0) {
+      console.warn(`[software-factory] swept ${swept.length} orphaned codex home(s).`);
+    }
+  }
+
   const daemon = createExecutionDaemon({
     store,
     config: runtime.execution,
@@ -93,6 +140,15 @@ export async function startStandaloneServer(
       adapters: adapterCatalog,
       gateStages: createRuntimeGateStages({ runtime }),
       completionStage: createRuntimeCompletionStage({ runtime }),
+      // U7/U11: multi-user runs bind the OWNER's decrypted credentials.
+      credentials:
+        credentialVault !== null
+          ? createRunCredentialResolver({
+              vault: credentialVault,
+              catalog: (spawnEnv) =>
+                createDefaultAdapterCatalog({ ...resolveAdapterCatalogOptions(), spawnEnv }),
+            })
+          : undefined,
     }),
   });
   await daemon.start();
@@ -110,6 +166,11 @@ export async function startStandaloneServer(
     operatorToken: provider,
     execution: daemon,
     adapterCatalog,
+    auth:
+      authService !== null
+        ? { service: authService, insecureCookies: multiUser.insecureCookies }
+        : null,
+    credentialVault,
     config: { allowedOrigins: runtime.allowedOrigins, runtime, allowSameHostOrigin: true },
   });
 

@@ -13,6 +13,7 @@ import {
   createFileOperatorTokenStore,
   createInMemoryOperatorTokenStore,
   createOperatorTokenProvider,
+  createSecretBox,
 } from '@software-factory/core';
 import type { OperatorTokenProvider } from '@software-factory/core';
 
@@ -139,6 +140,8 @@ export interface RuntimeConfig {
   readonly workspace: WorkspaceRuntimeConfig;
   readonly execution: ExecutionRuntimeConfig;
   readonly deploy: DeployRuntimeConfig;
+  /** Multi-user activation + validated secrets config (U11). */
+  readonly multiUser: MultiUserRuntimeConfig;
 }
 
 interface RuntimeEnv {
@@ -154,6 +157,11 @@ interface RuntimeEnv {
   readonly RENDER_EXTERNAL_URL?: string;
   readonly SF_OPERATOR_TOKEN?: string;
   readonly SF_CSRF_TOKEN?: string;
+  readonly SF_MULTI_USER?: string;
+  readonly SF_MASTER_KEY?: string;
+  readonly SF_BOOTSTRAP_INVITE?: string;
+  readonly SF_BOOTSTRAP_REARM?: string;
+  readonly SF_INSECURE_COOKIES?: string;
   readonly SF_RESEARCH_ALLOW_NETWORK?: string;
   readonly SF_RESEARCH_DOC_URLS?: string;
   readonly SF_RESEARCH_SEARCH_PROVIDER?: string;
@@ -383,6 +391,165 @@ export function scaleSafetyStartupLine(config: Pick<RuntimeConfig, 'mode'>): str
   );
 }
 
+/* ----------------------------------------------------------------------------
+ * Multi-user activation (U11)
+ * ------------------------------------------------------------------------- */
+
+/** Resolved multi-user mode + validated secret config. */
+export interface MultiUserRuntimeConfig {
+  readonly enabled: boolean;
+  /**
+   * Why multi-user is active: the explicit env flag, or initialized auth
+   * stores found on disk with the flag UNSET (`disk_state`) — the downgrade
+   * fail-closed path: unsetting SF_MULTI_USER can never silently re-enable
+   * the shared operator token on a deployment that already has accounts.
+   */
+  readonly source?: 'env' | 'disk_state';
+  /** The validated master key value (present only when it parsed). */
+  readonly masterKey?: string;
+  readonly bootstrapInvite?: string;
+  readonly bootstrapRearm: boolean;
+  /** SF_INSECURE_COOKIES=1: plain-HTTP LAN opt-out (drops __Host-/Secure). */
+  readonly insecureCookies: boolean;
+  /** Operator-facing warnings the entry points log once at boot. */
+  readonly warnings: readonly string[];
+}
+
+/** Minimum bootstrap-invite length (mirrors the auth service's floor). */
+const MIN_BOOTSTRAP_ENTROPY_CHARS = 16;
+
+function flagOn(value: string | undefined): boolean {
+  return value === '1' || value === 'true';
+}
+
+/** Whether this factory dir already holds initialized auth stores. */
+export function authStoresInitialized(factoryDir: string): boolean {
+  return existsSync(join(factoryDir, 'auth', 'accounts.json'));
+}
+
+/**
+ * Resolve (and FAIL-CLOSED validate) the multi-user configuration.
+ *
+ * With `SF_MULTI_USER=1` the boot REQUIRES, with exact remediation messages:
+ *  - a valid `SF_MASTER_KEY` (32 bytes, hex or base64url) — the credential
+ *    vault cannot exist without it;
+ *  - a high-entropy `SF_BOOTSTRAP_INVITE` when one is set at all;
+ *  - a configured browser origin (`SF_PUBLIC_BASE_URL`/`RENDER_EXTERNAL_URL`
+ *    or `SF_ALLOWED_ORIGINS`) — the pre-session CSRF defense on the two
+ *    public POSTs depends on the origin check.
+ *
+ * With the flag UNSET but initialized auth stores on disk, multi-user STAYS
+ * ON (`source: 'disk_state'`, warning logged) so the legacy shared token is
+ * still refused — a config slip never downgrades a live multi-user deploy.
+ * Fresh single-tenant deployments (no flag, no stores) resolve identically to
+ * before this unit existed.
+ */
+export function resolveMultiUserRuntimeConfig(
+  env: RuntimeEnv = process.env as RuntimeEnv,
+  options: { readonly factoryDir: string },
+): MultiUserRuntimeConfig {
+  const flagged = flagOn(env.SF_MULTI_USER);
+  const initialized = authStoresInitialized(options.factoryDir);
+  const warnings: string[] = [];
+
+  if (!flagged && !initialized) {
+    return { enabled: false, bootstrapRearm: false, insecureCookies: false, warnings };
+  }
+  if (!flagged && initialized) {
+    warnings.push(
+      '[software-factory] multi-user: SF_MULTI_USER is unset but initialized auth stores exist ' +
+        `under ${join(options.factoryDir, 'auth')} — staying in multi-user mode (fail closed). ` +
+        'The legacy shared operator token remains refused. Set SF_MULTI_USER=1 to silence this, ' +
+        'or delete the auth stores to genuinely return to single-tenant.',
+    );
+  }
+
+  // Master key: REQUIRED when the flag explicitly claims multi-user; the
+  // disk-state path degrades to an unreadable vault instead of refusing boot
+  // (logins keep working; runs block with the admin-directed intervention).
+  const rawKey = clean(env.SF_MASTER_KEY);
+  let masterKey: string | undefined;
+  if (rawKey !== undefined) {
+    try {
+      createSecretBox({ masterKey: rawKey });
+      masterKey = rawKey;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (flagged) {
+        throw new Error(
+          `SF_MULTI_USER=1 requires a valid SF_MASTER_KEY, but the provided value did not parse ` +
+            `(${message}). Generate one with:\n` +
+            `  node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))"\n` +
+            `and set it in your platform's SECRET store (never a file under the factory dir), then redeploy.`,
+        );
+      }
+      warnings.push(
+        `[software-factory] multi-user: SF_MASTER_KEY did not parse (${message}) — the credential ` +
+          'vault is UNREADABLE until an admin fixes it. Logins keep working; runs stay blocked.',
+      );
+    }
+  } else if (flagged) {
+    throw new Error(
+      'SF_MULTI_USER=1 requires SF_MASTER_KEY (the credential vault cannot exist without it). ' +
+        'Generate one with:\n' +
+        '  node -e "console.log(require(\'node:crypto\').randomBytes(32).toString(\'base64url\'))"\n' +
+        "and set it in your platform's SECRET store (never a file under the factory dir), then redeploy.",
+    );
+  } else {
+    warnings.push(
+      '[software-factory] multi-user (disk_state): SF_MASTER_KEY is unset — the credential vault ' +
+        'is UNREADABLE until an admin restores it. Logins keep working; runs stay blocked.',
+    );
+  }
+
+  // Key-file-on-disk hygiene: the master key belongs in the platform secret
+  // store; a copy on the (backed-up, persistent) factory disk defeats
+  // encryption-at-rest.
+  for (const name of ['master-key', 'master-key.txt', '.master-key', 'sf-master-key']) {
+    if (existsSync(join(options.factoryDir, name))) {
+      warnings.push(
+        `[software-factory] multi-user: found "${name}" under the factory dir — the master key ` +
+          'must live ONLY in the platform secret store. A key file next to the encrypted vault ' +
+          'defeats encryption at rest; delete it.',
+      );
+    }
+  }
+
+  const bootstrapInvite = clean(env.SF_BOOTSTRAP_INVITE);
+  if (flagged && bootstrapInvite !== undefined && bootstrapInvite.length < MIN_BOOTSTRAP_ENTROPY_CHARS) {
+    throw new Error(
+      `SF_BOOTSTRAP_INVITE is too short (${bootstrapInvite.length} chars; minimum ` +
+        `${MIN_BOOTSTRAP_ENTROPY_CHARS}). It guards first-admin creation on a public URL — use a ` +
+        'high-entropy value, e.g.:\n  openssl rand -base64 24',
+    );
+  }
+
+  // The pre-session CSRF defense on login/redeem depends on the origin check:
+  // multi-user boots must pin the browser origin explicitly.
+  if (flagged) {
+    const publicBaseUrl = clean(env.SF_PUBLIC_BASE_URL) ?? clean(env.RENDER_EXTERNAL_URL);
+    const explicitOrigins = splitCsv(env.SF_ALLOWED_ORIGINS);
+    if (publicBaseUrl === undefined && explicitOrigins.length === 0) {
+      throw new Error(
+        'SF_MULTI_USER=1 requires a configured browser origin: set SF_PUBLIC_BASE_URL ' +
+          '(Render sets RENDER_EXTERNAL_URL automatically) or SF_ALLOWED_ORIGINS. The login and ' +
+          'invite pages verify the request Origin against it — without it the pre-session CSRF ' +
+          'defense cannot hold.',
+      );
+    }
+  }
+
+  return {
+    enabled: true,
+    source: flagged ? 'env' : 'disk_state',
+    masterKey,
+    bootstrapInvite,
+    bootstrapRearm: flagOn(env.SF_BOOTSTRAP_REARM),
+    insecureCookies: flagOn(env.SF_INSECURE_COOKIES),
+    warnings,
+  };
+}
+
 /** Resolve the shared ledger/operator-token directory. */
 export function resolveFactoryDir(
   env: RuntimeEnv = process.env as RuntimeEnv,
@@ -416,6 +583,7 @@ export function resolveRuntimeConfig(
   ];
   const operatorTokenSource = clean(env.SF_OPERATOR_TOKEN) !== undefined ? 'env' : 'file';
   const factoryDir = resolveFactoryDir(env, cwd);
+  const multiUser = resolveMultiUserRuntimeConfig(env, { factoryDir });
 
   return {
     mode,
@@ -431,6 +599,7 @@ export function resolveRuntimeConfig(
     workspace: resolveWorkspaceRuntimeConfig(env, factoryDir),
     execution: resolveExecutionRuntimeConfig(env),
     deploy: resolveDeployRuntimeConfig(env),
+    multiUser,
   };
 }
 

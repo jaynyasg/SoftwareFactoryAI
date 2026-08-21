@@ -92,16 +92,31 @@ Cloud mode characteristics:
 
 ## Entry Points
 
-| Caller              | Entry point                       | Transport      | Auth model                                  |
-| ------------------- | --------------------------------- | -------------- | ------------------------------------------- |
-| Browser UI          | `/`, `/operator`, `/runs/:runId`  | Next.js pages  | Server-provided operator token plus CSRF    |
-| CLI                 | `software-factory`                | HTTP `/api`    | `x-operator-token` or bearer token          |
-| Codex local skill   | `skills/codex/...ps1`             | CLI wrapper    | Same as CLI                                 |
-| Claude local skill  | `skills/claude/...sh`             | CLI wrapper    | Same as CLI                                 |
-| ChatGPT.com Action  | `integrations/chatgpt/actions...` | OpenAPI `/api` | Action API key header `x-operator-token`    |
-| ChatGPT.com MCP     | `https://<host>/mcp`              | JSON-RPC MCP   | Bearer token or `x-operator-token`          |
-| Claude.com MCP      | `https://<host>/mcp`              | JSON-RPC MCP   | Bearer token, or auth proxy token injection |
-| Programmatic caller | `createApp(...).handle(request)`  | In-process     | Caller supplies request/session context     |
+The factory runs in one of two auth modes. SINGLE-TENANT (default): one
+shared operator token authenticates everything. MULTI-USER (`SF_MULTI_USER=1`,
+see docs/plans/2026-08-20-001-feat-multi-user-cloud-accounts-plan.md): invited
+accounts sign in with session cookies, remote callers use personal `sfai_` API
+tokens, runs are owned and execute on their OWNER's credentials, and the shared
+operator token is refused.
+
+| Caller              | Entry point                       | Transport      | Single-tenant auth                          | Multi-user auth                                    |
+| ------------------- | --------------------------------- | -------------- | ------------------------------------------- | -------------------------------------------------- |
+| Browser UI          | `/`, `/operator`, `/runs/:runId`  | Next.js pages  | Server-provided operator token plus CSRF    | `__Host-sf_session` cookie + per-session CSRF      |
+| Login/invite/wizard | `/login`, `/invite/:t`, `/onboarding`, `/settings`, `/admin` | Next.js pages | n/a (redirect to `/`) | Session cookie; pre-session CSRF on the public POSTs |
+| CLI                 | `software-factory`                | HTTP `/api`    | `SF_OPERATOR_TOKEN` header/bearer           | `SF_API_TOKEN` (personal `sfai_`), same header slot |
+| Codex local skill   | `skills/codex/...ps1`             | CLI wrapper    | Same as CLI                                 | Same as CLI                                        |
+| Claude local skill  | `skills/claude/...sh`             | CLI wrapper    | Same as CLI                                 | Same as CLI                                        |
+| ChatGPT.com Action  | `integrations/chatgpt/actions...` | OpenAPI `/api` | Action API key header `x-operator-token`    | Personal `sfai_` token in the same header          |
+| ChatGPT.com MCP     | `https://<host>/mcp`              | JSON-RPC MCP   | Bearer token or `x-operator-token`          | Personal `sfai_` bearer (pure pass-through)        |
+| Claude.com MCP      | `https://<host>/mcp`              | JSON-RPC MCP   | Bearer token, or auth proxy token injection | Personal `sfai_` bearer, or auth proxy injection   |
+| Programmatic caller | `createApp(...).handle(request)`  | In-process     | Caller supplies request/session context     | Caller supplies request/session context            |
+
+Every route declares an access class (`public` | `authenticated` |
+`owner-scoped` | `admin`) enforced by the dispatcher in multi-user mode;
+registration is DEFAULT-DENY (an unclassified route cannot register). Reads are
+owner-scoped: users see their own runs (a foreign run id answers the same 404
+as an unknown one); admins see everything with owner labels. The only always-
+public route is the static liveness probe `GET /api/healthz`.
 
 GitHub repository access is separate from invocation. Pointing Claude.com or
 ChatGPT.com at the GitHub repo lets the model read source code. Invoking the
@@ -159,8 +174,13 @@ not fetch arbitrary remote documents during intake.
 
 The remote MCP bridge lives at `/mcp` and wraps the existing API instead of
 duplicating factory logic. It accepts JSON-RPC requests, exposes tool schemas,
-verifies the operator token, creates an internal session, and calls the same
-framework-agnostic app routes used by the browser and CLI.
+and calls the same framework-agnostic app routes used by the browser and CLI.
+The bridge is a PURE PASS-THROUGH (multi-user U4): it performs no token
+verification and injects no server credentials — the caller's own
+`Authorization`/`x-operator-token` header is forwarded verbatim and the route
+layer is the single verifier. Route 401/403 answers surface as JSON-RPC auth
+errors; in multi-user mode a personal `sfai_` token acts as its user (owned
+runs, owner-scoped visibility).
 
 Supported MCP methods:
 
@@ -221,16 +241,18 @@ Interventions + outputs + setup:
 | `software_factory_get_outputs`          | Reads the run artifact contract (gates, deploy, hosted). |
 | `software_factory_get_setup`            | Reads cloud/local setup diagnostics (presence only).     |
 
-Authentication accepted by `/mcp`:
+Authentication accepted by `/mcp` (the value is YOUR credential: the
+single-tenant operator token, or your personal `sfai_` API token on a
+multi-user factory — minted under Settings):
 
 ```text
-Authorization: Bearer <SF_OPERATOR_TOKEN>
-x-operator-token: <SF_OPERATOR_TOKEN>
+Authorization: Bearer <token>
+x-operator-token: <token>
 ```
 
 If a web model platform requires OAuth instead of static headers, place an auth
 proxy in front of `/mcp`. The proxy should authenticate the model platform and
-inject the factory operator token before forwarding the request.
+inject the caller's factory token before forwarding the request.
 
 ## HTTP API Surface
 
@@ -479,6 +501,8 @@ interfaces, not a redesign. These contracts do not change:
 | Execution daemon seam         | `createExecutionDaemon` with the injectable `TicketExecutor` (`packages/web/src/server/execution/daemon.ts`)                                                                    |
 | Projections                   | Pure functions over sequence-ordered events; no backend awareness                                                                                                               |
 | Stale-version guard           | The command guard compares client `expectedVersion` against the run projection's `lastSequence` — ledger-derived                                                                |
+| Auth stores                   | `CollectionStore<T>` (`packages/web/src/server/auth/stores.ts`): accounts/sessions/invites/API tokens behind one load/save contract; the in-memory and file backends share a contract test suite a DB backend must also pass |
+| Credential vault              | `CredentialStore` (`packages/core/src/security/credential-vault.ts`): per-user encrypted records behind load/save/clear; encryption (AES-256-GCM + HKDF, AAD-bound) happens ABOVE the store, so a DB swap never touches crypto |
 
 A database-backed `EventStore` plugs in at exactly two construction sites,
 both of which call `createFileSystemEventStore` today:

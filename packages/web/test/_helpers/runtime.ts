@@ -30,6 +30,9 @@ export function testRuntimeConfig(overrides: TestRuntimeConfigOverrides = {}): R
     mode: overrides.mode ?? 'local',
     host: overrides.host ?? '127.0.0.1',
     port: overrides.port ?? 3000,
+    // Single-tenant by default (U11) — suites that exercise multi-user build
+    // their own auth deps and never read this field.
+    multiUser: { enabled: false, bootstrapRearm: false, insecureCookies: false, warnings: [] },
     factoryDir: overrides.factoryDir ?? '.factory',
     factoryDirSource: overrides.factoryDirSource,
     allowedOrigins: overrides.allowedOrigins ?? [],

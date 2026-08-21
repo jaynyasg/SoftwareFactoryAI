@@ -30,7 +30,29 @@ services:
         generateValue: true
       - key: SF_PUBLIC_BASE_URL
         sync: false
-      # ── Worker CLI credentials (set values in the Render dashboard) ──────
+      # ── Multi-user mode (U11) — see docs/runbooks/cloud-deployment.md ─────
+      # Turn on accounts: users sign in, paste THEIR OWN Claude/Codex/GitHub
+      # credentials in the wizard, and runs execute on THEIR accounts. With
+      # multi-user on, the server-level model keys below become unnecessary
+      # (leave them unset) and the shared operator token is refused.
+      - key: SF_MULTI_USER
+        sync: false
+      # REQUIRED with SF_MULTI_USER=1: 32-byte hex/base64url key encrypting
+      # the per-user credential vault at rest. Platform secret store ONLY.
+      # Generate: node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))"
+      - key: SF_MASTER_KEY
+        sync: false
+      # Consume-once invite that creates the FIRST admin account (open
+      # https://<url>/invite/<value> after deploy). High entropy (16+ chars).
+      - key: SF_BOOTSTRAP_INVITE
+        sync: false
+      # Set to "1" TEMPORARILY to let the bootstrap invite reset a locked-out
+      # admin password (break-glass); unset it again after.
+      # - key: SF_BOOTSTRAP_REARM
+      #   sync: false
+      # ── Worker CLI credentials — SINGLE-TENANT ONLY (set values in the
+      #    Render dashboard). In multi-user mode leave these unset: every run
+      #    binds its OWNER's credentials from the encrypted vault instead. ───
       # Claude Code: an Anthropic API key, OR a long-lived OAuth token minted
       # with `claude setup-token` on any machine (plan-billed usage).
       - key: ANTHROPIC_API_KEY

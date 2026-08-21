@@ -55,6 +55,80 @@ the non-root user, and that `claude auth status` reports the env credential —
 if it does not on the installed CLI version, prefer the
 `CLAUDE_CODE_OAUTH_TOKEN` path.
 
+The table above is the SINGLE-TENANT story. With multi-user mode on (next
+section), leave every server-level model key unset: runs execute on each
+OWNER's credentials from the encrypted vault instead.
+
+## Multi-User Mode (Accounts + Per-User Credentials)
+
+`SF_MULTI_USER=1` turns the hosted factory into an invited-accounts service:
+users sign in at `/login`, add THEIR OWN credentials in the wizard
+(`/onboarding`, later `/settings`), and every run executes on its owner's
+Claude/Codex/GitHub accounts. The admin sees every run with owner labels;
+users see only their own.
+
+### Fresh multi-user deploy (zero server-level model keys)
+
+1. Set in the Render dashboard (all `sync: false` in the blueprint):
+   - `SF_MULTI_USER=1`
+   - `SF_MASTER_KEY` — generate:
+     `node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))"`.
+     PLATFORM SECRET STORE ONLY: never commit it, never write it to a file
+     under the factory dir (a key file next to the encrypted vault defeats
+     encryption at rest; boot warns if it finds one).
+   - `SF_BOOTSTRAP_INVITE` — high entropy (`openssl rand -base64 24`).
+   - Leave `ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN` / `OPENAI_API_KEY`
+     UNSET.
+   Boot fails closed with an exact remediation message when the key is
+   missing/invalid, the bootstrap invite is low-entropy, or no browser origin
+   is configured (Render's `RENDER_EXTERNAL_URL` satisfies the origin
+   requirement automatically).
+2. Deploy, then open `https://<url>/invite/<SF_BOOTSTRAP_INVITE>` and create
+   the FIRST ADMIN account (the bootstrap is consume-once; remove the env var
+   afterwards if you like — it can never create a second admin).
+3. You land in the credential wizard: paste your Claude OAuth token
+   (`claude setup-token`) or API key, upload your codex `auth.json`, add a
+   fine-grained GitHub PAT, optionally Render/Vercel deploy tokens. Every
+   value is validated live, stored encrypted, and shown as presence-only ever
+   after.
+4. Admin panel (`/admin`): issue invite links for your users. Each invitee
+   picks a username/password, lands in the same wizard, and their runs bill
+   THEIR accounts.
+5. Start a run — the walkthrough is done with zero server-env model keys.
+
+### Migrating an existing single-tenant deployment
+
+Set the three env vars above and redeploy. What changes, honestly:
+
+- The shared `SF_OPERATOR_TOKEN` is REFUSED with a 401 carrying migration
+  guidance ("mint a personal API token under Settings"); update CLI/MCP/Action
+  callers to personal `sfai_` tokens (`SF_API_TOKEN` for the CLI — same header
+  slot, nothing else changes).
+- Existing runs have no owner and become ADMIN-OWNED: visible to the admin
+  only, and NOT executable (no owner credentials exist for them). Queued
+  legacy work blocks with an admin-directed intervention instead of running
+  on a guessed account; re-create runs you still need from an account.
+- Turning the flag OFF later does NOT downgrade: initialized auth stores on
+  disk keep multi-user enforcement on (fail closed) and the boot log says so.
+  Genuinely returning to single-tenant requires deleting
+  `<factoryDir>/auth/` (and `<factoryDir>/credentials/`) deliberately.
+
+### Break-glass: locked-out admin
+
+Set `SF_BOOTSTRAP_REARM=1` alongside the existing `SF_BOOTSTRAP_INVITE` and
+redeploy; the invite URL can now RESET the admin password once (existing admin
+sessions and API tokens are invalidated). Unset the re-arm flag afterwards.
+
+### Master-key rotation / loss
+
+The vault decrypts with exactly the key it was written under. A wrong or
+missing key does NOT crash the service: logins and every non-credential
+surface keep working, credential reads/writes answer a typed
+`master_key_unreadable`, and runs block with an ADMIN-directed intervention
+naming the fix. Restore the correct `SF_MASTER_KEY` and redeploy; if the key
+is truly lost, users re-enter their credentials in the wizard (values are
+never recoverable by design).
+
 ## Worker Skills In The Cloud
 
 Skills are a machine-level convention (`~/.claude/skills`, `~/.codex/skills`),

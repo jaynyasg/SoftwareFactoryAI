@@ -359,6 +359,19 @@ Cloud caveat: the current JSONL event store is safe for one hosted instance. For
 horizontal scaling, replace it with a database-backed event store and add a
 worker queue.
 
+### Multi-User Mode
+
+Set `SF_MULTI_USER=1` (plus `SF_MASTER_KEY` and `SF_BOOTSTRAP_INVITE`) to turn
+a hosted factory into an invited-accounts service: users sign in at `/login`,
+add THEIR OWN Claude/Codex/GitHub credentials in the onboarding wizard
+(validated live, encrypted at rest, presence-only ever after), and every run
+executes on its owner's accounts — the server needs zero model keys. Remote
+callers (CLI/MCP/ChatGPT Action) switch to personal `sfai_` API tokens minted
+under Settings; the shared operator token is refused. One admin account sees
+every run; everyone else sees only their own. Full walkthrough, migration
+notes, and break-glass procedures: `docs/runbooks/cloud-deployment.md`
+("Multi-User Mode").
+
 See `docs/runbooks/cloud-deployment.md` for the full hosted setup.
 
 ## Architecture
