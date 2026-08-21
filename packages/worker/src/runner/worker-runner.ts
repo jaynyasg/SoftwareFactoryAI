@@ -449,7 +449,11 @@ export async function runTicket(
     subject: { kind: 'ticket', id: ticketId },
     severity: 'warn',
     evidence,
-    payload: { reason: error.message },
+    // Scrub for parity with every other terminal append (worker.completed/
+    // failed/progress): the redactor invariant is "no terminal worker event
+    // escapes scrub()". A no-op for today's cancellation messages, a backstop
+    // if worker-derived text ever reaches this path.
+    payload: { reason: scrub(error.message) },
   });
   await emitTicketState('cancelled', error.message);
   return { ticketId, outcome: 'cancelled', attempts, result: lastResult, error, nested };

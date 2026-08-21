@@ -544,7 +544,15 @@ export function createSchedulerTicketExecutor(
     if (options.credentials !== undefined) {
       const resolved = await options.credentials(run);
       if (!resolved.ok) {
-        return blocked(resolved.reason, resolved.requiredAction, 'missing_credentials');
+        // #14: preserve the resolver's distinction. An unreadable master key is
+        // an ADMIN/server block (`policy_block` — never approval-resolvable),
+        // NOT a user-fixable credential gap. A genuine missing credential stays
+        // `missing_credentials` so the owner is routed to Settings → Credentials.
+        return blocked(
+          resolved.reason,
+          resolved.requiredAction,
+          resolved.kind === 'master_key_unreadable' ? 'policy_block' : 'missing_credentials',
+        );
       }
       boundCatalog = resolved.binding.catalog;
       redact = resolved.binding.redact;

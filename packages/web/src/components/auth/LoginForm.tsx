@@ -10,6 +10,7 @@
 import { useState } from 'react';
 import type { FormEvent } from 'react';
 import { preauthPost } from './preauth';
+import { sameSiteReturnTo } from '../../lib/safe-return-to';
 
 export function LoginForm({ returnTo }: { readonly returnTo: string }) {
   const [username, setUsername] = useState('');
@@ -24,10 +25,10 @@ export function LoginForm({ returnTo }: { readonly returnTo: string }) {
     try {
       const res = await preauthPost('/api/auth/login', { username, password });
       if (res.ok) {
-        // Same-site relative paths only ('//host' is scheme-relative — never
-        // follow it): the login redirect must not become an open redirect.
-        const safe = returnTo.startsWith('/') && !returnTo.startsWith('//') ? returnTo : '/';
-        window.location.assign(safe);
+        // Defense-in-depth: the page-level guard already sanitized returnTo, but
+        // re-apply the shared same-site check here — this is the value handed
+        // straight to window.location.assign (see lib/safe-return-to).
+        window.location.assign(sameSiteReturnTo(returnTo));
         return;
       }
       setError(

@@ -134,6 +134,73 @@ export async function sweepOrphanCodexHomes(tempRoot: string = tmpdir()): Promis
   return removed;
 }
 
+/** Minimum length for an inner codex value to be worth registering as a secret. */
+const MIN_INNER_SECRET_LEN = 8;
+/** Hard cap on inner secrets collected from one blob (real codex has ~4). */
+const MAX_INNER_SECRETS = 16;
+
+/**
+ * Collect the SECRET-bearing string values from a codex `auth.json` blob so the
+ * per-run redactor scrubs the INNER tokens (`tokens.access_token`, `id_token`,
+ * `refresh_token`, a top-level `OPENAI_API_KEY`, …) — not just the whole-blob
+ * string. The whole-blob entry only matches a verbatim file dump; the codex CLI
+ * and its errors surface an individual inner token far more often, and that lone
+ * token would otherwise reach the append-only ledger unredacted (#18).
+ *
+ * SCOPED, not a walk of every string leaf. The blob is user-supplied, so an
+ * every-leaf walk let a user weaponize their OWN upload: register a common word
+ * ("error") as a global redaction pattern to mask their run's diagnostics, or
+ * pack thousands of distinct short strings to amplify per-line redaction cost in
+ * the shared execution daemon. Instead:
+ *  - collect only the top-level `OPENAI_API_KEY` and the values under `tokens`
+ *    (the codex CLI's token subtree — where the real secrets live);
+ *  - require {@link MIN_INNER_SECRET_LEN} chars, so common words and short
+ *    structural fragments can never become redaction targets; and
+ *  - cap the count at {@link MAX_INNER_SECRETS}, bounding amplification even if
+ *    the token subtree itself is stuffed with junk.
+ * Walking the subtree (rather than hard-coding `access_token`/etc.) tolerates
+ * codex shape drift; the whole-blob entry still covers a verbatim dump.
+ *
+ * Malformed or non-object JSON is tolerated (returns none): the caller still
+ * registers the raw blob.
+ */
+function collectCodexAuthSecrets(codexAuthJson: string): string[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(codexAuthJson);
+  } catch {
+    return [];
+  }
+  if (parsed === null || typeof parsed !== 'object') {
+    return [];
+  }
+  const out: string[] = [];
+  const collect = (node: unknown): void => {
+    if (out.length >= MAX_INNER_SECRETS) {
+      return;
+    }
+    if (typeof node === 'string') {
+      // Real tokens are long and few; a value at least this long is worth
+      // scrubbing, a shorter one is a common word / flag / structural fragment.
+      if (node.length >= MIN_INNER_SECRET_LEN) {
+        out.push(node);
+      }
+    } else if (Array.isArray(node)) {
+      for (const item of node) {
+        collect(item);
+      }
+    } else if (node !== null && typeof node === 'object') {
+      for (const value of Object.values(node)) {
+        collect(value);
+      }
+    }
+  };
+  const record = parsed as Record<string, unknown>;
+  collect(record.OPENAI_API_KEY);
+  collect(record.tokens);
+  return out;
+}
+
 /**
  * Build the run credential resolver. Decryption happens INSIDE each resolve
  * call (decrypt late); nothing plaintext is retained in module state.
@@ -230,6 +297,13 @@ export function createRunCredentialResolver(
     const secretValues = [claudeOauth, anthropicKey, openaiKey, codexAuthJson].filter(
       (value): value is string => value !== undefined,
     );
+    // #18: also register the INNER token values from a codex auth.json blob, so
+    // a subprocess that echoes just an access/refresh/id token (not the whole
+    // file) is still scrubbed from ledger-bound output. The whole-blob string
+    // above only matches a verbatim dump.
+    if (codexAuthJson !== undefined) {
+      secretValues.push(...collectCodexAuthSecrets(codexAuthJson));
+    }
 
     let released = false;
     const release = async (): Promise<void> => {

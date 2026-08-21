@@ -166,13 +166,20 @@ export function getExecutionDaemon(): ExecutionDaemon {
     singletons.daemon = daemon;
     // U7: remove ephemeral codex homes left by a crashed previous process —
     // before any run executes (never while runs are in flight).
-    void sweepOrphanCodexHomes().then((removed) => {
-      if (removed.length > 0) {
-        console.warn(
-          `[software-factory] swept ${removed.length} orphaned codex home(s) from a previous process.`,
-        );
-      }
-    });
+    void sweepOrphanCodexHomes()
+      .then((removed) => {
+        if (removed.length > 0) {
+          console.warn(
+            `[software-factory] swept ${removed.length} orphaned codex home(s) from a previous process.`,
+          );
+        }
+      })
+      .catch((error: unknown) => {
+        // Best-effort cleanup: a sweep failure must never crash boot or surface
+        // as an unhandled rejection. Log and carry on (mirrors daemon.start()).
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`[software-factory] orphaned-codex-home sweep failed: ${message}`);
+      });
     // U11 scale-safety: hosted logs must state the single-instance limit once
     // per process — this build's storage/queue cannot scale horizontally.
     if (runtime.mode === 'cloud') {
@@ -277,6 +284,7 @@ export function getApp(): App {
       csrfToken: csrfToken(),
       runtime,
       allowSameHostOrigin: true,
+      trustProxy: runtime.trustProxy,
     },
   });
   return singletons.app;

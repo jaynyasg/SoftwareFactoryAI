@@ -33,7 +33,6 @@
 import { isRealRun, projectRun } from '@software-factory/core';
 import type { ApiResponse, RouteContext, RouteDef } from '../app';
 import { readCookie } from '../app';
-import { deriveClientIp } from '../auth/throttle';
 import {
   filterInterventions,
   projectInterventions,
@@ -83,7 +82,11 @@ function preauthCsrfFailure(ctx: RouteContext): ApiResponse | null {
 }
 
 function clientIp(ctx: RouteContext): string {
-  return deriveClientIp(ctx.request.headers, undefined, true);
+  // Single source of truth: the app already derived this honoring `trustProxy`
+  // and the socket fallback. Re-deriving here (previously with a hardcoded
+  // `trustProxy=true` and no socket) let a direct/LAN caller forge its throttle
+  // key via X-Forwarded-For — the login throttle is exactly where that matters.
+  return ctx.clientIp;
 }
 
 async function login(ctx: RouteContext): Promise<ApiResponse> {

@@ -1,7 +1,7 @@
 ---
 title: "feat: Multi-user cloud accounts — login, credential wizard, per-user execution"
 type: feat
-status: active
+status: completed
 date: 2026-08-20
 origin: docs/brainstorms/2026-08-20-multi-user-cloud-accounts-requirements.md
 deepened: 2026-08-20

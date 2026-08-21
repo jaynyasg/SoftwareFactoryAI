@@ -41,7 +41,8 @@ export type DeployPhase =
   | 'migration_failed'
   | 'health_pending'
   | 'health_failed'
-  | 'hosted_ready';
+  | 'hosted_ready'
+  | 'handoff_ready';
 
 /** Folded local-preview phase. */
 export type PreviewPhase = 'idle' | 'starting' | 'health_pending' | 'ready' | 'failed';
@@ -313,6 +314,12 @@ export function computeOperatorMetrics(
         deployStatus = 'hosted_ready';
         deployHostedUrl = event.payload.url;
         hostedHealth = 'ready';
+        break;
+      case 'deploy.handoff_ready':
+        // U13 Lovable handoff: a successful TERMINAL deploy state, but the
+        // repo is only published for import — no hosting happened, so no
+        // hosted URL and hosted-health stays untouched (R29: never claim one).
+        deployStatus = 'handoff_ready';
         break;
       default:
         break;

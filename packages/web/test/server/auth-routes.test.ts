@@ -59,7 +59,7 @@ interface TestBundle {
 }
 
 function makeMultiUserApp(
-  opts: { insecureCookies?: boolean; throttle?: AuthThrottle } = {},
+  opts: { insecureCookies?: boolean; throttle?: AuthThrottle; trustProxy?: boolean } = {},
 ): TestBundle {
   const store = createInMemoryEventStore(deterministic());
   const provider = createOperatorTokenProvider({
@@ -75,7 +75,7 @@ function makeMultiUserApp(
     store,
     operatorToken: provider,
     idGenerator: () => `run-${(runSeq += 1)}`,
-    config: { allowedOrigins: [ORIGIN] },
+    config: { allowedOrigins: [ORIGIN], trustProxy: opts.trustProxy },
     planner: null,
     auth: { service, insecureCookies: opts.insecureCookies },
   });
@@ -105,8 +105,9 @@ function req(
   path: string,
   headers: Record<string, string | undefined> = {},
   body?: unknown,
+  socketAddress?: string,
 ): ApiRequest {
-  return { method, path, query: {}, headers, body };
+  return { method, path, query: {}, headers, body, socketAddress };
 }
 
 function errorOf(res: ApiResponse): unknown {
@@ -297,6 +298,18 @@ describe('multi-user auth routes (U3)', () => {
     expect(errorOf(res)).toBe('unauthenticated');
   });
 
+  it('a malformed session cookie (bad %-escape) fails as 401, never 500s the route', async () => {
+    // decodeURIComponent throws URIError on a lone/invalid percent-escape.
+    // resolveIdentity reads the cookie for EVERY request, so an undecodable
+    // value must degrade to a clean auth failure — not a 500 that locks the
+    // browser out of login/logout until cookies are cleared by hand.
+    const res = await bundle.app.handle(
+      req('GET', '/api/runs', { cookie: '__Host-sf_session=%E0%A4%A' }),
+    );
+    expect(res.status).toBe(401);
+    expect(errorOf(res)).toBe('unauthenticated');
+  });
+
   it('legacy shared operator token → 401 with migration guidance; single-tenant twin unchanged', async () => {
     const res = await bundle.app.handle(
       req('GET', '/api/runs', { 'x-operator-token': LEGACY_TOKEN }),
@@ -402,6 +415,67 @@ describe('multi-user auth routes (U3)', () => {
     expect((await attempt()).status).toBe(401);
     expect((await attempt()).status).toBe(401);
     const locked = await attempt();
+    expect(locked.status).toBe(429);
+    expect(errorOf(locked)).toBe('locked_out');
+  });
+
+  // The login throttle keys on BOTH a per-username bucket and a per-IP bucket
+  // (service.ts). #7 is entirely about the per-IP key, so these tests vary the
+  // username on every attempt — that keeps the username bucket from tripping
+  // and isolates the IP-key behavior that `trustProxy` governs.
+  it('#7: with trustProxy OFF, a rotating X-Forwarded-For CANNOT evade the per-IP login throttle', async () => {
+    // Default (direct/LAN) deployment: XFF is fully attacker-controlled and
+    // must be ignored. An attacker rotating fake IPs (and usernames) hopes each
+    // gets its own IP bucket; with the socket address as the real key they all
+    // collapse to ONE bucket, so the lockout still fires on the 3rd attempt.
+    const own = makeMultiUserApp({
+      throttle: createAuthThrottle({ maxFailures: 2, maxConcurrentKdf: 1 }),
+    });
+    const spoof = (fakeIp: string, user: string) =>
+      own.app.handle(
+        req(
+          'POST',
+          '/api/auth/login',
+          { 'x-forwarded-for': fakeIp },
+          { username: user, password: 'wrong-password' },
+          '203.0.113.9', // the real socket — identical across every attempt
+        ),
+      );
+    expect((await spoof('1.1.1.1', 'ghost-a')).status).toBe(401);
+    expect((await spoof('2.2.2.2', 'ghost-b')).status).toBe(401);
+    // Third distinct fake IP + username — only the socket key is shared, and it
+    // has tripped: XFF rotation bought the attacker nothing.
+    const locked = await spoof('3.3.3.3', 'ghost-c');
+    expect(locked.status).toBe(429);
+    expect(errorOf(locked)).toBe('locked_out');
+  });
+
+  it('#7: with trustProxy ON, distinct X-Forwarded-For values get distinct per-IP buckets', async () => {
+    // Behind a trusted proxy that overwrites XFF (Render/cloud), the rightmost
+    // XFF entry IS the real client and must key the throttle — otherwise every
+    // proxied user shares the one proxy-socket bucket and a single attacker
+    // locks out everyone.
+    const own = makeMultiUserApp({
+      throttle: createAuthThrottle({ maxFailures: 2, maxConcurrentKdf: 1 }),
+      trustProxy: true,
+    });
+    const fromIp = (ip: string, user: string) =>
+      own.app.handle(
+        req(
+          'POST',
+          '/api/auth/login',
+          { 'x-forwarded-for': ip },
+          { username: user, password: 'wrong-password' },
+          '10.0.0.1', // shared proxy socket — must NOT be the key when trusted
+        ),
+      );
+    // Fill client .1's IP bucket to the limit (distinct usernames throughout).
+    expect((await fromIp('198.51.100.1', 'ghost-1')).status).toBe(401);
+    expect((await fromIp('198.51.100.1', 'ghost-2')).status).toBe(401);
+    // A different client IP is untouched — its own fresh bucket, NOT locked out.
+    expect((await fromIp('198.51.100.2', 'ghost-3')).status).toBe(401);
+    // Client .1 is now over the limit: its IP bucket accumulated independently.
+    const locked = await fromIp('198.51.100.1', 'ghost-4');
     expect(locked.status).toBe(429);
     expect(errorOf(locked)).toBe('locked_out');
   });

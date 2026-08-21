@@ -17,6 +17,7 @@ const PHASE_LABEL: Readonly<Record<DeployPhase, string>> = {
   health_pending: 'Hosted health pending',
   health_failed: 'Hosted health failed',
   hosted_ready: 'Hosted & healthy',
+  handoff_ready: 'Handoff ready (Lovable import)',
 };
 
 const PHASE_SEVERITY: Readonly<Record<DeployPhase, 'info' | 'success' | 'warn' | 'error'>> = {
@@ -28,6 +29,7 @@ const PHASE_SEVERITY: Readonly<Record<DeployPhase, 'info' | 'success' | 'warn' |
   health_pending: 'warn',
   health_failed: 'error',
   hosted_ready: 'success',
+  handoff_ready: 'success',
 };
 
 const HEALTH_LABEL: Readonly<Record<HostedHealthStatus, string>> = {

@@ -255,11 +255,17 @@ function createOwnerCredentialsProbe(vault: CredentialVault): PreflightProbe {
       );
     }
     if (!vault.readable) {
+      // An unreadable master key is a SERVER/ADMIN block, not a user-fixable
+      // credential gap: classify it as `policy_block` (never approval-resolvable
+      // — no review mode may run a job whose credentials cannot be decrypted)
+      // rather than `missing_credentials` (which would misroute the operator to
+      // "add a credential in Settings"). This mirrors the executor's resolution
+      // failure for the same condition so preflight and execution agree.
       return fail(
         'credentials',
         'The credential vault cannot be decrypted (SF_MASTER_KEY does not open the stored credentials).',
         'ADMIN action: restore the correct SF_MASTER_KEY on the server environment and restart. User logins keep working; runs stay blocked until the key is fixed.',
-        'missing_credentials',
+        'policy_block',
       );
     }
     const presence = await vault.getPresence(ownerId);
@@ -289,10 +295,16 @@ function createOwnerCredentialsProbe(vault: CredentialVault): PreflightProbe {
         'missing_credentials',
       );
     }
+    // Only claim the GitHub token when we actually checked it — i.e. the same
+    // condition the guard above tested (wantsRepo && workspace not yet ready).
+    // When the workspace is already materialized the token was never probed, so
+    // asserting its presence here would be an unchecked (and possibly false)
+    // claim (E5: never report presence we did not verify).
+    const verifiedRepoToken = wantsRepo && ctx.workspace.status !== 'ready';
     return pass(
       'credentials',
       `Owner credentials present (presence-only check): execution credential available${
-        wantsRepo ? ', GitHub token available for the repository checkout' : ''
+        verifiedRepoToken ? ', GitHub token available for the repository checkout' : ''
       }.`,
     );
   };

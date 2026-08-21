@@ -140,6 +140,14 @@ export interface RuntimeConfig {
   readonly publicBaseUrl?: string;
   readonly operatorTokenSource: OperatorTokenSource;
   readonly csrfToken?: string;
+  /**
+   * Whether to trust the `X-Forwarded-For` header for client-IP derivation
+   * (login-throttle keying + audit attribution). MUST be true only when a
+   * trusted proxy that OVERWRITES XFF sits in front of the app (Render and
+   * most managed clouds do). Direct/LAN deployments leave this false so a
+   * caller cannot forge its throttle key or poison the audit trail via XFF.
+   */
+  readonly trustProxy: boolean;
   readonly research: ResearchRuntimeConfig;
   readonly workspace: WorkspaceRuntimeConfig;
   readonly execution: ExecutionRuntimeConfig;
@@ -166,6 +174,7 @@ interface RuntimeEnv {
   readonly SF_BOOTSTRAP_INVITE?: string;
   readonly SF_BOOTSTRAP_REARM?: string;
   readonly SF_INSECURE_COOKIES?: string;
+  readonly SF_TRUST_PROXY?: string;
   readonly SF_RESEARCH_ALLOW_NETWORK?: string;
   readonly SF_RESEARCH_DOC_URLS?: string;
   readonly SF_RESEARCH_SEARCH_PROVIDER?: string;
@@ -216,6 +225,31 @@ function parseRuntimeMode(env: RuntimeEnv): FactoryRuntimeMode {
 function parsePort(value: string | undefined, fallback: number): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+/**
+ * Whether to trust `X-Forwarded-For` for client-IP derivation.
+ *
+ * `SF_TRUST_PROXY` is an explicit operator override in BOTH directions
+ * (`1`/`true` → on, `0`/`false` → off). Absent it, we default to the runtime
+ * mode: `cloud` platforms (Render) terminate at a trusted proxy that
+ * OVERWRITES XFF, so the header is trustworthy there; `local`/direct
+ * deployments do not, so we ignore XFF and fall back to the socket address.
+ * This keeps the login throttle and audit attribution un-forgeable by default
+ * on self-hosted/LAN deployments (residual review finding #7).
+ */
+export function resolveTrustProxy(
+  env: RuntimeEnv = process.env as RuntimeEnv,
+  mode: FactoryRuntimeMode = parseRuntimeMode(env),
+): boolean {
+  const explicit = clean(env.SF_TRUST_PROXY)?.toLowerCase();
+  if (explicit === '1' || explicit === 'true') {
+    return true;
+  }
+  if (explicit === '0' || explicit === 'false') {
+    return false;
+  }
+  return mode === 'cloud';
 }
 
 function splitCsv(value: string | undefined): readonly string[] {
@@ -603,6 +637,7 @@ export function resolveRuntimeConfig(
     publicBaseUrl,
     operatorTokenSource,
     csrfToken: clean(env.SF_CSRF_TOKEN),
+    trustProxy: resolveTrustProxy(env, mode),
     research: resolveResearchRuntimeConfig(env),
     workspace: resolveWorkspaceRuntimeConfig(env, factoryDir),
     execution: resolveExecutionRuntimeConfig(env),

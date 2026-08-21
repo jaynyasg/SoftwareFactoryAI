@@ -216,6 +216,63 @@ describe('createRunCredentialResolver', () => {
     await result.binding.release();
   });
 
+  it('#18: the per-run redactor scrubs INNER codex auth.json tokens, not just the whole blob', async () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), 'sfai-test-root-'));
+    const vault = makeVault();
+    await vault.setCredential('user-b', 'codex_auth_json', B_CODEX_AUTH);
+    const { factory } = recordingCatalogFactory();
+    const resolve = createRunCredentialResolver({ vault, catalog: factory, tempRoot });
+
+    const result = await resolve(runOwnedBy('user-b'));
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    // A leaky subprocess line that prints ONLY the inner token — not the whole
+    // auth.json file. The whole-blob secret entry never matches this; the fix
+    // registers each inner leaf value so it is still scrubbed before the line
+    // can reach the append-only ledger.
+    const line = 'codex progress: refreshed env token=codex-b-access done';
+    const scrubbed = result.binding.redact(line);
+    expect(scrubbed).not.toContain('codex-b-access');
+    expect(scrubbed).toContain('[redacted]');
+
+    await result.binding.release();
+  });
+
+  it('#18 follow-up: only real inner tokens become redaction targets, not common words', async () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), 'sfai-test-root-'));
+    const vault = makeVault();
+    // A crafted upload: a common word OUTSIDE the token subtree, plus a real
+    // token inside it. An unscoped every-leaf walk would register "error" as a
+    // global redaction pattern — letting a user mask their OWN run's diagnostic
+    // text (audit obfuscation), and packing many short strings to amplify the
+    // per-line redactor cost in the shared daemon. The scoped collector must
+    // register only the real token.
+    const crafted = JSON.stringify({
+      note: 'error',
+      tokens: { access: 'codex-crafted-access-token' },
+    });
+    await vault.setCredential('user-c', 'codex_auth_json', crafted);
+    const { factory } = recordingCatalogFactory();
+    const resolve = createRunCredentialResolver({ vault, catalog: factory, tempRoot });
+
+    const result = await resolve(runOwnedBy('user-c'));
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    // The real inner token IS still scrubbed…
+    expect(result.binding.redact('leak: codex-crafted-access-token')).toContain('[redacted]');
+    // …but a diagnostic line containing only the common word is left INTACT —
+    // "error" never became a redaction target.
+    expect(result.binding.redact('run failed: error in stage 2')).toBe(
+      'run failed: error in stage 2',
+    );
+
+    await result.binding.release();
+  });
+
   it('write-back: a refreshed auth.json re-encrypts into the vault on release', async () => {
     const tempRoot = mkdtempSync(join(tmpdir(), 'sfai-test-root-'));
     let now = 1_000_000;
@@ -449,6 +506,11 @@ describe('preflight per-owner credential checks (U7)', () => {
     const failure = result.checks.find((check) => check.check === 'credentials');
     expect(failure?.requiredAction).toContain('ADMIN');
     expect(failure?.requiredAction).toContain('SF_MASTER_KEY');
+    // Review #14: an unreadable master key is an ADMIN/server block, not a
+    // user-fixable credential gap. It must classify as `policy_block` (never
+    // approval-resolvable), NOT `missing_credentials` — which would misroute
+    // the operator to "add a credential in Settings".
+    expect(failure?.interventionKind).toBe('policy_block');
   });
 });
 
@@ -569,6 +631,62 @@ describe('executor end-to-end with owner credential binding (U7)', () => {
     });
     expect(open.length).toBeGreaterThan(0);
     expect(open[0].requiredAction).toContain('Settings');
+  }, 120_000);
+
+  it('an unreadable master key blocks the EXECUTOR arm with policy_block, never missing_credentials (#14)', async () => {
+    // Review #14, executor arm: the preflight arm (G7 above) already pins
+    // policy_block, but the executor RE-resolves credentials per job and must
+    // map master_key_unreadable to the same ADMIN/server block — a
+    // policy_block is never approval-resolvable, whereas missing_credentials
+    // would misroute the operator to "add a credential in Settings" for a
+    // problem only the admin can fix. Reverting ticket-executor's ternary must
+    // fail here.
+    const vault = makeVault({ unreadable: true });
+    const fixture = await makeMultiUserFixture(vault);
+    const { factory } = recordingCatalogFactory();
+    const resolver = createRunCredentialResolver({ vault, catalog: factory });
+    const det = deterministic();
+    let leaseSeq = 0;
+    const daemon = createExecutionDaemon({
+      store: fixture.store,
+      clock: det.clock,
+      idGenerator: () => `lease-${(leaseSeq += 1)}`,
+      ownerId: 'daemon-u7c',
+      timers: noopTimers(),
+      executor: createSchedulerTicketExecutor({
+        adapters: createAdapterCatalog([]),
+        credentials: resolver,
+        freshWorkspaceRoot: '/virtual/workspaces',
+        ensureWorkspaceDir: () => Promise.resolve(),
+        clock: det.clock,
+      }),
+    });
+
+    const runId = await fixture.createRunAs('b');
+    await fixture.store.append({
+      runId,
+      type: 'queue.enqueued',
+      actor: { kind: 'system', id: 'test' },
+      subject: { kind: 'queue-job', id: `${runId}:execution` },
+      severity: 'info',
+      payload: { jobId: `${runId}:execution`, jobKind: 'run-execution', attempt: 1 },
+    });
+    await daemon.tick();
+
+    const events = await fixture.store.readRun(runId);
+    expect(projectRun(events, runId).status).not.toBe('completed');
+    // The block is an ADMIN/server policy_block…
+    const open = filterInterventions(projectInterventions(events), { runId, openOnly: true });
+    expect(open.length).toBeGreaterThan(0);
+    expect(open[0].kind).toBe('policy_block');
+    // …and NEVER a user-fixable missing_credentials.
+    expect(
+      filterInterventions(projectInterventions(events), {
+        runId,
+        kind: 'missing_credentials',
+        openOnly: true,
+      }),
+    ).toEqual([]);
   }, 120_000);
 });
 

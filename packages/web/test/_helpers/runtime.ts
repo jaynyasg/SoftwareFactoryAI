@@ -18,6 +18,7 @@ export interface TestRuntimeConfigOverrides {
   readonly publicBaseUrl?: string;
   readonly operatorTokenSource?: RuntimeConfig['operatorTokenSource'];
   readonly csrfToken?: string;
+  readonly trustProxy?: boolean;
   readonly research?: Partial<RuntimeConfig['research']>;
   readonly workspace?: Partial<RuntimeConfig['workspace']>;
   readonly execution?: Partial<RuntimeConfig['execution']>;
@@ -39,6 +40,9 @@ export function testRuntimeConfig(overrides: TestRuntimeConfigOverrides = {}): R
     publicBaseUrl: overrides.publicBaseUrl,
     operatorTokenSource: overrides.operatorTokenSource ?? 'file',
     csrfToken: overrides.csrfToken,
+    // Secure-by-default: XFF is ignored unless a suite opts in (matches the
+    // local-mode runtime default; review #7).
+    trustProxy: overrides.trustProxy ?? false,
     research: {
       allowNetwork: false,
       documentationUrls: [],

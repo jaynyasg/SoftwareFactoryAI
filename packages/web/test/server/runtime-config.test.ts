@@ -7,6 +7,7 @@ import {
   resolveMultiUserRuntimeConfig,
   resolveRuntimeConfig,
   resolveScaleDiagnostics,
+  resolveTrustProxy,
   scaleSafetyStartupLine,
 } from '../../src/server/runtime';
 
@@ -79,6 +80,40 @@ describe('resolveRuntimeConfig', () => {
   it('SF_EXEC_AUTOSTART=1 opts the daemon back into drain-on-start', () => {
     const config = resolveRuntimeConfig({ SF_EXEC_AUTOSTART: '1' }, 'C:\\repo');
     expect(config.execution.autoStart).toBe(true);
+  });
+
+  it('trustProxy is OFF by default in local mode (XFF is not trusted for throttle/audit)', () => {
+    const config = resolveRuntimeConfig({}, 'C:\\repo');
+    expect(config.trustProxy).toBe(false);
+  });
+
+  it('trustProxy defaults ON in cloud mode (Render terminates at a trusted proxy that overwrites XFF)', () => {
+    const config = resolveRuntimeConfig(
+      { SF_RUNTIME: 'cloud', SF_PUBLIC_BASE_URL: 'https://f.example.com', SF_OPERATOR_TOKEN: 't' },
+      '/repo',
+    );
+    expect(config.trustProxy).toBe(true);
+  });
+});
+
+describe('resolveTrustProxy (residual review #7 — un-forgeable client IP)', () => {
+  it('defaults to the runtime mode: false for local/direct, true for cloud', () => {
+    expect(resolveTrustProxy({}, 'local')).toBe(false);
+    expect(resolveTrustProxy({}, 'cloud')).toBe(true);
+  });
+
+  it('SF_TRUST_PROXY is an explicit override in BOTH directions', () => {
+    // Force ON even in local mode (operator runs behind their own trusted proxy).
+    expect(resolveTrustProxy({ SF_TRUST_PROXY: '1' }, 'local')).toBe(true);
+    expect(resolveTrustProxy({ SF_TRUST_PROXY: 'true' }, 'local')).toBe(true);
+    // Force OFF even in cloud mode (operator fronts the app directly).
+    expect(resolveTrustProxy({ SF_TRUST_PROXY: '0' }, 'cloud')).toBe(false);
+    expect(resolveTrustProxy({ SF_TRUST_PROXY: 'false' }, 'cloud')).toBe(false);
+  });
+
+  it('ignores a non-boolean SF_TRUST_PROXY and falls back to the mode default', () => {
+    expect(resolveTrustProxy({ SF_TRUST_PROXY: 'yes-please' }, 'local')).toBe(false);
+    expect(resolveTrustProxy({ SF_TRUST_PROXY: '  ' }, 'cloud')).toBe(true);
   });
 });
 

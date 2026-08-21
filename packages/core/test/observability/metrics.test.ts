@@ -136,6 +136,26 @@ describe('computeOperatorMetrics', () => {
     expect(metrics.hostedHealth).toBe('ready');
   });
 
+  it('folds a Lovable handoff (deploy failure → handoff_ready) to a terminal success with no hosted url (U13)', async () => {
+    const store = createInMemoryEventStore(deterministic());
+    await append(
+      store,
+      ev('run.created', 'info', { prompt: 'x' }),
+      ev('run.started', 'info', {}),
+      ev('deploy.provider_failed', 'error', { reason: 'render build failed' }),
+      ev('deploy.handoff_ready', 'success', { importUrl: 'https://lovable.dev/import?repo=acme' }),
+    );
+    const metrics = computeOperatorMetrics(await store.readAll());
+
+    expect(metrics.deploy.status).toBe('handoff_ready');
+    // A handoff publishes the repo for import — it never hosts, so there is NO
+    // hosted url and hosted health stays untouched (R29: never claim one).
+    expect(metrics.deploy.hostedUrl).toBeUndefined();
+    expect(metrics.hostedHealth).toBe('not_attempted');
+    // The earlier provider failure is still tallied — occurrences are cumulative.
+    expect(metrics.deploy.providerFailed).toBe(1);
+  });
+
   it('computes event lag from a supplied clock and is zero when none given', async () => {
     const store = createInMemoryEventStore(deterministic());
     await buildRun(store);

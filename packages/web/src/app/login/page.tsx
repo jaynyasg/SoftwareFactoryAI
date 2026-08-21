@@ -7,13 +7,9 @@
 import { redirect } from 'next/navigation';
 import { getAuthService, getPageAuth } from '../../server/instance';
 import { LoginForm } from '../../components/auth/LoginForm';
+import { sameSiteReturnTo } from '../../lib/safe-return-to';
 
 export const dynamic = 'force-dynamic';
-
-function safeReturnTo(raw: string | undefined): string {
-  // Same-site relative paths only: never an open redirect.
-  return raw !== undefined && raw.startsWith('/') && !raw.startsWith('//') ? raw : '/';
-}
 
 export default async function LoginPage({
   searchParams,
@@ -21,7 +17,7 @@ export default async function LoginPage({
   searchParams: Promise<{ returnTo?: string }>;
 }) {
   const { returnTo } = await searchParams;
-  const target = safeReturnTo(returnTo);
+  const target = sameSiteReturnTo(returnTo);
   if (getAuthService() === null) {
     redirect('/');
   }

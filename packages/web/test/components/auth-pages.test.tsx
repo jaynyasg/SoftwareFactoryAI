@@ -12,6 +12,7 @@ import { SessionProvider } from '../../src/components/session-context';
 import { LoginForm } from '../../src/components/auth/LoginForm';
 import { InviteRedemptionForm } from '../../src/components/auth/InviteRedemptionForm';
 import { UserMenu } from '../../src/components/auth/UserMenu';
+import { sameSiteReturnTo } from '../../src/lib/safe-return-to';
 
 afterEach(() => {
   cleanup();
@@ -106,6 +107,75 @@ describe('LoginForm', () => {
     // form falls back to '/' for anything scheme-relative.
     await waitFor(() => expect(assigned.length).toBe(1));
     expect(assigned[0]).toBe('/');
+  });
+
+  it('a backslash-smuggled return-to (/\\evil.com) never leaves the site (open-redirect guard)', async () => {
+    stubFetch([{ status: 200, body: {} }]);
+    const { assigned } = stubNavigation();
+    // Browsers normalize '\' to '/' in http(s) URLs (WHATWG), so '/\evil.com'
+    // resolves off-site if it slips through a naive startsWith('/') check.
+    render(<LoginForm returnTo="/\evil.com/phish" />);
+
+    fireEvent.change(screen.getByLabelText(/username/i), { target: { value: 'ada' } });
+    fireEvent.change(screen.getByLabelText(/password/i), {
+      target: { value: 'correct-horse-battery' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /sign in/i }));
+
+    await waitFor(() => expect(assigned.length).toBe(1));
+    expect(assigned[0]).toBe('/');
+  });
+
+  it('a tab-smuggled return-to (/<TAB>/evil.com) never leaves the site (open-redirect guard)', async () => {
+    stubFetch([{ status: 200, body: {} }]);
+    const { assigned } = stubNavigation();
+    // The WHATWG URL parser strips ASCII tab/LF/CR BEFORE resolving, so
+    // "/<TAB>/evil.com" collapses to "//evil.com" (scheme-relative → off-site)
+    // at window.location.assign time. A positional "second char" guard can't
+    // see past the stripped char; the shared guard rejects the control class.
+    const tab = String.fromCharCode(9);
+    render(<LoginForm returnTo={`/${tab}/evil.com/phish`} />);
+
+    fireEvent.change(screen.getByLabelText(/username/i), { target: { value: 'ada' } });
+    fireEvent.change(screen.getByLabelText(/password/i), {
+      target: { value: 'correct-horse-battery' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /sign in/i }));
+
+    await waitFor(() => expect(assigned.length).toBe(1));
+    expect(assigned[0]).toBe('/');
+  });
+});
+
+describe('sameSiteReturnTo (shared open-redirect guard — also backs the login page)', () => {
+  const tab = String.fromCharCode(9);
+  const lf = String.fromCharCode(10);
+  const cr = String.fromCharCode(13);
+
+  it('admits genuine same-site absolute paths (and a bare slash)', () => {
+    expect(sameSiteReturnTo('/')).toBe('/');
+    expect(sameSiteReturnTo('/runs/run-42')).toBe('/runs/run-42');
+    expect(sameSiteReturnTo('/settings?tab=credentials')).toBe('/settings?tab=credentials');
+  });
+
+  it('falls back to "/" for undefined and non-absolute values', () => {
+    expect(sameSiteReturnTo(undefined)).toBe('/');
+    expect(sameSiteReturnTo('')).toBe('/');
+    expect(sameSiteReturnTo('runs/run-42')).toBe('/');
+    expect(sameSiteReturnTo('https://evil.com')).toBe('/');
+  });
+
+  it('rejects scheme-relative and backslash-smuggled off-site targets', () => {
+    expect(sameSiteReturnTo('//evil.com/phish')).toBe('/');
+    expect(sameSiteReturnTo('/\\evil.com/phish')).toBe('/');
+  });
+
+  it('rejects control-char (tab/LF/CR) smuggling that the URL parser would strip', () => {
+    expect(sameSiteReturnTo(`/${tab}/evil.com`)).toBe('/');
+    expect(sameSiteReturnTo(`/${lf}/evil.com`)).toBe('/');
+    expect(sameSiteReturnTo(`/${cr}/evil.com`)).toBe('/');
+    // A control char anywhere in the value is rejected, not just position 1.
+    expect(sameSiteReturnTo(`/runs${tab}/x`)).toBe('/');
   });
 });
 

@@ -92,6 +92,14 @@ export interface ApiRequest {
   readonly headers: Readonly<Record<string, string | undefined>>;
   /** Parsed JSON body (or `undefined` for bodyless requests). */
   readonly body?: unknown;
+  /**
+   * Transport socket peer address, when the caller can supply one (the HTTP
+   * transport reads `req.socket.remoteAddress`). This is the ONLY trustworthy
+   * client identifier when `trustProxy` is off: `X-Forwarded-For` is then fully
+   * attacker-controlled. Absent for direct `handle()` callers (unit tests),
+   * which fall back to `'unknown'` — acceptable, since those never throttle.
+   */
+  readonly socketAddress?: string;
 }
 
 /** A JSON response. `body` must be JSON-serializable. */
@@ -110,6 +118,13 @@ export interface AppConfig {
   readonly allowedOrigins?: readonly string[];
   /** Also allow browser requests whose Origin host matches Host/X-Forwarded-Host. */
   readonly allowSameHostOrigin?: boolean;
+  /**
+   * Trust the `X-Forwarded-For` header for throttle/audit client-IP derivation.
+   * MUST be true only behind a proxy that overwrites XFF (Render/cloud). When
+   * false (the default), XFF is ignored and the socket peer address is used, so
+   * a direct/LAN caller cannot spoof its throttle key or poison audit records.
+   */
+  readonly trustProxy?: boolean;
   /** Expected CSRF double-submit token; when set, mutating routes require it. */
   readonly csrfToken?: string;
   /** Runtime metadata surfaced by setup/readiness routes. */
@@ -120,6 +135,7 @@ export interface AppConfig {
 export interface ResolvedConfig {
   readonly allowedOrigins: readonly string[];
   readonly allowSameHostOrigin: boolean;
+  readonly trustProxy: boolean;
   readonly csrfToken?: string;
   readonly runtime?: RuntimeConfig;
 }
@@ -438,7 +454,18 @@ export function readCookie(
       continue;
     }
     if (part.slice(0, eq).trim() === name) {
-      return decodeURIComponent(part.slice(eq + 1).trim());
+      const raw = part.slice(eq + 1).trim();
+      try {
+        return decodeURIComponent(raw);
+      } catch {
+        // A cookie value with an invalid percent-escape must not throw here:
+        // resolveIdentity reads cookies for EVERY request (login/logout too),
+        // so a single malformed cookie would otherwise 500 every route until
+        // the browser is cleared by hand. We never issue a value that fails to
+        // decode (session cookies are encodeURIComponent'd hex/underscores), so
+        // returning the raw text just fails verification with a clean 401.
+        return raw;
+      }
     }
   }
   return undefined;
@@ -617,6 +644,7 @@ export function createApp(deps: AppDeps): App {
   const config: ResolvedConfig = {
     allowedOrigins: deps.config?.allowedOrigins ?? [],
     allowSameHostOrigin: deps.config?.allowSameHostOrigin ?? false,
+    trustProxy: deps.config?.trustProxy ?? false,
     csrfToken: deps.config?.csrfToken,
     runtime: deps.config?.runtime,
   };
@@ -922,7 +950,7 @@ export function createApp(deps: AppDeps): App {
       credentialProber,
       multiUser: auth != null,
       sessionCookie: (value) => serializeSessionCookie(value, insecureCookies),
-      clientIp: deriveClientIp(request.headers, undefined, true),
+      clientIp: deriveClientIp(request.headers, request.socketAddress, config.trustProxy),
       runPreflight: runPreflightForRun,
     };
   }
@@ -977,7 +1005,13 @@ export function createApp(deps: AppDeps): App {
       req.on('data', (chunk: Buffer) => chunks.push(chunk));
       req.on('end', () => {
         void (async () => {
-          const apiRequest = toApiRequest(req.method ?? 'GET', req.url ?? '/', req.headers, chunks);
+          const apiRequest = toApiRequest(
+            req.method ?? 'GET',
+            req.url ?? '/',
+            req.headers,
+            chunks,
+            req.socket.remoteAddress,
+          );
           let response: ApiResponse;
           if (apiRequest === null) {
             response = json(400, {
@@ -1031,6 +1065,7 @@ function toApiRequest(
   rawUrl: string,
   rawHeaders: Record<string, string | string[] | undefined>,
   chunks: Buffer[],
+  socketAddress: string | undefined,
 ): ApiRequest | null {
   const url = new URL(rawUrl, 'http://127.0.0.1');
   const query: Record<string, string | undefined> = {};
@@ -1052,5 +1087,5 @@ function toApiRequest(
       }
     }
   }
-  return { method, path: url.pathname, query, headers, body };
+  return { method, path: url.pathname, query, headers, body, socketAddress };
 }

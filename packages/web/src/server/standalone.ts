@@ -172,7 +172,12 @@ export async function startStandaloneServer(
         ? { service: authService, insecureCookies: multiUser.insecureCookies }
         : null,
     credentialVault,
-    config: { allowedOrigins: runtime.allowedOrigins, runtime, allowSameHostOrigin: true },
+    config: {
+      allowedOrigins: runtime.allowedOrigins,
+      runtime,
+      allowSameHostOrigin: true,
+      trustProxy: runtime.trustProxy,
+    },
   });
 
   const port = options.port ?? runtime.port;

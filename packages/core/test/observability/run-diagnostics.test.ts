@@ -116,6 +116,43 @@ describe('computeRunDiagnostics — blocked dependency + stall', () => {
   });
 });
 
+describe('computeRunDiagnostics — Lovable handoff resolves a deploy failure (U13)', () => {
+  it('treats a later deploy.handoff_ready as recovery from a deploy failure', async () => {
+    const store = createInMemoryEventStore(deterministic());
+    await append(
+      store,
+      ev('run.created', 'info', { prompt: 'x' }),
+      ev('run.started', 'info', {}),
+      ev('deploy.provider_failed', 'error', { reason: 'render build failed' }),
+      ev('deploy.handoff_ready', 'success', {}),
+      ev('run.completed', 'success', { summary: 'done' }),
+    );
+
+    const report = computeRunDiagnostics(await store.readAll());
+    const activeTypes = report.activeFailures.map((failure) => failure.type);
+
+    // handoff_ready is a successful terminal deploy state, so the earlier
+    // provider failure is resolved — same as a later hosted_ready would.
+    expect(activeTypes).not.toContain('deploy.provider_failed');
+    expect(report.blockingFailures).toHaveLength(0);
+    expect(report.healthy).toBe(true);
+  });
+
+  it('leaves the deploy failure active when neither hosted_ready nor handoff_ready follows', async () => {
+    const store = createInMemoryEventStore(deterministic());
+    await append(
+      store,
+      ev('run.created', 'info', { prompt: 'x' }),
+      ev('run.started', 'info', {}),
+      ev('deploy.provider_failed', 'error', { reason: 'render build failed' }),
+    );
+
+    const report = computeRunDiagnostics(await store.readAll());
+    const activeTypes = report.activeFailures.map((failure) => failure.type);
+    expect(activeTypes).toContain('deploy.provider_failed');
+  });
+});
+
 describe('computeRunDiagnostics — projection integrity', () => {
   it('surfaces a sequence gap as a projection diagnostic and marks unhealthy', async () => {
     const store = createInMemoryEventStore(deterministic());

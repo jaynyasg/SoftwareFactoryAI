@@ -147,7 +147,12 @@ function isResolved(failure: FactoryEvent, later: readonly FactoryEvent[]): bool
     case 'deploy.provider_failed':
     case 'deploy.migration_failed':
     case 'deploy.health_failed':
-      return later.some((event) => event.type === 'deploy.hosted_ready');
+      // A later hosted_ready OR a Lovable handoff_ready (U13) means the deploy
+      // recovered — both are successful terminal states for their target.
+      return later.some(
+        (event) =>
+          event.type === 'deploy.hosted_ready' || event.type === 'deploy.handoff_ready',
+      );
     // sandbox.fallback persists (reduced trust); terminal run/ticket failures and
     // security audit events are never auto-resolved.
     case 'sandbox.fallback':
