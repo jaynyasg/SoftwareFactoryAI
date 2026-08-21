@@ -1,0 +1,220 @@
+/**
+ * Gate + repair ledger projection (full-factory U7).
+ *
+ * Pure fold over `gate.*` and `repair.*` events for one run. Two consumers:
+ *
+ *  - the gated ticket runner derives its REPAIR BUDGET and gate feedback from
+ *    this projection, so retry counters live on the ledger — a process restart
+ *    replays the same counts instead of resetting them (plan invariant:
+ *    "retry counters derived from ledger, not memory"), and
+ *  - the executor/UI read the latest per-gate outcomes and repair state to
+ *    explain why a run is blocked and what evidence backs it.
+ *
+ * Nothing here invents state: an empty ledger projects zero attempts and no
+ * outcomes, and replaying the same events always yields the same projection.
+ */
+import { validateAndSortEvents } from '@software-factory/core';
+import type { GateFeedback, GateStage } from '@software-factory/core';
+
+/** Scope key used for run-level (ticket-less) gate events. */
+export const RUN_GATE_SCOPE = 'run';
+
+/** Latest observed outcome of one gate within one scope. */
+export interface GateOutcomeView {
+  /** Ticket id for post-ticket gates, else `RUN_GATE_SCOPE`. */
+  readonly scope: string;
+  readonly gate: string;
+  readonly stage?: GateStage;
+  readonly status: 'running' | 'passed' | 'failed';
+  /** Pass summary or failure reason, when the event carried one. */
+  readonly detail?: string;
+  /** Total `gate.started` attempts observed for this scope+gate. */
+  readonly attempts: number;
+  readonly lastSequence: number;
+}
+
+/** Ledger-derived repair state for one ticket. */
+export interface TicketRepairView {
+  readonly ticketId: string;
+  /** Count of `repair.started` — the CONSUMED repair budget (monotonic). */
+  readonly attemptsUsed: number;
+  /** `true` once `repair.failed` was recorded without a later success. */
+  readonly exhausted: boolean;
+  readonly lastGate?: string;
+  readonly lastReason?: string;
+}
+
+export interface GateRepairProjection {
+  /** Latest outcome per (scope, gate), in first-seen order. */
+  readonly outcomes: readonly GateOutcomeView[];
+  /** Repair state per ticket that ever entered the repair loop. */
+  readonly repairs: Readonly<Record<string, TicketRepairView>>;
+  /**
+   * Structured feedback per ticket from gates that are CURRENTLY failed (a
+   * later pass for the same gate clears its feedback). Feeds the repair
+   * compile input so a resumed attempt sees the same failure context.
+   */
+  readonly gateFeedback: Readonly<Record<string, readonly GateFeedback[]>>;
+  /** Tickets whose repair budget is exhausted (`repair.failed` recorded). */
+  readonly exhaustedTickets: readonly string[];
+}
+
+interface MutableOutcome {
+  scope: string;
+  gate: string;
+  stage?: GateStage;
+  status: 'running' | 'passed' | 'failed';
+  detail?: string;
+  attempts: number;
+  lastSequence: number;
+  firstSequence: number;
+}
+
+interface MutableRepair {
+  ticketId: string;
+  attemptsUsed: number;
+  exhausted: boolean;
+  lastGate?: string;
+  lastReason?: string;
+}
+
+function scopeOf(ticketId: string | undefined): string {
+  return ticketId ?? RUN_GATE_SCOPE;
+}
+
+/** Project gate outcomes + repair state for a run. Pure and replayable. */
+export function projectGateRepair(raw: readonly unknown[], runId: string): GateRepairProjection {
+  const { events } = validateAndSortEvents(raw);
+  const runEvents = events.filter((event) => event.runId === runId);
+
+  const outcomes = new Map<string, MutableOutcome>();
+  const repairs = new Map<string, MutableRepair>();
+  // Latest failed attempt per (ticket, gate); cleared when the gate later passes.
+  const failedFeedback = new Map<string, Map<string, GateFeedback>>();
+
+  const outcomeFor = (
+    scope: string,
+    gate: string,
+    stage: GateStage | undefined,
+    sequence: number,
+  ): MutableOutcome => {
+    const key = `${scope}\u0000${gate}`;
+    let entry = outcomes.get(key);
+    if (entry === undefined) {
+      entry = {
+        scope,
+        gate,
+        stage,
+        status: 'running',
+        attempts: 0,
+        lastSequence: sequence,
+        firstSequence: sequence,
+      };
+      outcomes.set(key, entry);
+    }
+    entry.stage = stage ?? entry.stage;
+    entry.lastSequence = sequence;
+    return entry;
+  };
+
+  const repairFor = (ticketId: string): MutableRepair => {
+    let entry = repairs.get(ticketId);
+    if (entry === undefined) {
+      entry = { ticketId, attemptsUsed: 0, exhausted: false };
+      repairs.set(ticketId, entry);
+    }
+    return entry;
+  };
+
+  for (const event of runEvents) {
+    switch (event.type) {
+      case 'gate.started': {
+        const entry = outcomeFor(
+          scopeOf(event.ticketId),
+          event.payload.gate,
+          event.payload.stage,
+          event.sequence,
+        );
+        entry.status = 'running';
+        entry.attempts += 1;
+        break;
+      }
+      case 'gate.passed': {
+        const scope = scopeOf(event.ticketId);
+        const entry = outcomeFor(scope, event.payload.gate, event.payload.stage, event.sequence);
+        entry.status = 'passed';
+        entry.detail = event.payload.summary;
+        // A pass supersedes earlier failure feedback for the same gate.
+        failedFeedback.get(scope)?.delete(event.payload.gate);
+        break;
+      }
+      case 'gate.failed': {
+        const scope = scopeOf(event.ticketId);
+        const entry = outcomeFor(scope, event.payload.gate, event.payload.stage, event.sequence);
+        entry.status = 'failed';
+        entry.detail = event.payload.reason;
+        let perScope = failedFeedback.get(scope);
+        if (perScope === undefined) {
+          perScope = new Map<string, GateFeedback>();
+          failedFeedback.set(scope, perScope);
+        }
+        perScope.set(event.payload.gate, {
+          gate: event.payload.gate,
+          reason: event.payload.reason,
+        });
+        break;
+      }
+      case 'repair.started': {
+        if (event.ticketId !== undefined) {
+          const entry = repairFor(event.ticketId);
+          entry.attemptsUsed = Math.max(entry.attemptsUsed + 1, event.payload.attempt);
+          entry.lastGate = event.payload.gate;
+          entry.lastReason = event.payload.reason;
+        }
+        break;
+      }
+      case 'repair.succeeded': {
+        if (event.ticketId !== undefined) {
+          const entry = repairFor(event.ticketId);
+          entry.exhausted = false;
+          entry.lastGate = event.payload.gate;
+          entry.lastReason = undefined;
+        }
+        break;
+      }
+      case 'repair.failed': {
+        if (event.ticketId !== undefined) {
+          const entry = repairFor(event.ticketId);
+          entry.exhausted = true;
+          entry.lastGate = event.payload.gate;
+          entry.lastReason = event.payload.reason;
+        }
+        break;
+      }
+      default:
+        break;
+    }
+  }
+
+  const outcomeViews: GateOutcomeView[] = [...outcomes.values()]
+    .sort((a, b) => a.firstSequence - b.firstSequence)
+    .map(({ firstSequence: _first, ...view }) => view);
+
+  const repairViews: Record<string, TicketRepairView> = {};
+  for (const [ticketId, entry] of repairs) {
+    repairViews[ticketId] = { ...entry };
+  }
+
+  const gateFeedback: Record<string, readonly GateFeedback[]> = {};
+  for (const [scope, perScope] of failedFeedback) {
+    if (perScope.size > 0 && scope !== RUN_GATE_SCOPE) {
+      gateFeedback[scope] = [...perScope.values()];
+    }
+  }
+
+  const exhaustedTickets = [...repairs.values()]
+    .filter((entry) => entry.exhausted)
+    .map((entry) => entry.ticketId);
+
+  return { outcomes: outcomeViews, repairs: repairViews, gateFeedback, exhaustedTickets };
+}

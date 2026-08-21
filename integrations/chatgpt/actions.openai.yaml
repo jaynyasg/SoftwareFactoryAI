@@ -1,0 +1,1287 @@
+openapi: 3.1.0
+info:
+  title: Software Factory Action
+  version: 0.1.0
+  description: |
+    ChatGPT Action schema for calling a hosted Software Factory instance.
+    Replace the server URL with your deployed factory URL and configure API key
+    authentication with header name `x-operator-token`.
+servers:
+  - url: https://YOUR_FACTORY_HOST
+security:
+  - OperatorToken: []
+paths:
+  /api/setup:
+    get:
+      operationId: getSetup
+      summary: Read factory setup/runtime status.
+      responses:
+        '200':
+          description: Setup status.
+          content:
+            application/json:
+              schema:
+                type: object
+  /api/runs:
+    get:
+      operationId: listRuns
+      summary: List Software Factory runs.
+      responses:
+        '200':
+          description: Projected runs.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  runs:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/RunProjection'
+    post:
+      operationId: createRun
+      summary: Create a Software Factory run from a prompt and/or PRD.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRunRequest'
+      responses:
+        '201':
+          description: Run created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateRunResponse'
+        '200':
+          description: Duplicate idempotency key returned the existing run.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateRunResponse'
+  /api/runs/cancel-all:
+    post:
+      operationId: cancelAllRuns
+      summary: >-
+        Cancel EVERY cancellable run in one guarded command (the operator's
+        "cancel all tasks" control). Per-run semantics match the single
+        cancel: already-cancelled runs converge, terminal (completed/failed)
+        runs keep their recorded outcome, and each cancellation propagates to
+        queued and in-flight execution work.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CancelAllRunsRequest'
+      responses:
+        '200':
+          description: >-
+            Batch outcome: which runs were cancelled, which were already
+            cancelled, and which terminal runs were skipped.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CancelAllRunsResponse'
+        '401':
+          description: Operator token missing or invalid (command guard denial).
+          content:
+            application/json:
+              schema:
+                type: object
+  /api/runs/clear-all:
+    post:
+      operationId: clearAllRuns
+      summary: >-
+        DESTRUCTIVE — the operator's "clear everything" control: cancel every
+        cancellable run, then permanently DELETE every terminal run's ledger
+        (accumulated history, cancelled fixtures, stale leased jobs). Runs
+        still non-terminal after the cancel phase are reported skipped, never
+        deleted. This cannot be undone.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClearAllRunsRequest'
+      responses:
+        '200':
+          description: >-
+            Batch outcome: which run ledgers were deleted, which runs the
+            cancel phase cancelled, and which non-terminal runs were skipped.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClearAllRunsResponse'
+        '401':
+          description: Operator token missing or invalid (command guard denial).
+          content:
+            application/json:
+              schema:
+                type: object
+  /api/runs/{runId}:
+    get:
+      operationId: getRun
+      summary: Read one projected run.
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      responses:
+        '200':
+          description: Projected run.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  run:
+                    $ref: '#/components/schemas/RunProjection'
+  /api/runs/{runId}/events:
+    get:
+      operationId: getRunEvents
+      summary: Read the ordered ledger events for one run.
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      responses:
+        '200':
+          description: Ordered event log.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  runId:
+                    type: string
+                  events:
+                    type: array
+                    items:
+                      type: object
+  /api/runs/{runId}/cancel:
+    post:
+      operationId: cancelRun
+      summary: Cancel a run. Cancellation propagates to queued and active execution work.
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - expectedVersion
+              properties:
+                expectedVersion:
+                  type: integer
+                  minimum: 0
+                reason:
+                  type: string
+      responses:
+        '200':
+          description: Run cancelled.
+          content:
+            application/json:
+              schema:
+                type: object
+  /api/runs/{runId}/review:
+    post:
+      operationId: reviewRun
+      summary: >-
+        Record a review decision for a run. An APPROVED decision that closes a
+        pending stage review unblocks the run (resolving approval-resolvable
+        interventions and re-enqueuing the blocked stage); a REJECTED decision
+        records the outcome and resumes nothing. The review authority (mode +
+        risk tier) is derived SERVER-side — the client cannot relax the gate.
+        Idempotent per run version: a retried decide dedups instead of appending
+        a second decision.
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReviewRequest'
+      responses:
+        '200':
+          description: Review decision recorded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReviewResponse'
+        '400':
+          description: Invalid decision or risk tier.
+          content:
+            application/json:
+              schema:
+                type: object
+        '404':
+          description: Run does not exist.
+          content:
+            application/json:
+              schema:
+                type: object
+  /api/runs/{runId}/publish:
+    post:
+      operationId: publishRunWorkspace
+      summary: >-
+        Publish a completed run's repo-checkout deliverable back to its GitHub
+        remote: commits any uncommitted worker output and pushes HEAD to the
+        checkout branch. Recorded on the ledger as workspace.published;
+        checkout credentials never leave the publish client.
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Publish outcome (pushed flag, commit, branch).
+          content:
+            application/json:
+              schema:
+                type: object
+        '422':
+          description: The run has no ready repository checkout to publish.
+          content:
+            application/json:
+              schema:
+                type: object
+        '404':
+          description: Run does not exist.
+          content:
+            application/json:
+              schema:
+                type: object
+  /api/runs/{runId}/settings:
+    post:
+      operationId: overrideRunSettings
+      summary: >-
+        Override run settings mid-run (model and/or reasoning effort), recorded
+        as an append-only run.settings_overridden event. Tickets that already
+        executed keep their recorded evidence; every ticket that has not
+        executed yet picks up the new model on its next execution attempt.
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OverrideRunSettingsRequest'
+      responses:
+        '200':
+          description: Override recorded; projected run returned.
+          content:
+            application/json:
+              schema:
+                type: object
+        '400':
+          description: Neither modelProfile nor reasoningEffort was provided.
+          content:
+            application/json:
+              schema:
+                type: object
+        '422':
+          description: The run is completed/cancelled; settings can no longer change execution.
+          content:
+            application/json:
+              schema:
+                type: object
+        '404':
+          description: Run does not exist.
+          content:
+            application/json:
+              schema:
+                type: object
+  /api/runs/{runId}/workspace:
+    post:
+      operationId: materializeWorkspace
+      summary: >-
+        Materialize (or retry materializing) the run workspace before starting
+        execution. A run created with a githubRepo needs its source checked out
+        before a start can preflight; retries converge — an already-ready
+        workspace is reused and new checkout attempts increment an explicit
+        attempt counter.
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MaterializeWorkspaceRequest'
+      responses:
+        '200':
+          description: Workspace already ready (converged idempotent repeat).
+          content:
+            application/json:
+              schema:
+                type: object
+        '201':
+          description: Workspace materialization attempted; projected state returned.
+          content:
+            application/json:
+              schema:
+                type: object
+        '503':
+          description: Workspace materialization is not enabled on this server instance.
+          content:
+            application/json:
+              schema:
+                type: object
+    get:
+      operationId: getWorkspace
+      summary: Read the projected workspace materialization state for a run.
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      responses:
+        '200':
+          description: Projected workspace state.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  runId:
+                    type: string
+                  workspace:
+                    type: object
+  /api/runs/{runId}/start:
+    post:
+      operationId: startRun
+      summary: >-
+        Start execution for a planned run. A dry-run preflight rehearsal must
+        pass before the run-execution job is enqueued for the execution daemon;
+        duplicate starts return the existing queue state.
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExecutionCommandRequest'
+      responses:
+        '202':
+          description: Preflight passed and the execution job was enqueued.
+          content:
+            application/json:
+              schema:
+                type: object
+        '200':
+          description: Execution was already queued or active (idempotent repeat).
+          content:
+            application/json:
+              schema:
+                type: object
+        '422':
+          description: Preflight failed, run not planned, or retry budget exhausted.
+          content:
+            application/json:
+              schema:
+                type: object
+  /api/runs/{runId}/pause:
+    post:
+      operationId: pauseRun
+      summary: Pause execution for a run (no new worker starts until resumed).
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExecutionCommandRequest'
+      responses:
+        '200':
+          description: Execution paused (or already paused).
+          content:
+            application/json:
+              schema:
+                type: object
+  /api/runs/{runId}/resume:
+    post:
+      operationId: resumeRun
+      summary: Resume a paused execution.
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExecutionCommandRequest'
+      responses:
+        '200':
+          description: Execution resumed.
+          content:
+            application/json:
+              schema:
+                type: object
+  /api/runs/{runId}/retry:
+    post:
+      operationId: retryRun
+      summary: >-
+        Retry a failed, blocked, or abandoned execution within the bounded
+        retry budget, optionally focused on one ticket.
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/ExecutionCommandRequest'
+                - type: object
+                  properties:
+                    ticketId:
+                      type: string
+      responses:
+        '202':
+          description: Retry enqueued.
+          content:
+            application/json:
+              schema:
+                type: object
+        '422':
+          description: Nothing to retry or retry budget exhausted.
+          content:
+            application/json:
+              schema:
+                type: object
+  /api/runs/{runId}/gates/rerun:
+    post:
+      operationId: rerunGates
+      summary: Enqueue a quality-gate re-run job for a run.
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExecutionCommandRequest'
+      responses:
+        '202':
+          description: Gate re-run enqueued.
+          content:
+            application/json:
+              schema:
+                type: object
+  /api/runs/{runId}/execution:
+    get:
+      operationId: getExecution
+      summary: >-
+        Read the projected execution state for a run: queue job, lease,
+        preflight outcome, and open interventions.
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      responses:
+        '200':
+          description: Projected execution state.
+          content:
+            application/json:
+              schema:
+                type: object
+  /api/execution:
+    get:
+      operationId: getExecutionOverview
+      summary: >-
+        Read the factory-wide execution state: whether execution controls are
+        enabled, whether the drain gate is held, whether the daemon loop is
+        running, and cross-run queued/leased job counts. The execution daemon
+        boots HELD by default (SF_EXEC_AUTOSTART=1 opts back in), so a started
+        run queues but does NOT execute until resumeExecution releases the
+        gate.
+      responses:
+        '200':
+          description: >-
+            Factory-wide execution overview. `execution.enabled: false` means
+            this server instance has no execution daemon at all.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecutionOverview'
+  /api/execution/resume:
+    post:
+      operationId: resumeExecution
+      summary: >-
+        Release the factory-wide drain gate so queued work starts executing.
+        The execution daemon boots HELD by default (SF_EXEC_AUTOSTART=1 opts
+        back in): runs started via any caller queue but do NOT execute until
+        this resume. The gate is process-local by design — every fresh server
+        process starts held again.
+      responses:
+        '200':
+          description: >-
+            Gate released (`resumed: true`) or already released
+            (`alreadyActive: true`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecutionGateResponse'
+        '401':
+          description: Operator token missing or invalid (command guard denial).
+          content:
+            application/json:
+              schema:
+                type: object
+        '503':
+          description: >-
+            Execution controls are not enabled on this server instance
+            (`execution_disabled`).
+          content:
+            application/json:
+              schema:
+                type: object
+  /api/execution/hold:
+    post:
+      operationId: holdExecution
+      summary: >-
+        Re-engage the factory-wide drain gate: stop claiming NEW work across
+        all runs (in-flight work finishes; nothing is aborted). Runs started
+        while held queue but do not execute until resumeExecution releases the
+        gate again.
+      responses:
+        '200':
+          description: >-
+            Gate engaged (`held: true`) or already engaged
+            (`alreadyHeld: true`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecutionGateResponse'
+        '401':
+          description: Operator token missing or invalid (command guard denial).
+          content:
+            application/json:
+              schema:
+                type: object
+        '503':
+          description: >-
+            Execution controls are not enabled on this server instance
+            (`execution_disabled`).
+          content:
+            application/json:
+              schema:
+                type: object
+  /api/runs/{runId}/research:
+    post:
+      operationId: triggerResearch
+      summary: >-
+        Trigger one bounded, source-backed research pass for a run. Idempotent:
+        when research already ran for the run the existing projected state is
+        returned instead of re-running (unless `force` is true).
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResearchTriggerRequest'
+      responses:
+        '201':
+          description: >-
+            A research pass ran; the projected research state is returned. This
+            does NOT guarantee findings — the pass may complete with zero
+            sources/findings or fail. The client MUST inspect
+            `research.status` (completed | failed | ...) and the finding/source
+            counts before treating the brief as usable.
+          content:
+            application/json:
+              schema:
+                type: object
+        '200':
+          description: Research already existed (idempotent repeat).
+          content:
+            application/json:
+              schema:
+                type: object
+        '503':
+          description: Research is not enabled on this server instance.
+          content:
+            application/json:
+              schema:
+                type: object
+    get:
+      operationId: getResearch
+      summary: >-
+        Read the projected research state for a run: status, sources, findings,
+        assumptions, unresolved gaps, and the enriched brief summary.
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      responses:
+        '200':
+          description: Projected research state.
+          content:
+            application/json:
+              schema:
+                type: object
+  /api/runs/{runId}/outputs:
+    get:
+      operationId: getRunOutputs
+      summary: >-
+        Read the run artifact contract: package path, handoff and provenance
+        references, gate evidence, deploy state, and the hosted URL (present
+        ONLY after hosted health passed).
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      responses:
+        '200':
+          description: The projected run outputs/artifact contract.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  runId:
+                    type: string
+                  outputs:
+                    $ref: '#/components/schemas/RunOutputs'
+  /api/interventions:
+    get:
+      operationId: listInterventions
+      summary: >-
+        List the operator intervention queue across runs, filterable by run,
+        kind, severity, blocking stage, and open-only.
+      parameters:
+        - name: runId
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: kind
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - approval
+              - missing_credentials
+              - source_choice
+              - unsafe_path
+              - adapter_setup
+              - deploy_setup
+              - retry_choice
+              - policy_block
+        - name: severity
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - info
+              - success
+              - warn
+              - error
+              - critical
+        - name: blockingStage
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: open
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - '1'
+              - 'true'
+      responses:
+        '200':
+          description: Projected intervention queue.
+          content:
+            application/json:
+              schema:
+                type: object
+  /api/interventions/{interventionId}/resolve:
+    post:
+      operationId: resolveIntervention
+      summary: Resolve one operator intervention with a resolution note.
+      parameters:
+        - name: interventionId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - resolution
+              properties:
+                resolution:
+                  type: string
+                note:
+                  type: string
+                expectedVersion:
+                  type: integer
+                  minimum: 0
+      responses:
+        '200':
+          description: Intervention resolved (or already resolved).
+          content:
+            application/json:
+              schema:
+                type: object
+components:
+  securitySchemes:
+    OperatorToken:
+      type: apiKey
+      in: header
+      name: x-operator-token
+      description: >-
+        YOUR credential for this factory. Multi-user factories: your personal
+        API token (mint one under Settings -> API token; format sfai_...) —
+        it acts as your account, sees your own runs, and can be rotated or
+        revoked without affecting anyone else. Single-tenant factories: the
+        hosted `SF_OPERATOR_TOKEN` keeps working unchanged.
+  parameters:
+    RunId:
+      name: runId
+      in: path
+      required: true
+      schema:
+        type: string
+  schemas:
+    ExecutionCommandRequest:
+      type: object
+      properties:
+        expectedVersion:
+          type: integer
+          minimum: 0
+          description: >-
+            Optional optimistic-concurrency check; the command is rejected with
+            409 when this is older than the run's current ledger version.
+        reason:
+          type: string
+      additionalProperties: false
+    CancelAllRunsRequest:
+      type: object
+      properties:
+        reason:
+          type: string
+          description: Recorded on each `run.cancelled` event in the batch.
+      additionalProperties: false
+    CancelAllRunsResponse:
+      type: object
+      properties:
+        cancelled:
+          type: array
+          items:
+            type: string
+          description: Run ids cancelled by THIS command.
+        alreadyCancelled:
+          type: array
+          items:
+            type: string
+          description: Run ids that were already cancelled (converged, not re-cancelled).
+        skippedTerminal:
+          type: array
+          items:
+            type: string
+          description: >-
+            Terminal (completed/failed) run ids that keep their recorded
+            outcome — a terminal run cannot be cancelled retroactively.
+        cancelledCount:
+          type: integer
+          description: Length of `cancelled`.
+        errors:
+          type: array
+          description: Per-run failures, when any run in the batch could not be cancelled.
+          items:
+            type: object
+            properties:
+              runId:
+                type: string
+              message:
+                type: string
+    ClearAllRunsRequest:
+      type: object
+      properties:
+        reason:
+          type: string
+          description: Recorded on each `run.cancelled` event in the cancel phase.
+      additionalProperties: false
+    ClearAllRunsResponse:
+      type: object
+      properties:
+        cleared:
+          type: array
+          items:
+            type: string
+          description: Run ids whose ledgers were permanently deleted.
+        clearedCount:
+          type: integer
+          description: Length of `cleared`.
+        cancelled:
+          type: array
+          items:
+            type: string
+          description: Run ids cancelled by the cancel phase of THIS command.
+        skipped:
+          type: array
+          description: >-
+            Runs that were still non-terminal after the cancel phase and were
+            therefore NOT deleted (clearing never destroys live work).
+          items:
+            type: object
+            properties:
+              runId:
+                type: string
+              status:
+                type: string
+        errors:
+          type: array
+          description: Per-run failures from the cancel phase or the ledger deletion.
+          items:
+            type: object
+            properties:
+              runId:
+                type: string
+              message:
+                type: string
+    ExecutionOverview:
+      type: object
+      description: >-
+        Factory-wide execution state. The daemon boots with the drain gate
+        HELD by default (SF_EXEC_AUTOSTART=1 opts a deployment back into
+        drain-on-start), so queued work does not execute until the gate is
+        released via resumeExecution.
+      properties:
+        execution:
+          type: object
+          properties:
+            enabled:
+              type: boolean
+              description: False when this server instance has no execution daemon.
+            held:
+              type: boolean
+              description: True while the drain gate blocks claiming NEW work.
+            running:
+              type: boolean
+              description: True while the daemon claim/execute loop is active.
+        queue:
+          type: object
+          properties:
+            queued:
+              type: integer
+              description: Cross-run count of jobs waiting to be claimed.
+            leased:
+              type: integer
+              description: Cross-run count of jobs currently leased to the daemon.
+    ExecutionGateResponse:
+      type: object
+      description: >-
+        Outcome of a resume/hold gate command. Repeats converge: an already
+        matching gate reports `alreadyActive`/`alreadyHeld` instead of
+        mutating anything.
+      properties:
+        resumed:
+          type: boolean
+        alreadyActive:
+          type: boolean
+        held:
+          type: boolean
+        alreadyHeld:
+          type: boolean
+        running:
+          type: boolean
+    CreateRunRequest:
+      type: object
+      properties:
+        prompt:
+          type: string
+        prdRef:
+          type: string
+        prdText:
+          type: string
+        title:
+          type: string
+        mode:
+          type: string
+          enum:
+            - plan-only
+            - research-and-plan
+            - research-plan-and-start
+          description: >-
+            plan-only (default) creates the blueprint; research-and-plan runs
+            bounded research first; research-plan-and-start also records a
+            start request that is preflighted and enqueued for the execution
+            daemon.
+        localFolder:
+          type: string
+        githubRepo:
+          type: string
+        selectedAdapter:
+          type: string
+        modelProfile:
+          type: string
+        reasoningEffort:
+          type: string
+        requestedWorkerCap:
+          type: integer
+          minimum: 1
+          maximum: 20
+          default: 10
+        reviewMode:
+          type: string
+          enum:
+            - human
+            - autonomous
+        callerFamily:
+          type: string
+          enum:
+            - api
+            - codex
+            - claude
+        idempotencyKey:
+          type: string
+      additionalProperties: false
+    CreateRunResponse:
+      type: object
+      properties:
+        runId:
+          type: string
+        deduplicated:
+          type: boolean
+        run:
+          $ref: '#/components/schemas/RunProjection'
+        research:
+          type: object
+          description: >-
+            Projected research state — present only for research-enabled run
+            modes (research-and-plan, research-plan-and-start).
+        researchInProgress:
+          type: boolean
+          description: >-
+            Present and true when research is still requested/in-progress at
+            response time (e.g. an idempotent re-create raced an in-flight
+            research pass); planning completes when that pass finishes.
+        execution:
+          type: object
+          description: >-
+            Projected execution block — present only for
+            research-plan-and-start. On instances without execution controls it
+            reports the explicit pending state instead of a fake start.
+          properties:
+            state:
+              type: string
+            reason:
+              type: string
+    ReviewRequest:
+      type: object
+      required:
+        - decision
+      properties:
+        decision:
+          type: string
+          enum:
+            - approved
+            - rejected
+        riskTier:
+          type: string
+          enum:
+            - low
+            - medium
+            - high
+          description: >-
+            Payload fallback only — recorded when the run has no planned ticket
+            tier. The route otherwise overrides it with the highest projected
+            ticket tier, so a client cannot relax the review gate.
+        rationale:
+          type: string
+        expectedVersion:
+          type: integer
+          minimum: 0
+          description: >-
+            Optional optimistic-concurrency check; rejected with 409 when older
+            than the run's current ledger version.
+      additionalProperties: false
+    ReviewResponse:
+      type: object
+      properties:
+        runId:
+          type: string
+        decision:
+          type: string
+          enum:
+            - approved
+            - rejected
+        riskTier:
+          type: string
+        requiredApprovals:
+          type: integer
+        resumed:
+          type: object
+          nullable: true
+          description: >-
+            Stage-resume outcome of an APPROVED decision that closed a pending
+            stage review; null when the approval resumed nothing (or on
+            rejection).
+          properties:
+            stage:
+              type: string
+              enum:
+                - gates
+                - execution
+            resolvedInterventions:
+              type: array
+              items:
+                type: string
+            queued:
+              type: boolean
+            note:
+              type: string
+        run:
+          $ref: '#/components/schemas/RunProjection'
+    OverrideRunSettingsRequest:
+      type: object
+      properties:
+        selectedAdapter:
+          type: string
+          description: New adapter for not-yet-executed tickets (e.g. usage-pool failover).
+        modelProfile:
+          type: string
+          description: New model id for not-yet-executed tickets (e.g. claude-sonnet-5).
+        reasoningEffort:
+          type: string
+          description: New reasoning-effort label recorded on the run.
+        reason:
+          type: string
+          description: Why the operator changed course (e.g. usage window exhausted).
+        expectedVersion:
+          type: integer
+          minimum: 0
+          description: >-
+            Optional optimistic-concurrency check; rejected with 409 when older
+            than the run's current ledger version.
+      additionalProperties: false
+    MaterializeWorkspaceRequest:
+      type: object
+      properties:
+        branch:
+          type: string
+          description: Requested branch for repository checkouts.
+        expectedVersion:
+          type: integer
+          minimum: 0
+          description: >-
+            Optional optimistic-concurrency check; rejected with 409 when older
+            than the run's current ledger version.
+      additionalProperties: false
+    ResearchTriggerRequest:
+      type: object
+      properties:
+        objective:
+          type: string
+          description: Optional research objective override for this pass.
+        force:
+          type: boolean
+          description: >-
+            Re-run research even when a projected research state already
+            exists. Without this, repeated triggers return the existing state.
+        budget:
+          type: object
+          properties:
+            maxSources:
+              type: integer
+              minimum: 1
+            maxDurationMs:
+              type: integer
+              minimum: 1
+          additionalProperties: false
+        expectedVersion:
+          type: integer
+          minimum: 0
+      additionalProperties: false
+    RunOutputs:
+      type: object
+      description: >-
+        The stable run artifact contract, derived entirely from ledger events.
+        The same shape is returned to web, CLI, MCP, and Action callers.
+      properties:
+        runId:
+          type: string
+        status:
+          type: string
+        reviewMode:
+          type: string
+        callerFamily:
+          type: string
+        plannedTicketCount:
+          type: integer
+        tickets:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              title:
+                type: string
+              state:
+                type: string
+              riskTier:
+                type: string
+              dependsOn:
+                type: array
+                items:
+                  type: string
+        previewUrl:
+          type: string
+          description: Local preview URL — present only after `preview.ready`.
+        hostedUrl:
+          type: string
+          description: >-
+            Hosted URL — present ONLY after `deploy.hosted_ready`, i.e. after
+            the provider succeeded AND the hosted health check passed.
+        repoPath:
+          type: string
+          description: Packaged repo artifact path from `package.created`.
+        handoffRef:
+          type: string
+          description: Handoff markdown reference from `package.created`.
+        provenanceRef:
+          type: string
+          description: Provenance bundle reference from `package.created`.
+        handoffSummary:
+          type: string
+        deploy:
+          type: object
+          properties:
+            status:
+              type: string
+              enum:
+                - idle
+                - setup_required
+                - config_invalid
+                - provider_failed
+                - migration_failed
+                - health_pending
+                - health_failed
+                - hosted_ready
+            url:
+              type: string
+              description: Present only on `hosted_ready`.
+            reason:
+              type: string
+            action:
+              type: string
+            retryable:
+              type: boolean
+        tests:
+          type: object
+          properties:
+            passed:
+              type: integer
+            failed:
+              type: integer
+            total:
+              type: integer
+            summary:
+              type: string
+            gates:
+              type: array
+              items:
+                type: object
+                properties:
+                  gate:
+                    type: string
+                  status:
+                    type: string
+                    enum:
+                      - passed
+                      - failed
+                  detail:
+                    type: string
+        repairs:
+          type: array
+          description: >-
+            Ledger-derived per-ticket repair-loop counters (U7) — the same
+            evidence the operator UI shows. Empty when no repair loop ran.
+          items:
+            type: object
+            properties:
+              ticketId:
+                type: string
+              attempts:
+                type: integer
+              status:
+                type: string
+                enum:
+                  - repairing
+                  - succeeded
+                  - exhausted
+              gate:
+                type: string
+              reason:
+                type: string
+        artifacts:
+          type: array
+          items:
+            type: object
+            properties:
+              artifactId:
+                type: string
+              kind:
+                type: string
+              path:
+                type: string
+              confidence:
+                type: number
+        eventsUrl:
+          type: string
+          description: Absolute URL of the read-only event log for this run.
+        diagnostics:
+          type: array
+          items:
+            type: object
+            properties:
+              code:
+                type: string
+              message:
+                type: string
+    RunProjection:
+      type: object
+      properties:
+        runId:
+          type: string
+        title:
+          type: string
+        status:
+          type: string
+        mode:
+          type: string
+        executionState:
+          type: string
+          description: >-
+            not_requested | pending | queued | started | paused | blocked |
+            completed | failed | cancelled | unavailable — derived from queue,
+            preflight, and execution events on the ledger.
+        executionReason:
+          type: string
+        reviewMode:
+          type: string
+        callerFamily:
+          type: string
+        plannedTicketCount:
+          type: integer
+        requestedWorkerCap:
+          type: integer
+        lastSequence:
+          type: integer
+        ledger:
+          type: array
+          items:
+            type: object

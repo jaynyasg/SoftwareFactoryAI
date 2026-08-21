@@ -1,0 +1,27 @@
+{
+  "id": "data-model",
+  "version": "1.0.0",
+  "title": "Data Model",
+  "description": "Define the Prisma schema and migrations for Customer, Provider, ServiceRequest, AIBrief, Proposal, and StatusEvent.",
+  "requiredInputs": ["app.scaffold"],
+  "expectedOutputs": ["data.schema", "data.migrations"],
+  "allowedTools": ["fs.read", "fs.write", "db.migrate"],
+  "riskHint": {
+    "dataMigration": true
+  },
+  "artifactContracts": [
+    {
+      "key": "data.schema",
+      "kind": "schema",
+      "description": "Prisma schema covering the marketplace entities and their relations.",
+      "required": true
+    },
+    {
+      "key": "data.migrations",
+      "kind": "migration",
+      "description": "Initial migration set for the local/test and Render Postgres profiles.",
+      "required": true
+    }
+  ],
+  "dependsOn": ["scaffold-app"]
+}

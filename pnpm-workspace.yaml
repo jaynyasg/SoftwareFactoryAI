@@ -1,0 +1,5 @@
+# The factory runtime lives in packages/*. The generated-app-template/ is intentionally
+# NOT a workspace member: it is a template the factory copies and installs inside a
+# sandbox (U6/U7), so its dependencies must not be hoisted into the factory install.
+packages:
+  - 'packages/*'

@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [Free]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: typecheck / lint / test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        # Version comes from package.json "packageManager" (pnpm@10.27.0);
+        # do NOT also pin it here — action-setup@v4 errors on a dual spec.
+        uses: pnpm/action-setup@v4
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build CLI
+        # @software-factory/cli/run-outputs is a dist/ subpath export; ESM
+        # consumers (vitest, the web routes) resolve it via the "import"
+        # condition to ./dist, so web tests that import it fail until the CLI
+        # is built. core/worker export from src and need no build step.
+        run: pnpm --filter @software-factory/cli run build
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Test
+        run: pnpm test

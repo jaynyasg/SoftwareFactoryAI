@@ -1,0 +1,21 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "web",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["dev"],
+      "port": 3000,
+      "autoPort": true
+    },
+    {
+      "name": "study-app",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        ".factory/workspaces/run-hn3l6difs9cmt0il4jt/app/scripts/serve.mjs",
+        "8712"
+      ],
+      "port": 8712
+    }
+  ]
+}

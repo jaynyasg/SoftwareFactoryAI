@@ -1,0 +1,21 @@
+{
+  "version": "v1",
+  "pipeline": [
+    "scaffold-app",
+    "data-model",
+    "api-contract",
+    "marketplace-ui",
+    "ai-brief",
+    "provider-proposals",
+    "qa-gates"
+  ],
+  "modules": [
+    "modules/scaffold-app.json",
+    "modules/data-model.json",
+    "modules/api-contract.json",
+    "modules/marketplace-ui.json",
+    "modules/ai-brief.json",
+    "modules/provider-proposals.json",
+    "modules/qa-gates.json"
+  ]
+}

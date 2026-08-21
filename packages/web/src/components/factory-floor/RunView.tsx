@@ -1,0 +1,257 @@
+'use client';
+
+/**
+ * RunView — the assembled Factory Floor run surface (DESIGN.md §5/§9).
+ *
+ * Presentational: the parent owns polling and passes the live projected
+ * snapshot, the accumulated ledger rows, the reconnect flag, and a refresh
+ * callback. RunView lays out the supervisor, tickets, workers, the trace ledger
+ * spine, the review studio, deploy status, and the artifact drawer, and handles
+ * the responsive drawer (inline on desktop, overlay on tablet/mobile). All data
+ * is projected from events — nothing is invented.
+ */
+import { useEffect, useState } from 'react';
+import type { LedgerRow } from '@software-factory/core';
+import type { RunAggregate } from '../../lib/types';
+import { runStatusSeverity } from '../../lib/run-view';
+import { SupervisorPanel } from './SupervisorPanel';
+import { WorkerBoard } from './WorkerBoard';
+import { TicketCard } from './TicketCard';
+import { TraceLedger } from './TraceLedger';
+import { ReviewStudio } from './ReviewStudio';
+import { ResearchBrief } from './ResearchBrief';
+import { ContractHandoff } from './ContractHandoff';
+import { RunProgress } from './RunProgress';
+import { RunDecisions } from './RunDecisions';
+import { RunReport } from './RunReport';
+import { PackageHandoff } from './PackageHandoff';
+import { DeployStatus } from './DeployStatus';
+import { ArtifactDrawer } from './ArtifactDrawer';
+import { Mono, SeverityBadge } from './primitives';
+
+function truncateBlock(value: string, max = 520): string {
+  if (value.length <= max) {
+    return value;
+  }
+  return `${value.slice(0, max - 1).trimEnd()}…`;
+}
+
+function useIsSmall(): boolean {
+  const [small, setSmall] = useState(false);
+  useEffect(() => {
+    const query = window.matchMedia('(max-width: 1279px)');
+    const update = (): void => setSmall(query.matches);
+    update();
+    query.addEventListener('change', update);
+    return () => query.removeEventListener('change', update);
+  }, []);
+  return small;
+}
+
+export function RunView({
+  snapshot,
+  rows,
+  reconnecting,
+  refresh,
+}: {
+  readonly snapshot: RunAggregate;
+  readonly rows: readonly LedgerRow[];
+  readonly reconnecting: boolean;
+  readonly refresh: () => void;
+}) {
+  const { run, tickets, artifacts, operator, deploy, packageView, reviews } = snapshot;
+  const runId = run.runId ?? 'unknown';
+  const reducedTrust = operator.sandboxFallback;
+  const [selected, setSelected] = useState<string | null>(null);
+  const isSmall = useIsSmall();
+
+  const throttleReasons = operator.alerts
+    .filter((alert) => alert.type === 'adapter.capacity_changed')
+    .map((alert) => alert.message);
+
+  const drawerArtifacts = selected
+    ? artifacts.filter((artifact) => artifact.ticketId === selected)
+    : [];
+  const drawerRows = selected ? rows.filter((row) => row.ticketId === selected) : [];
+
+  return (
+    <div className="stack" style={{ gap: 'var(--space-16)' }}>
+      {/* The OUTCOME leads: a completed run's report (summary, story, ship-it
+          actions) renders above everything else on the run page. */}
+      <RunReport
+        run={run}
+        tickets={tickets}
+        gates={snapshot.gates}
+        rows={rows}
+        deploy={snapshot.deploy}
+      />
+      <section className="panel" aria-label="Run summary">
+        <header className="panel__header">
+          <div className="row" style={{ gap: 'var(--space-8)' }}>
+            <h2 className="panel__title">Run</h2>
+            <Mono value={runId} max={24} />
+          </div>
+          <SeverityBadge severity={runStatusSeverity(run.status)} label={run.status} />
+        </header>
+        <div className="panel__body">
+          {run.prompt ? <p style={{ fontSize: 'var(--fs-sm)' }}>{run.prompt}</p> : null}
+          {run.prdText ? (
+            <details className="source-details">
+              <summary>PRD content</summary>
+              <p>{truncateBlock(run.prdText)}</p>
+            </details>
+          ) : null}
+          {run.prdRef ? (
+            <div className="row">
+              <span className="label">PRD reference</span>
+              <Mono value={run.prdRef} max={40} />
+            </div>
+          ) : null}
+          {!run.prompt && !run.prdText && !run.prdRef ? (
+            <p className="muted">No prompt or PRD recorded.</p>
+          ) : null}
+          <div className="row">
+            {run.plannedTicketCount !== undefined ? (
+              <span className="badge">{run.plannedTicketCount} tickets planned</span>
+            ) : null}
+            {run.reviewMode ? <span className="badge">review: {run.reviewMode}</span> : null}
+            {run.requestedWorkerCap !== undefined ? (
+              <span className="badge">cap {run.requestedWorkerCap}</span>
+            ) : null}
+            {run.reasoningEffort ? (
+              <span className="badge">effort: {run.reasoningEffort}</span>
+            ) : null}
+            {run.modelProfile ? <span className="badge">model: {run.modelProfile}</span> : null}
+            {run.selectedAdapter ? (
+              <span className="badge">adapter: {run.selectedAdapter}</span>
+            ) : null}
+          </div>
+          <div className="row">
+            {run.localFolder ? (
+              <>
+                <span className="label">folder</span>
+                <Mono value={run.localFolder} max={42} />
+              </>
+            ) : null}
+            {run.githubRepo ? (
+              <>
+                <span className="label">github</span>
+                <Mono value={run.githubRepo} max={42} />
+              </>
+            ) : null}
+          </div>
+          {reducedTrust ? (
+            <div className="banner banner--warn" role="status" data-testid="run-reduced-trust">
+              <span className="banner__body">
+                Reduced-trust: a sandbox fallback occurred during this run.
+              </span>
+            </div>
+          ) : null}
+        </div>
+      </section>
+
+      {/* Anything blocking on a human renders BEFORE the run grid (same
+          hierarchy rule as the factory floor's "Needs you" queue): the run
+          page must offer the decision, not just report the blockage. */}
+      <RunProgress
+        tickets={tickets}
+        rows={rows}
+        executionState={run.executionState}
+        executionReason={run.executionReason}
+        openDecisionCount={snapshot.interventions.length}
+        decisionsHref="#run-decisions"
+      />
+
+      <RunDecisions runId={runId} interventions={snapshot.interventions} onResolved={refresh} />
+
+      <div className="run-grid">
+        <div className="run-grid__main">
+          {snapshot.research.status !== 'none' ? (
+            <ResearchBrief research={snapshot.research} />
+          ) : null}
+          <SupervisorPanel decisions={run.supervisorDecisions} tickets={tickets} />
+
+          <section className="panel" aria-label="Tickets">
+            <header className="panel__header">
+              <h2 className="panel__title">Tickets</h2>
+              <span className="panel__hint">{tickets.length} total</span>
+            </header>
+            <div className="panel__body">
+              {tickets.length === 0 ? (
+                <p className="muted">No tickets yet — the supervisor has not planned this run.</p>
+              ) : (
+                <div className="ticket-grid">
+                  {tickets.map((ticket) => (
+                    <TicketCard
+                      key={ticket.ticketId}
+                      ticket={ticket}
+                      reducedTrust={reducedTrust}
+                      onOpen={setSelected}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          </section>
+
+          <WorkerBoard
+            tickets={tickets}
+            requestedCap={run.requestedWorkerCap}
+            adapterCapacity={operator.adapterCapacity}
+            throttleReasons={throttleReasons}
+          />
+        </div>
+
+        <div className="run-grid__side">
+          <TraceLedger
+            rows={rows}
+            lastSequence={snapshot.lastSequence}
+            reconnecting={reconnecting}
+            diagnostics={run.diagnostics}
+          />
+          {run.buildContract !== undefined || snapshot.preflight.status !== 'none' ? (
+            <ContractHandoff
+              contract={run.buildContract}
+              preflight={snapshot.preflight}
+              openDecisionCount={snapshot.interventions.length}
+              decisionsHref="#run-decisions"
+            />
+          ) : null}
+          <ReviewStudio
+            runId={runId}
+            reviewMode={run.reviewMode ?? 'human'}
+            expectedVersion={snapshot.lastSequence}
+            reviews={reviews}
+            artifacts={artifacts}
+            counts={operator.counts}
+            gates={snapshot.gates}
+            repairs={snapshot.repairs}
+            blockedStages={snapshot.interventions}
+            reducedTrust={reducedTrust}
+            onReload={refresh}
+          />
+          <PackageHandoff pkg={packageView} />
+          <DeployStatus deploy={deploy} />
+          {!isSmall ? (
+            <ArtifactDrawer
+              ticketId={selected}
+              artifacts={drawerArtifacts}
+              rows={drawerRows}
+              onClose={() => setSelected(null)}
+            />
+          ) : null}
+        </div>
+      </div>
+
+      {isSmall && selected !== null ? (
+        <ArtifactDrawer
+          ticketId={selected}
+          artifacts={drawerArtifacts}
+          rows={drawerRows}
+          overlay
+          onClose={() => setSelected(null)}
+        />
+      ) : null}
+    </div>
+  );
+}

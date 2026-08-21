@@ -1,0 +1,32 @@
+{
+  "name": "@software-factory/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "@software-factory/cli": "workspace:*",
+    "@software-factory/core": "workspace:*",
+    "@software-factory/worker": "workspace:*",
+    "next": "^15.1.4",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@seriousme/openapi-schema-validator": "^2.9.0",
+    "@testing-library/dom": "^10.4.0",
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.1.0",
+    "@testing-library/user-event": "^14.5.2",
+    "@types/react": "^19.0.4",
+    "@types/react-dom": "^19.0.2",
+    "jsdom": "^26.0.0"
+  }
+}

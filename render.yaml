@@ -1,0 +1,84 @@
+services:
+  - type: web
+    name: software-factory
+    # Docker runtime (not plain node): the image bakes in the `claude` +
+    # `codex` worker CLIs and the vendored worker skills, so this instance can
+    # EXECUTE tickets, not just plan them. See Dockerfile +
+    # docs/runbooks/render-deployment.md "Cloud execution".
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    # Worker CLIs are memory-hungry (each claude/codex process can take
+    # hundreds of MB); the 512MB starter plan OOMs under real execution.
+    plan: standard
+    # SINGLE-INSTANCE ONLY (U11): the JSONL event ledger and the ledger-backed
+    # execution queue do not support horizontal scaling. Do not raise this or
+    # enable autoscaling until the database-backed event store + durable queue
+    # land (see ARCHITECTURE.md "Hosted Scale Migration Seam" and
+    # docs/runbooks/cloud-deployment.md "Scaling Limits And The Migration Seam").
+    numInstances: 1
+    # Static liveness probe: stays public + byte-identical in multi-user mode
+    # (/api/setup requires auth once SF_MULTI_USER is on).
+    healthCheckPath: /api/healthz
+    envVars:
+      - key: SF_RUNTIME
+        value: cloud
+      - key: SF_FACTORY_DIR
+        value: /var/data/.factory
+      - key: SF_WORKSPACE_CHECKOUT_ROOT
+        value: /var/data/checkouts
+      - key: SF_OPERATOR_TOKEN
+        generateValue: true
+      - key: SF_PUBLIC_BASE_URL
+        sync: false
+      # ── Multi-user mode (U11) — see docs/runbooks/cloud-deployment.md ─────
+      # Turn on accounts: users sign in, paste THEIR OWN Claude/Codex/GitHub
+      # credentials in the wizard, and runs execute on THEIR accounts. With
+      # multi-user on, the server-level model keys below become unnecessary
+      # (leave them unset) and the shared operator token is refused.
+      - key: SF_MULTI_USER
+        sync: false
+      # REQUIRED with SF_MULTI_USER=1: 32-byte hex/base64url key encrypting
+      # the per-user credential vault at rest. Platform secret store ONLY.
+      # Generate: node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))"
+      - key: SF_MASTER_KEY
+        sync: false
+      # Consume-once invite that creates the FIRST admin account (open
+      # https://<url>/invite/<value> after deploy). High entropy (16+ chars).
+      - key: SF_BOOTSTRAP_INVITE
+        sync: false
+      # Set to "1" TEMPORARILY to let the bootstrap invite reset a locked-out
+      # admin password (break-glass); unset it again after.
+      # - key: SF_BOOTSTRAP_REARM
+      #   sync: false
+      # ── Worker CLI credentials — SINGLE-TENANT ONLY (set values in the
+      #    Render dashboard). In multi-user mode leave these unset: every run
+      #    binds its OWNER's credentials from the encrypted vault instead. ───
+      # Claude Code: an Anthropic API key, OR a long-lived OAuth token minted
+      # with `claude setup-token` on any machine (plan-billed usage).
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: CLAUDE_CODE_OAUTH_TOKEN
+        sync: false
+      # Codex: the entrypoint turns this into a `codex login` on boot.
+      - key: OPENAI_API_KEY
+        sync: false
+      # ── Source checkout (GitHub-source runs; fine-grained PAT) ───────────
+      - key: SF_GIT_CHECKOUT_TOKEN
+        sync: false
+      # ── Worker skills (vendored in skills/worker/, installed by the image;
+      #    Claude access is fail-closed until granted here) ──────────────────
+      - key: SF_CLAUDE_ALLOWED_SKILLS
+        value: software-factory-conventions
+      - key: SF_PREFERRED_SKILLS
+        value: software-factory-conventions
+      # Execution boots HELD by default: LEFTOVER work queued before a deploy/
+      # restart waits for an operator to click "Resume execution" on the
+      # Factory Floor. Runs an operator explicitly starts (Start run / Start /
+      # Retry) bypass the gate and execute immediately. Uncomment to opt into
+      # unattended drain-on-start for leftovers too.
+      # - key: SF_EXEC_AUTOSTART
+      #   value: "1"
+    disk:
+      name: software-factory-ledger
+      mountPath: /var/data
+      sizeGB: 10

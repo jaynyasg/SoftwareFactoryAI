@@ -1,0 +1,108 @@
+// AI Services Marketplace — data model.
+//
+// Local / dev / test profile uses SQLite (the datasource below). The hosted
+// Render profile targets Postgres: change `provider` to "postgresql" and point
+// DATABASE_URL at the Render database URL (see README). Every field type here is
+// portable (String / Int / DateTime / relations) and avoids SQLite-only or
+// Postgres-only features, so the same schema migrates cleanly to both. Status
+// and event-type columns are Strings (not enums) because SQLite does not
+// support native enums; the allowed values are documented in src/lib.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Customer {
+  id        String           @id @default(cuid())
+  name      String
+  email     String           @unique
+  createdAt DateTime         @default(now())
+  requests  ServiceRequest[]
+}
+
+model Provider {
+  id        String     @id @default(cuid())
+  name      String
+  email     String     @unique
+  expertise String
+  createdAt DateTime   @default(now())
+  proposals Proposal[]
+}
+
+model ServiceRequest {
+  id          String   @id @default(cuid())
+  title       String
+  description String
+  category    String
+  budget      Int
+  // OPEN | PROPOSED | ACCEPTED | CANCELLED
+  status      String   @default("OPEN")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id])
+
+  brief        AIBrief?
+  proposals    Proposal[]
+  statusEvents StatusEvent[]
+
+  @@index([customerId])
+  @@index([status])
+}
+
+model AIBrief {
+  id              String   @id @default(cuid())
+  summary         String
+  scope           String
+  successCriteria String
+  suggestedBudget Int
+  // "deterministic-fallback" or a live provider id
+  source          String
+  createdAt       DateTime @default(now())
+
+  requestId String         @unique
+  request   ServiceRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+}
+
+model Proposal {
+  id        String   @id @default(cuid())
+  message   String
+  price     Int
+  // SUBMITTED | ACCEPTED | REJECTED
+  status    String   @default("SUBMITTED")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  requestId String
+  request   ServiceRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  providerId String
+  provider   Provider @relation(fields: [providerId], references: [id])
+
+  statusEvents StatusEvent[]
+
+  @@index([requestId])
+  @@index([providerId])
+}
+
+model StatusEvent {
+  id        String   @id @default(cuid())
+  // REQUEST_CREATED | BRIEF_GENERATED | PROPOSAL_SUBMITTED | PROPOSAL_ACCEPTED | PROPOSAL_REJECTED
+  type      String
+  message   String
+  createdAt DateTime @default(now())
+
+  requestId String
+  request   ServiceRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  proposalId String?
+  proposal   Proposal? @relation(fields: [proposalId], references: [id], onDelete: Cascade)
+
+  @@index([requestId])
+}

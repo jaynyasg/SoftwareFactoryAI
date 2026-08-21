@@ -1,0 +1,766 @@
+/**
+ * Execution command routes (full-factory U5).
+ *
+ *   POST /api/runs/:id/start        (guarded) — dry-run preflight, then enqueue
+ *                                    the run-execution job. NEVER runs workers
+ *                                    in the request: the daemon owns execution
+ *                                    (E1); the route returns projected state.
+ *   POST /api/runs/:id/pause        (guarded) — stop new worker starts.
+ *   POST /api/runs/:id/resume       (guarded) — resume a paused execution.
+ *   POST /api/runs/:id/retry        (guarded) — re-enqueue a terminal
+ *                                    (failed/blocked/abandoned) execution job,
+ *                                    optionally focused on one ticket.
+ *   POST /api/runs/:id/gates/rerun  (guarded) — enqueue a gate re-run job.
+ *   GET  /api/runs/:id/execution    (read-only) — projected execution state:
+ *                                    queue job, preflight, open interventions.
+ *   GET  /api/interventions         (read-only) — the operator intervention
+ *                                    queue (X4), filterable by run, kind,
+ *                                    severity, blocking stage, and action.
+ *   POST /api/interventions/:id/resolve (guarded) — resolve one intervention.
+ *   GET  /api/execution             (read-only) — factory-wide execution
+ *                                    state: whether the drain gate is held
+ *                                    plus cross-run queued/leased job counts.
+ *   POST /api/execution/resume      (guarded) — release the drain gate so
+ *                                    queued work starts (the daemon boots
+ *                                    HELD: nothing runs on open until this).
+ *   POST /api/execution/hold        (guarded) — re-engage the drain gate:
+ *                                    stop claiming NEW work factory-wide.
+ *
+ * All mutations pass the command guard first (token/origin/CSRF/stale-version)
+ * and are idempotent: duplicate starts return the existing queue state instead
+ * of double-enqueueing (queue appends are keyed per job+attempt).
+ */
+import { INTERVENTION_KINDS, projectRun } from '@software-factory/core';
+import { projectWorkspace } from '@software-factory/worker';
+import type {
+  EventSeverity,
+  FactoryEvent,
+  InterventionKind,
+  RunProjection,
+} from '@software-factory/core';
+import type { ApiResponse, RouteContext, RouteDef } from '../app';
+import { asRecord, num, str } from './parse';
+import {
+  canSeeRun,
+  guardRunCommand,
+  notFound,
+  operatorActor,
+  readOwnedRun,
+  refreshBuildContract,
+} from './shared';
+import {
+  countJobFailures,
+  enqueueJob,
+  executionJobId,
+  gateRerunJobId,
+  isActiveJobStatus,
+  projectExecutionQueue,
+} from '../execution/queue';
+import type { QueueJobView } from '../execution/queue';
+import {
+  filterInterventions,
+  projectInterventions,
+  resolveIntervention,
+  runOwners,
+} from '../execution/interventions';
+import type { InterventionView } from '../execution/interventions';
+import type { PreflightRunResult } from '../execution/preflight';
+import { projectPreflight } from '../execution/preflight';
+
+const EXECUTION_DISABLED: ApiResponse = {
+  status: 503,
+  body: {
+    error: 'execution_disabled',
+    message: 'Execution controls are not enabled on this server instance.',
+  },
+};
+
+/** Compact execution summary attached to command responses. */
+function executionSummary(run: RunProjection): { state: string; reason?: string } {
+  return { state: run.executionState, reason: run.executionReason };
+}
+
+/* ----------------------------------------------------------------------------
+ * Shared start/retry flow (also used by run creation for
+ * `research-plan-and-start` — the recorded U3 start request).
+ * ------------------------------------------------------------------------- */
+
+export type StartExecutionOutcome =
+  | { readonly kind: 'execution_disabled' }
+  | { readonly kind: 'preflight_disabled' }
+  | { readonly kind: 'not_planned'; readonly status: string }
+  | { readonly kind: 'nothing_to_retry' }
+  | { readonly kind: 'run_cancelled' }
+  | { readonly kind: 'already_active'; readonly job: QueueJobView }
+  | { readonly kind: 'retry_budget_exhausted'; readonly attempt: number; readonly max: number }
+  | { readonly kind: 'preflight_failed'; readonly preflight: PreflightRunResult }
+  | {
+      readonly kind: 'queued';
+      readonly job: QueueJobView;
+      readonly preflight: PreflightRunResult;
+    };
+
+export interface StartExecutionOptions {
+  readonly command: 'start' | 'retry';
+  readonly reason?: string;
+  readonly ticketId?: string;
+}
+
+/**
+ * Preflight-gated enqueue of the run-execution job. Duplicate calls converge
+ * on the existing active job; preflight failure blocks the enqueue entirely
+ * (no partial worker execution); retries respect the bounded attempt budget.
+ */
+export async function requestExecutionStart(
+  ctx: RouteContext,
+  runId: string,
+  options: StartExecutionOptions,
+): Promise<StartExecutionOutcome> {
+  const daemon = ctx.executionDaemon;
+  if (daemon === null) {
+    return { kind: 'execution_disabled' };
+  }
+
+  const events = await ctx.reader.readRun(runId);
+  const run = projectRun(events, runId);
+  const queue = projectExecutionQueue(events, runId);
+  const job = queue.byJobId[executionJobId(runId)];
+
+  if (job !== undefined && isActiveJobStatus(job.status)) {
+    return { kind: 'already_active', job };
+  }
+  if (run.status === 'cancelled') {
+    return { kind: 'run_cancelled' };
+  }
+  if (options.command === 'start' && run.status !== 'planned' && run.status !== 'running') {
+    return { kind: 'not_planned', status: run.status };
+  }
+  if (options.command === 'retry') {
+    if (job === undefined) {
+      return { kind: 'nothing_to_retry' };
+    }
+  }
+
+  const attempt = (job?.attempt ?? 0) + 1;
+  // The retry budget is ledger-derived FAILURE evidence (queue.released with a
+  // failed/blocked outcome), never the raw attempt number: safe yields (pause,
+  // graceful shutdown) requeue with attempt+1 and must not consume the
+  // operator's retry budget.
+  const failures = countJobFailures(events, executionJobId(runId));
+  if (failures >= daemon.config.maxAttempts) {
+    return {
+      kind: 'retry_budget_exhausted',
+      attempt: failures + 1,
+      max: daemon.config.maxAttempts,
+    };
+  }
+
+  // One-action start: a requested source workspace that is not ready yet is
+  // materialized HERE, not bounced back to the operator (the old loop was
+  // Start → preflight fail → "Materialize workspace" → Start). The routine is
+  // idempotent and converging — an already-ready workspace is a no-op, and a
+  // failed materialization records honest ledger evidence that the preflight
+  // workspace check below surfaces with its usual fix guidance.
+  const wantsSource =
+    (run.localFolder !== undefined && run.localFolder.length > 0) ||
+    (run.githubRepo !== undefined && run.githubRepo.length > 0);
+  if (wantsSource && projectWorkspace(events, runId).status !== 'ready') {
+    await ctx.materializeWorkspace(runId, {});
+  }
+
+  // Build contract before execution (X3): derive from current projections and
+  // emit digest-idempotently, so the recorded contract always reflects the
+  // plan/research/workspace state execution would run against.
+  await refreshBuildContract(ctx, runId, { workspaceEvidence: true });
+
+  // Dry-run rehearsal (X2): REQUIRED before a normal start enqueues execution.
+  const preflight = await ctx.runPreflight(runId);
+  if (preflight === null) {
+    return { kind: 'preflight_disabled' };
+  }
+  if (!preflight.ok) {
+    return { kind: 'preflight_failed', preflight };
+  }
+
+  await enqueueJob(ctx.store, {
+    runId,
+    jobId: executionJobId(runId),
+    jobKind: 'run-execution',
+    attempt,
+    reason: options.reason,
+    ticketId: options.ticketId,
+  });
+
+  // One post-enqueue read serves both the retry-resolution scan and the
+  // response projection (perf: no second readRun for the same state).
+  const finalEvents = await ctx.reader.readRun(runId);
+
+  if (options.command === 'retry') {
+    // A retry IS the operator's retry decision: resolve open retry_choice
+    // interventions for this run's execution stage instead of leaving stale
+    // entries in the queue.
+    const open = filterInterventions(projectInterventions(finalEvents), {
+      runId,
+      kind: 'retry_choice',
+      blockingStage: 'execution',
+      openOnly: true,
+    });
+    for (const intervention of open) {
+      await resolveIntervention(ctx.store, intervention, {
+        resolution: 'retry',
+        note: `Operator retried execution (attempt ${attempt}).`,
+      });
+    }
+  }
+
+  // Every path into this function is an explicit authenticated operator
+  // command (create-with-start-mode, per-run Start, or Retry), so the boot
+  // drain gate must not demand a second confirmation for THIS run. Leftover
+  // work queued before this process booted stays behind the gate.
+  daemon.allowRunWhileHeld(runId);
+  daemon.notify();
+
+  const finalJob = projectExecutionQueue(finalEvents, runId).byJobId[executionJobId(runId)];
+  return { kind: 'queued', job: finalJob, preflight };
+}
+
+async function startOutcomeResponse(
+  ctx: RouteContext,
+  runId: string,
+  outcome: StartExecutionOutcome,
+): Promise<ApiResponse> {
+  const events = await ctx.reader.readRun(runId);
+  const run = projectRun(events, runId);
+  switch (outcome.kind) {
+    case 'execution_disabled':
+      return EXECUTION_DISABLED;
+    case 'preflight_disabled':
+      return {
+        status: 503,
+        body: {
+          error: 'preflight_disabled',
+          message: 'Preflight is not enabled on this server instance; start is fail-closed.',
+        },
+      };
+    case 'not_planned':
+      return {
+        status: 422,
+        body: {
+          error: 'run_not_planned',
+          message: `Run ${runId} is "${outcome.status}"; only planned runs can start execution.`,
+          run,
+        },
+      };
+    case 'run_cancelled':
+      return {
+        status: 422,
+        body: { error: 'run_cancelled', message: `Run ${runId} is cancelled.`, run },
+      };
+    case 'nothing_to_retry':
+      return {
+        status: 422,
+        body: {
+          error: 'nothing_to_retry',
+          message: `Run ${runId} has no execution job to retry; use start instead.`,
+          run,
+        },
+      };
+    case 'retry_budget_exhausted':
+      return {
+        status: 422,
+        body: {
+          error: 'retry_budget_exhausted',
+          message: `Attempt ${outcome.attempt} exceeds the execution retry budget (${outcome.max}).`,
+          run,
+        },
+      };
+    case 'already_active':
+      return {
+        status: 200,
+        body: {
+          runId,
+          alreadyQueued: true,
+          job: outcome.job,
+          execution: executionSummary(run),
+          run,
+        },
+      };
+    case 'preflight_failed':
+      return {
+        status: 422,
+        body: {
+          error: 'preflight_failed',
+          message: `Preflight failed: ${outcome.preflight.failedChecks.join(', ')}. Start did not enqueue execution.`,
+          runId,
+          preflight: outcome.preflight,
+          interventions: filterInterventions(projectInterventions(events), {
+            runId,
+            blockingStage: 'preflight',
+            openOnly: true,
+          }),
+          execution: executionSummary(run),
+          run,
+        },
+      };
+    case 'queued':
+      return {
+        status: 202,
+        body: {
+          runId,
+          queued: true,
+          alreadyQueued: false,
+          // Honest queue semantics: while the factory drain gate is engaged a
+          // queued job WAITS for the operator's resume instead of running.
+          held: ctx.executionDaemon?.held ?? false,
+          job: outcome.job,
+          preflight: outcome.preflight,
+          execution: executionSummary(run),
+          run,
+        },
+      };
+    default: {
+      const exhaustive: never = outcome;
+      return exhaustive;
+    }
+  }
+}
+
+/* ----------------------------------------------------------------------------
+ * Route handlers
+ * ------------------------------------------------------------------------- */
+
+async function startRun(ctx: RouteContext): Promise<ApiResponse> {
+  const runId = ctx.params.id;
+  const guarded = await guardRunCommand(ctx, runId, 'execution.start');
+  if (guarded.response !== null) {
+    return guarded.response;
+  }
+  const outcome = await requestExecutionStart(ctx, runId, {
+    command: 'start',
+    reason: str(asRecord(ctx.request.body).reason) ?? 'operator start',
+  });
+  return startOutcomeResponse(ctx, runId, outcome);
+}
+
+async function retryRun(ctx: RouteContext): Promise<ApiResponse> {
+  const runId = ctx.params.id;
+  const guarded = await guardRunCommand(ctx, runId, 'execution.retry');
+  if (guarded.response !== null) {
+    return guarded.response;
+  }
+  const body = asRecord(ctx.request.body);
+  const outcome = await requestExecutionStart(ctx, runId, {
+    command: 'retry',
+    reason: str(body.reason) ?? 'operator retry',
+    ticketId: str(body.ticketId),
+  });
+  return startOutcomeResponse(ctx, runId, outcome);
+}
+
+async function pauseRun(ctx: RouteContext): Promise<ApiResponse> {
+  const runId = ctx.params.id;
+  const guarded = await guardRunCommand(ctx, runId, 'execution.pause');
+  if (guarded.response !== null) {
+    return guarded.response;
+  }
+  if (ctx.executionDaemon === null) {
+    return EXECUTION_DISABLED;
+  }
+  const run = guarded.run;
+  if (run.executionState === 'paused') {
+    return {
+      status: 200,
+      body: { runId, alreadyPaused: true, execution: executionSummary(run), run },
+    };
+  }
+  if (run.executionState !== 'queued' && run.executionState !== 'started') {
+    return {
+      status: 422,
+      body: {
+        error: 'execution_not_active',
+        message: `Execution is "${run.executionState}"; only queued or started execution can pause.`,
+        run,
+      },
+    };
+  }
+  await ctx.writer.append({
+    runId,
+    type: 'execution.paused',
+    actor: operatorActor(ctx),
+    subject: { kind: 'run', id: runId, version: run.lastSequence },
+    severity: 'warn',
+    payload: { reason: str(asRecord(ctx.request.body).reason) },
+  });
+  const after = projectRun(await ctx.reader.readRun(runId), runId);
+  return {
+    status: 200,
+    body: { runId, paused: true, execution: executionSummary(after), run: after },
+  };
+}
+
+async function resumeRun(ctx: RouteContext): Promise<ApiResponse> {
+  const runId = ctx.params.id;
+  const guarded = await guardRunCommand(ctx, runId, 'execution.resume');
+  if (guarded.response !== null) {
+    return guarded.response;
+  }
+  if (ctx.executionDaemon === null) {
+    return EXECUTION_DISABLED;
+  }
+  const run = guarded.run;
+  if (run.executionState !== 'paused') {
+    return {
+      status: 422,
+      body: {
+        error: 'execution_not_paused',
+        message: `Execution is "${run.executionState}"; only paused execution can resume.`,
+        run,
+      },
+    };
+  }
+  await ctx.writer.append({
+    runId,
+    type: 'execution.resumed',
+    actor: operatorActor(ctx),
+    subject: { kind: 'run', id: runId, version: run.lastSequence },
+    severity: 'info',
+    payload: { reason: str(asRecord(ctx.request.body).reason) },
+  });
+  ctx.executionDaemon.notify();
+  const after = projectRun(await ctx.reader.readRun(runId), runId);
+  return {
+    status: 200,
+    body: { runId, resumed: true, execution: executionSummary(after), run: after },
+  };
+}
+
+async function rerunGates(ctx: RouteContext): Promise<ApiResponse> {
+  const runId = ctx.params.id;
+  const guarded = await guardRunCommand(ctx, runId, 'gates.rerun');
+  if (guarded.response !== null) {
+    return guarded.response;
+  }
+  const daemon = ctx.executionDaemon;
+  if (daemon === null) {
+    return EXECUTION_DISABLED;
+  }
+  if (guarded.run.status === 'cancelled') {
+    return {
+      status: 422,
+      body: { error: 'run_cancelled', message: `Run ${runId} is cancelled.`, run: guarded.run },
+    };
+  }
+  const events = await ctx.reader.readRun(runId);
+  const jobId = gateRerunJobId(runId);
+  const existing = projectExecutionQueue(events, runId).byJobId[jobId];
+  if (existing !== undefined && isActiveJobStatus(existing.status)) {
+    return { status: 200, body: { runId, alreadyQueued: true, job: existing } };
+  }
+  await enqueueJob(ctx.store, {
+    runId,
+    jobId,
+    jobKind: 'gate-rerun',
+    attempt: (existing?.attempt ?? 0) + 1,
+    reason: str(asRecord(ctx.request.body).reason) ?? 'operator gate re-run',
+  });
+  daemon.notify();
+  const job = projectExecutionQueue(await ctx.reader.readRun(runId), runId).byJobId[jobId];
+  // `held` mirrors the start/retry queued responses: a queued gate re-run
+  // waits behind the drain gate until the operator resumes execution.
+  return { status: 202, body: { runId, queued: true, held: daemon.held, job } };
+}
+
+/* ----------------------------------------------------------------------------
+ * Factory-wide execution controls (operator autostart/hold surface).
+ *
+ * The daemon boots HELD by default (`autoStart` off): opening the factory
+ * never runs queued work automatically. These routes expose the gate to the
+ * operator — status is read-only; resume/hold are guarded mutations on the
+ * process daemon (deliberately NOT ledger events: every fresh process starts
+ * held again by design, so persisting the gate would defeat it).
+ * ------------------------------------------------------------------------- */
+
+/**
+ * Cross-run queued/leased job counts for the overview. PERF: without a runId,
+ * `projectExecutionQueue` folds ONLY `queue.*` event types (enqueued/claimed/
+ * heartbeat/released/lease_abandoned — see queue.ts; the runId-scoped alias
+ * resolution that reads other events never applies here), so pre-filtering to
+ * that family keeps the fold linear in queue traffic instead of total ledger
+ * size. The queue tests pin that the fold ignores everything else.
+ */
+function countQueueJobs(events: readonly FactoryEvent[]): { queued: number; leased: number } {
+  const queue = projectExecutionQueue(events.filter((event) => event.type.startsWith('queue.')));
+  let queued = 0;
+  let leased = 0;
+  for (const job of queue.jobs) {
+    if (job.status === 'queued') {
+      queued += 1;
+    } else if (job.status === 'leased') {
+      leased += 1;
+    }
+  }
+  return { queued, leased };
+}
+
+async function getExecutionOverview(ctx: RouteContext): Promise<ApiResponse> {
+  const daemon = ctx.executionDaemon;
+  // The queue is LEDGER truth either way: even with no daemon on this
+  // instance, real cross-run counts beat hardcoded zeros — only the
+  // enabled/held/running flags are daemon-dependent.
+  const queue = countQueueJobs(await ctx.reader.readAll());
+  if (daemon === null) {
+    return {
+      status: 200,
+      body: {
+        execution: { enabled: false, held: false, running: false },
+        queue,
+      },
+    };
+  }
+  return {
+    status: 200,
+    body: {
+      execution: { enabled: true, held: daemon.held, running: daemon.running },
+      queue,
+    },
+  };
+}
+
+/**
+ * Audit record for a SUCCESSFUL factory-scoped gate command. The drain gate
+ * is deliberately process-local (never a ledger event — every fresh process
+ * boots held again by design), and no existing core event type describes an
+ * operator factory command without overloading a projection-bearing family,
+ * so the audit record is a structured server log line rather than an invented
+ * event type. Guard DENIALS of these commands DO land on the reserved
+ * 'factory' ledger stream (see `guardMutation` in app.ts).
+ */
+function auditFactoryCommand(command: string): void {
+  console.info(
+    JSON.stringify({
+      audit: 'software-factory.command',
+      command,
+      actor: 'operator',
+      timestamp: Date.now(),
+    }),
+  );
+}
+
+async function resumeAllExecution(ctx: RouteContext): Promise<ApiResponse> {
+  const denial = await ctx.guardMutation({
+    subject: { kind: 'factory', id: 'execution' },
+    command: 'execution.resume_all',
+  });
+  if (denial !== null) {
+    return denial;
+  }
+  const daemon = ctx.executionDaemon;
+  if (daemon === null) {
+    return EXECUTION_DISABLED;
+  }
+  // `running` rides on both bodies so the caller can tell "gate released"
+  // apart from "gate released but the daemon loop is not running" — a resumed
+  // gate on a stopped daemon still drains nothing.
+  if (!daemon.held) {
+    return { status: 200, body: { alreadyActive: true, held: false, running: daemon.running } };
+  }
+  daemon.resume();
+  auditFactoryCommand('execution.resume_all');
+  return { status: 200, body: { resumed: true, held: daemon.held, running: daemon.running } };
+}
+
+async function holdAllExecution(ctx: RouteContext): Promise<ApiResponse> {
+  const denial = await ctx.guardMutation({
+    subject: { kind: 'factory', id: 'execution' },
+    command: 'execution.hold_all',
+  });
+  if (denial !== null) {
+    return denial;
+  }
+  const daemon = ctx.executionDaemon;
+  if (daemon === null) {
+    return EXECUTION_DISABLED;
+  }
+  if (daemon.held) {
+    // Converge on "everything held": even an already-engaged gate re-holds so
+    // per-run start grants issued since boot are revoked (hold() clears them).
+    daemon.hold();
+    return { status: 200, body: { alreadyHeld: true, held: true, running: daemon.running } };
+  }
+  daemon.hold();
+  auditFactoryCommand('execution.hold_all');
+  return { status: 200, body: { held: true, running: daemon.running } };
+}
+
+async function getExecution(ctx: RouteContext): Promise<ApiResponse> {
+  const runId = ctx.params.id;
+  const owned = await readOwnedRun(ctx, runId);
+  if (owned.response !== null) {
+    return owned.response;
+  }
+  const { events, run } = owned;
+  const queue = projectExecutionQueue(events, runId);
+  return {
+    status: 200,
+    body: {
+      runId,
+      execution: executionSummary(run),
+      job: queue.byJobId[executionJobId(runId)] ?? null,
+      gateRerunJob: queue.byJobId[gateRerunJobId(runId)] ?? null,
+      preflight: projectPreflight(events, runId),
+      interventions: filterInterventions(projectInterventions(events), {
+        runId,
+        openOnly: true,
+      }),
+    },
+  };
+}
+
+/** Type guard: is this query value one of the closed intervention kinds? */
+function isInterventionKind(value: unknown): value is InterventionKind {
+  return typeof value === 'string' && (INTERVENTION_KINDS as readonly string[]).includes(value);
+}
+
+const SEVERITY_VALUES: readonly EventSeverity[] = ['info', 'success', 'warn', 'error', 'critical'];
+
+/** Type guard: is this query value one of the event severities? */
+function isEventSeverity(value: unknown): value is EventSeverity {
+  return typeof value === 'string' && (SEVERITY_VALUES as readonly string[]).includes(value);
+}
+
+async function listInterventions(ctx: RouteContext): Promise<ApiResponse> {
+  const query = ctx.request.query;
+  const all = await ctx.reader.readAll();
+  const projection = projectInterventions(all);
+  // Owner scoping (U5): users see interventions on THEIR runs only; admins
+  // see the whole factory queue. One ownership map serves the whole filter —
+  // same readAll, no extra store round-trip.
+  const owners = runOwners(all);
+  const visible = (item: InterventionView): boolean =>
+    canSeeRun(ctx, { ownerId: owners.get(item.runId) });
+  const interventions = filterInterventions(projection, {
+    runId: str(query.runId),
+    kind: isInterventionKind(query.kind) ? query.kind : undefined,
+    severity: isEventSeverity(query.severity) ? query.severity : undefined,
+    blockingStage: str(query.blockingStage) ?? str(query.stage),
+    requiredActionText: str(query.action),
+    openOnly: query.open === '1' || query.open === 'true',
+  }).filter(visible);
+  return {
+    status: 200,
+    body: { interventions, openCount: projection.open.filter(visible).length },
+  };
+}
+
+async function resolveInterventionRoute(ctx: RouteContext): Promise<ApiResponse> {
+  const interventionId = ctx.params.id;
+  const events = await ctx.reader.readAll();
+  const projection = projectInterventions(events);
+  const target: InterventionView | undefined = projection.byId[interventionId];
+  const body = asRecord(ctx.request.body);
+
+  const runForVersion =
+    target !== undefined
+      ? projectRun(
+          events.filter(
+            (event) =>
+              typeof event === 'object' &&
+              event !== null &&
+              (event as { runId?: string }).runId === target.runId,
+          ),
+          target.runId,
+        )
+      : undefined;
+
+  const denial = await ctx.guardMutation({
+    subject: { kind: 'intervention', id: interventionId, version: num(body.expectedVersion) },
+    currentVersion: runForVersion?.lastSequence,
+    command: 'intervention.resolve',
+    runId: target?.runId,
+  });
+  if (denial !== null) {
+    return denial;
+  }
+
+  if (target === undefined) {
+    return {
+      status: 404,
+      body: { error: 'not_found', message: `Intervention ${interventionId} does not exist.` },
+    };
+  }
+  // Owner scoping (U5): resolving is owner-or-admin, audited like every other
+  // run mutation. Credential interventions are OWNER-actionable only — the
+  // unblock needs the owner's own credentials, which nobody else (admin
+  // included) can supply on their behalf.
+  const ownerId = runForVersion?.ownerId;
+  if (!canSeeRun(ctx, { ownerId })) {
+    await ctx.writer.append({
+      runId: target.runId,
+      type: 'security.command_rejected',
+      actor: operatorActor(ctx),
+      subject: { kind: 'intervention', id: interventionId },
+      severity: 'warn',
+      payload: { reason: 'not_owner', command: 'intervention.resolve' },
+    });
+    return {
+      status: 403,
+      body: {
+        error: 'not_owner',
+        message: `Intervention ${interventionId} belongs to another account's run; only its owner or the admin can resolve it.`,
+      },
+    };
+  }
+  if (
+    ctx.multiUser &&
+    target.kind === 'missing_credentials' &&
+    ownerId !== undefined &&
+    ctx.identity !== null &&
+    ctx.identity.userId !== ownerId
+  ) {
+    return {
+      status: 403,
+      body: {
+        error: 'owner_action_required',
+        message:
+          'This intervention needs the run owner to add or fix THEIR credentials ' +
+          '(Settings → Credentials); it cannot be resolved on their behalf.',
+      },
+    };
+  }
+  if (target.status === 'resolved') {
+    return { status: 200, body: { alreadyResolved: true, intervention: target } };
+  }
+  const resolution = str(body.resolution);
+  if (resolution === undefined) {
+    return {
+      status: 400,
+      body: { error: 'missing_resolution', message: 'A resolution string is required.' },
+    };
+  }
+  await resolveIntervention(ctx.store, target, { resolution, note: str(body.note) });
+  // Intervention events live on the target run's ledger, so the post-write
+  // read only needs that run (perf: no second cross-run readAll).
+  const updated = projectInterventions(await ctx.reader.readRun(target.runId)).byId[interventionId];
+  return { status: 200, body: { alreadyResolved: false, intervention: updated } };
+}
+
+export function executionRoutes(): RouteDef[] {
+  return [
+    { method: 'GET', pattern: '/api/execution', access: 'authenticated', handler: getExecutionOverview },
+    { method: 'POST', pattern: '/api/execution/resume', access: 'admin', handler: resumeAllExecution },
+    { method: 'POST', pattern: '/api/execution/hold', access: 'admin', handler: holdAllExecution },
+    { method: 'POST', pattern: '/api/runs/:id/start', access: 'owner-scoped', handler: startRun },
+    { method: 'POST', pattern: '/api/runs/:id/pause', access: 'owner-scoped', handler: pauseRun },
+    { method: 'POST', pattern: '/api/runs/:id/resume', access: 'owner-scoped', handler: resumeRun },
+    { method: 'POST', pattern: '/api/runs/:id/retry', access: 'owner-scoped', handler: retryRun },
+    { method: 'POST', pattern: '/api/runs/:id/gates/rerun', access: 'owner-scoped', handler: rerunGates },
+    { method: 'GET', pattern: '/api/runs/:id/execution', access: 'owner-scoped', handler: getExecution },
+    { method: 'GET', pattern: '/api/interventions', access: 'owner-scoped', handler: listInterventions },
+    {
+      method: 'POST',
+      pattern: '/api/interventions/:id/resolve',
+      access: 'owner-scoped',
+      handler: resolveInterventionRoute,
+    },
+  ];
+}

@@ -1,0 +1,21 @@
+{
+  "id": "qa-gates",
+  "version": "1.0.0",
+  "title": "QA Gates",
+  "description": "Author and run the quality gates (lint, typecheck, unit, smoke, secret scan) across the generated marketplace app.",
+  "requiredInputs": ["ui.marketplace", "ai.brief.generator", "feature.proposals"],
+  "expectedOutputs": ["qa.report"],
+  "allowedTools": ["fs.read", "test.run"],
+  "riskHint": {
+    "tier": "low"
+  },
+  "artifactContracts": [
+    {
+      "key": "qa.report",
+      "kind": "report",
+      "description": "Aggregated gate evidence: lint, typecheck, unit, smoke, and secret-scan results.",
+      "required": true
+    }
+  ],
+  "dependsOn": ["marketplace-ui", "ai-brief", "provider-proposals"]
+}
